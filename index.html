@@ -160,13 +160,86 @@ function ensureFirebaseAuth(){
 }
 
 /* =========================================================
-   المحرك: مقارنة تشابه (similarity matching) بدل شبكة بمخرج
-   ثابت الحجم. المعمارية القديمة كانت مربوطة بعدد فئات ثابت
-   (MAX_LABELS=40) لأن آخر طبقة في الشبكة لازم يبقى حجمها معروف
-   مقدمًا. النظام ده بيشتغل بفكرة مختلفة تمامًا: كل مثال بيتحول
-   لمتجه، ولما رسالة جديدة توصل، بنقارنها بكل الأمثلة المحفوظة
-   (تشابه جيب التمام / cosine similarity) ونرجّع رد أقرب مثال.
-   ده معناه: مفيش سقف فئات خالص، وتقدر تعلّمه آلاف الأمثلة.
+   الشبكة العصبية: backprop حقيقي، بترجع تاني عشان تشتغل
+   جنب نظام التشابه بدل ما تتشال خالص. الفرق عن النسخة الأولى:
+   هنا حجم المخرج (عدد الفئات) بيكبر تلقائيًا مع كل فئة جديدة -
+   مفيش رقم ثابت زي MAX_LABELS=40 - فمفيش سقف.
+
+   ملحوظة مهمة (وعد بالصراحة): "بلايين الخلايا" مستحيل فعليًا في
+   متصفح موبايل - ده محتاج مئات الجيجابايت رام. الحجم هنا (64 خلية
+   مخفية) هو أقصى حاجة معقولة تشتغل بسلاسة على الهاتف بدون ما
+   تهنج الصفحة أو تستهلك بطارية جامدة.
+   ========================================================= */
+const HIDDEN_DIM = 64;
+
+function zeros(rows, cols){ const m=[]; for(let i=0;i<rows;i++) m.push(new Array(cols).fill(0)); return m; }
+function randomMatrix(rows, cols, scale){ const m=[]; for(let i=0;i<rows;i++){ const row=[]; for(let j=0;j<cols;j++) row.push((Math.random()*2-1)*scale); m.push(row);} return m; }
+function matMul(a,b){ const rA=a.length,cA=a[0].length,cB=b[0].length; const r=zeros(rA,cB); for(let i=0;i<rA;i++) for(let j=0;j<cB;j++){ let s=0; for(let k=0;k<cA;k++) s+=a[i][k]*b[k][j]; r[i][j]=s; } return r; }
+function matAdd(a,b){ return a.map((row,i)=>row.map((v,j)=>v+b[i][j])); }
+function matSub(a,b){ return a.map((row,i)=>row.map((v,j)=>v-b[i][j])); }
+function matHad(a,b){ return a.map((row,i)=>row.map((v,j)=>v*b[i][j])); }
+function matT(a){ const rows=a.length,cols=a[0].length; const r=zeros(cols,rows); for(let i=0;i<rows;i++) for(let j=0;j<cols;j++) r[j][i]=a[i][j]; return r; }
+function matMap(a,fn){ return a.map(row=>row.map(fn)); }
+const sigmoid = x=>1/(1+Math.exp(-x));
+const sigmoidDeriv = y=>y*(1-y);
+
+class DenseLayer{
+  constructor(inputSize, outputSize){
+    this.weights = randomMatrix(inputSize, outputSize, Math.sqrt(1/inputSize));
+    this.bias = zeros(1, outputSize);
+    this.lastInput=null; this.lastOutput=null;
+  }
+  forward(input){
+    this.lastInput = input;
+    this.lastOutput = matMap(matAdd(matMul(input, this.weights), this.bias), sigmoid);
+    return this.lastOutput;
+  }
+  backward(outputGradient, lr){
+    const delta = matHad(outputGradient, matMap(this.lastOutput, sigmoidDeriv));
+    const wGrad = matMul(matT(this.lastInput), delta);
+    const inGrad = matMul(delta, matT(this.weights));
+    for(let i=0;i<this.weights.length;i++) for(let j=0;j<this.weights[0].length;j++) this.weights[i][j]-=lr*wGrad[i][j];
+    for(let j=0;j<this.bias[0].length;j++) this.bias[0][j]-=lr*delta[0][j];
+    return inGrad;
+  }
+}
+class NeuralNetwork{
+  constructor(sizes){
+    this.layers=[];
+    for(let i=0;i<sizes.length-1;i++) this.layers.push(new DenseLayer(sizes[i], sizes[i+1]));
+  }
+  predict(input){ let o=input; for(const l of this.layers) o=l.forward(o); return o; }
+  trainStep(input, target, lr){
+    let grad = matSub(this.predict(input), target);
+    for(let i=this.layers.length-1;i>=0;i--) grad = this.layers[i].backward(grad, lr);
+  }
+}
+function oneHot(index, size){ const v=new Array(size).fill(0); v[index]=1; return [v]; }
+
+let network = null; // بيتبني/يتعاد بناؤه كل ما عدد الفئات يتغير
+
+/* تدريب الشبكة من الصفر على كل الأمثلة - بيتنادى بعد أي تعليم
+   جديد أو استيراد جماعي. بما إن الشبكة صغيرة (64 خلية) والأمثلة
+   عادةً مئات مش ملايين، ده بياخد أجزاء من الثانية على الموبايل. */
+async function retrainNetwork(){
+  if(labels.length===0 || examples.length===0){ network=null; return; }
+  network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, labels.length]);
+  const EPOCHS=180, LR=0.35;
+  for(let e=0;e<EPOCHS;e++){
+    for(const ex of examples){
+      network.trainStep([ex.vec], oneHot(ex.labelIndex, labels.length), LR);
+    }
+  }
+}
+
+/* =========================================================
+   المحرك: تشابه + شبكة عصبية مع بعض (ensemble). المنطق:
+   - نظام التشابه دقيق فورًا حتى بمثال واحد بس ملوش "تعميم" -
+     بيحفظ الجمل الأصلية بالظبط.
+   - الشبكة العصبية بتتعلم نمط عام عبر كل الأمثلة (تعميم حقيقي)
+     لكن محتاجة أمثلة كتير عشان تكون موثوقة.
+   بنستخدم الاتنين ونرجّع اللي عنده ثقة أعلى، ولو الاتنين متفقين
+   على نفس الفئة الثقة بتتضاعف قوة (اتفاق = مؤشر قوي).
    ========================================================= */
 const INPUT_DIM = 192;           // حجم المتجه (زودناه عشان unigrams+bigrams يقللوا التصادم)
 const CONFIDENCE_THRESHOLD = 0.42;
@@ -232,6 +305,7 @@ function attachVectors(){
 async function loadState(){
   labels = [];
   examples = [];
+  network = null;
   if(!firebaseReady || !db) return; // هيشتغل أوفلاين بذاكرة مؤقتة لو Firebase مش متاح
 
   try{
@@ -241,6 +315,7 @@ async function loadState(){
       labels = data.labels || [];
       examples = data.examples || [];
       attachVectors();
+      await retrainNetwork(); // الشبكة مش بتتخزن (كبيرة نسبيًا) - بنعيد تدريبها من الأمثلة كل تحميل
     }
   } catch(e){ console.error('تعذر تحميل الحالة من Firebase', e); }
 }
@@ -248,7 +323,9 @@ async function saveState(){
   if(!firebaseReady || !db) return;
   try{
     // بنشيل .vec قبل الحفظ (بيتحسب تاني وقت التحميل) عشان نوفر
-    // مساحة في Firestore - الأمثلة بس محتاجة النص والفئة.
+    // مساحة في Firestore - الأمثلة بس محتاجة النص والفئة. أوزان
+    // الشبكة كمان مش بتتخزن (بتكبر مع كل فئة) - بتتعاد تدريبها
+    // بسرعة عند التحميل بدل ما نخزن ملف تقيل.
     const examplesToSave = examples.map(e=>({ text:e.text, labelIndex:e.labelIndex }));
     await brainDocRef().set({
       labels, examples: examplesToSave,
@@ -265,15 +342,36 @@ function addExample(text, labelIndex){
 function classify(text){
   if(examples.length===0) return { confident:false, confidence:0 };
   const vec = textToVector(text);
+
+  // 1) نظام التشابه: أقرب مثال محفوظ
   let bestSim=-1, bestExample=null;
   for(const ex of examples){
     const sim = cosineSim(vec, ex.vec);
     if(sim>bestSim){ bestSim=sim; bestExample=ex; }
   }
-  if(!bestExample || bestSim < CONFIDENCE_THRESHOLD) return { confident:false, confidence:bestSim<0?0:bestSim };
-  const label = labels.find(l=>l.index===bestExample.labelIndex);
-  if(!label) return { confident:false, confidence:0 };
-  return { confident:true, confidence:bestSim, label };
+  const simLabel = bestExample ? labels.find(l=>l.index===bestExample.labelIndex) : null;
+
+  // 2) الشبكة العصبية: تعميم عبر كل الأمثلة
+  let nnLabel=null, nnConf=0;
+  if(network){
+    const out = network.predict([vec])[0];
+    let bestIdx=-1, bestVal=-1;
+    for(const lab of labels){ if(out[lab.index]>bestVal){ bestVal=out[lab.index]; bestIdx=lab.index; } }
+    if(bestIdx!==-1){ nnLabel = labels.find(l=>l.index===bestIdx); nnConf = bestVal; }
+  }
+
+  // اتفاق الاتنين = مؤشر قوي، بنرفع الثقة. اختلاف = بناخد الأعلى.
+  if(simLabel && nnLabel && simLabel.index===nnLabel.index){
+    const combined = Math.min(1, bestSim*0.7 + nnConf*0.3 + 0.08);
+    if(combined < CONFIDENCE_THRESHOLD) return { confident:false, confidence:combined };
+    return { confident:true, confidence:combined, label:simLabel };
+  }
+  // مختلفين - نظام التشابه بيفوز افتراضيًا لأنه بيحفظ الجملة الأصلية
+  // بالظبط (أدق مع أمثلة قليلة)، والشبكة عادة محتاجة أمثلة أكتر
+  // عشان تتفوق عليه بجدارة.
+  if(bestSim >= CONFIDENCE_THRESHOLD) return { confident:true, confidence:bestSim, label:simLabel };
+  if(nnConf >= CONFIDENCE_THRESHOLD+0.15) return { confident:true, confidence:nnConf, label:nnLabel }; // الشبكة لازم تكون واثقة أكتر عشان تتخطى التشابه
+  return { confident:false, confidence:Math.max(bestSim,0) };
 }
 
 /* =========================================================
@@ -364,6 +462,7 @@ function showTeachCard(originalText){
     }
     if(!label.responses.includes(responseInput)) label.responses.push(responseInput);
     addExample(originalText, label.index);
+    await retrainNetwork();
 
     await saveState();
     renderBrainGrid();
@@ -419,6 +518,9 @@ function showBulkImportCard(){
       added++;
     }
 
+    card.querySelector('.bulk-confirm').textContent = 'بيدرّب الشبكة...';
+    await retrainNetwork();
+
     await saveState();
     renderBrainGrid();
     card.remove();
@@ -449,7 +551,7 @@ inputEl.addEventListener('keydown', e=>{ if(e.key==='Enter') handleSend(); });
 
 document.getElementById('reset-btn').addEventListener('click', async ()=>{
   if(!confirm('هتتمسح كل حاجة اتعلمها العقل. متأكد؟')) return;
-  labels=[]; examples=[];
+  labels=[]; examples=[]; network=null;
   await saveState();
   renderBrainGrid();
   chatEl.innerHTML='';
