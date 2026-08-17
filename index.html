@@ -418,6 +418,29 @@ function attachVectors(){
   for(const ex of examples){ if(!ex.vec) ex.vec = textToVector(ex.text); }
 }
 
+// طابع وقت آخر حفظة عملناها إحنا بنفسنا من الجهاز ده - بنستخدمه في
+// المستمع اللحظي (onSnapshot) عشان نفرّق بين "تحديث جالنا من جهاز
+// تاني فعلاً" و"مجرد صدى/تأكيد كتابتنا احنا" فمنعيدش تدريب من غير داعي.
+let lastSavedUpdatedAt = 0;
+
+// true وقت ما إحنا وسط عملية تعليم/استيراد محلية طويلة (زي استيراد
+// جماعي) - في اللحظة دي بنأجّل تطبيق أي تحديث لحظي جاي من جهاز تاني
+// عشان منخبطش الداتا اللي إحنا لسه بنبنيها، وهيتطبق التحديث الأحدث
+// أوتوماتيك أول ما نخلص وننشر إحنا كمان.
+let localBusy = false;
+
+function applyRemoteData(data){
+  labels = data.labels || [];
+  examples = (data.examples || []).map(e=>({
+    id: e.id || makeExampleId(),
+    text: e.text,
+    labelIndex: e.labelIndex,
+    trust: e.trust===undefined ? 0.75 : e.trust
+  }));
+  learnedEmojis = data.emojiMeanings || {};
+  attachVectors();
+}
+
 async function loadState(){
   labels = [];
   examples = [];
@@ -429,19 +452,41 @@ async function loadState(){
     const snap = await brainDocRef().get();
     if(snap.exists){
       const data = snap.data();
-      labels = data.labels || [];
-      examples = (data.examples || []).map(e=>({
-        id: e.id || makeExampleId(),
-        text: e.text,
-        labelIndex: e.labelIndex,
-        trust: e.trust===undefined ? 0.75 : e.trust
-      }));
-      learnedEmojis = data.emojiMeanings || {};
-      attachVectors();
+      applyRemoteData(data);
+      lastSavedUpdatedAt = data.updatedAt || 0;
       await retrainNetwork(); // الشبكة مش بتتخزن (كبيرة نسبيًا) - بنعيد تدريبها من الأمثلة كل تحميل
     }
   } catch(e){ console.error('تعذر تحميل الحالة من Firebase', e); }
 }
+
+// مزامنة لحظية: بدل ما كل جهاز يقرا الحالة مرة واحدة بس عند الفتح،
+// بنفتح "مستمع" مستمر على مستند Firestore. أي جهاز يحفظ حاجة جديدة
+// (تعليم فردي أو استيراد جماعي)، كل الأجهزة التانية المفتوحة بتستقبل
+// نفس التحديث فورًا (بدون ريفريش) وبتعيد تدريب شبكتها المحلية وتوري
+// رسالة إنها استقبلت تحديث.
+function startRealtimeSync(){
+  if(!firebaseReady || !db) return;
+  brainDocRef().onSnapshot(async (snap)=>{
+    if(!snap.exists) return;
+    // hasPendingWrites يبقى true لما التحديث ده صادر من كتابة إحنا
+    // لسه عاملينها محليًا (قبل ما توصل السيرفر) - ده صدى مؤقت،
+    // متجاهلينه لأن الحالة عندنا محليًا أصلًا محدثة بيه.
+    if(snap.metadata.hasPendingWrites) return;
+    const data = snap.data();
+    if(!data) return;
+    // ده تأكيد وصول كتابتنا احنا للسيرفر (نفس الطابع اللي حفظناه) -
+    // مفيش تحديث فعلي جديد نطبقه، تجاهل.
+    if(data.updatedAt && data.updatedAt === lastSavedUpdatedAt) return;
+    if(localBusy) return; // إحنا وسط تعليم محلي دلوقتي - هيتزامن أول ما نخلص
+
+    applyRemoteData(data);
+    lastSavedUpdatedAt = data.updatedAt || 0;
+    await retrainNetwork();
+    renderBrainGrid();
+    addSystem('🔄 وصل تحديث من جهاز تاني - العقل عنده دلوقتي ' + labels.length + ' فئة و' + examples.length + ' مثال.');
+  }, err=>{ console.error('تعذرت متابعة التحديثات اللحظية', err); });
+}
+
 async function saveState(){
   if(!firebaseReady || !db) return;
   try{
@@ -451,9 +496,11 @@ async function saveState(){
     // أوزان الشبكة كمان مش بتتخزن (بتكبر مع كل فئة) - بتتعاد تدريبها
     // بسرعة عند التحميل بدل ما نخزن ملف تقيل.
     const examplesToSave = examples.map(e=>({ id:e.id, text:e.text, labelIndex:e.labelIndex, trust:e.trust }));
+    const updatedAt = Date.now();
+    lastSavedUpdatedAt = updatedAt; // نسجّلها قبل الإرسال عشان المستمع اللحظي يعرف يتجاهل صداها
     await brainDocRef().set({
       labels, examples: examplesToSave, emojiMeanings: learnedEmojis,
-      updatedAt: Date.now()
+      updatedAt
     });
   } catch(e){ console.error('تعذر الحفظ في Firebase', e); }
 }
@@ -621,9 +668,11 @@ function showTeachCard(originalText){
     }
     if(!label.responses.includes(responseInput)) label.responses.push(responseInput);
     addExample(originalText, label.index);
+    localBusy = true;
     await retrainNetwork();
 
     await saveState();
+    localBusy = false;
     renderBrainGrid();
     pulseNeuron(label.index);
 
@@ -650,8 +699,10 @@ async function applyFeedback(target, score, msgDiv){
     const ex = examples.find(e=>e.id===target.exampleId);
     if(ex){
       ex.trust = score;
+      localBusy = true;
       await retrainNetwork();
       await saveState();
+      localBusy = false;
       renderBrainGrid();
       if(target.label) pulseNeuron(target.label.index);
     }
@@ -685,7 +736,9 @@ function showEmojiLearnCard(emoji, target, targetDiv, remaining, alreadyApplied)
 
   const finish = async (score)=>{
     learnedEmojis[emoji] = score;
+    localBusy = true;
     await saveState();
+    localBusy = false;
     card.remove();
     addSystem('اتعلمت إن ' + emoji + ' معناها ' + (score===1?'صح ✅':'غلط ❌') + ' - هفتكرها دايمًا.');
     if(!alreadyApplied && target){
@@ -738,6 +791,7 @@ async function importLines(lines, onProgress){
   const report = (r, label)=>{ if(onProgress) onProgress(Math.min(1,r), label); };
 
   report(0, 'بيقرأ السطور...');
+  localBusy = true; // نمنع أي تحديث لحظي جاي من جهاز تاني يتطبق فوقنا لحد ما نخلص
   let added = 0, skipped = 0;
   for(let i=0;i<lines.length;i++){
     const line = lines[i];
@@ -775,6 +829,7 @@ async function importLines(lines, onProgress){
     report(0.2 + trainRatio*0.78, 'بيدرّب الشبكة العصبية (محليًا)... ' + Math.round(trainRatio*100) + '%');
   });
 
+  localBusy = false;
   renderBrainGrid();
   report(1, 'خلص ✓ (الأمثلة اتحفظت على السيرفر من بداية التدريب)');
   return { added, skipped };
@@ -890,7 +945,9 @@ document.getElementById('reset-btn').addEventListener('click', async ()=>{
   if(!confirm('هتتمسح كل حاجة اتعلمها العقل (وكل معاني الإيموجي اللي اتعلمها كمان). متأكد؟')) return;
   labels=[]; examples=[]; network=null; learnedEmojis={};
   lastFeedbackTarget=null; lastBotMsgDiv=null;
+  localBusy = true;
   await saveState();
+  localBusy = false;
   renderBrainGrid();
   chatEl.innerHTML='';
   addSystem('اتمسح كل التعلّم - العقل رجع فاضي زي أول مرة.');
@@ -906,6 +963,7 @@ async function boot(){
     addSystem('⚠️ تعذر الاتصال بـ Firebase - تأكد إنك حطيت بيانات مشروعك في firebaseConfig وفعّلت Anonymous Auth. هيشتغل مؤقتًا بدون حفظ.');
   }
   await loadState();
+  startRealtimeSync(); // من هنا، أي تعليم من أي جهاز هيوصل لكل الأجهزة المفتوحة فورًا
   chatEl.innerHTML='';
   renderBrainGrid();
 
