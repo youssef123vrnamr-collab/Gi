@@ -64,6 +64,21 @@
   .msg.system{align-self:center;background:transparent;color:var(--text-dim);font-size:12px;text-align:center;max-width:90%;}
   .confidence{display:block;margin-top:5px;font-size:10px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;}
   .msg.bot.uncertain{border-color:rgba(242,166,90,.4);}
+  .msg.bot.trust-full{border-color:rgba(90,209,168,.5);}
+  .msg.bot.trust-zero{opacity:.55;}
+
+  /* ===== EMOJI FEEDBACK ===== */
+  .reaction-row{display:flex;gap:6px;margin-top:7px;}
+  .reaction-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);border-radius:8px;padding:3px 8px;font-size:14px;line-height:1.5;}
+  .reaction-btn:active{background:rgba(255,255,255,.1);}
+  .reaction-btn.picked-good{border-color:rgba(90,209,168,.6);background:rgba(90,209,168,.12);}
+  .reaction-btn.picked-bad{border-color:rgba(240,90,90,.6);background:rgba(240,90,90,.12);}
+  .emoji-learn-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(124,92,255,.35);border-radius:14px;padding:11px;display:flex;flex-direction:column;gap:8px;}
+  .emoji-learn-card .label{font-size:12px;color:var(--synapse);font-weight:700;}
+  .emoji-learn-row{display:flex;gap:8px;}
+  .emoji-learn-row button{flex:1;border:none;border-radius:9px;padding:9px;font-weight:700;font-size:13px;}
+  .emoji-good{background:var(--ok);color:#062018;}
+  .emoji-bad{background:#f05a5a;color:#210505;}
 
   /* ===== TEACH CARD ===== */
   .teach-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(242,166,90,.35);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;}
@@ -222,12 +237,20 @@ let network = null; // بيتبني/يتعاد بناؤه كل ما عدد ال�
    جديد أو استيراد جماعي. بما إن الشبكة صغيرة (64 خلية) والأمثلة
    عادةً مئات مش ملايين، ده بياخد أجزاء من الثانية على الموبايل. */
 async function retrainNetwork(){
-  if(labels.length===0 || examples.length===0){ network=null; return; }
+  // الأمثلة اللي trust=0 (اتأكد إنها غلط بإيموجي سلبي) بتتشال تمامًا
+  // من التدريب - العقل "بينساها" بدل ما يفضل يتمسك بيها.
+  const trainable = examples.filter(ex=>ex.trust!==0);
+  if(labels.length===0 || trainable.length===0){ network=null; return; }
   network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, labels.length]);
   const EPOCHS=180, LR=0.35;
   for(let e=0;e<EPOCHS;e++){
-    for(const ex of examples){
-      network.trainStep([ex.vec], oneHot(ex.labelIndex, labels.length), LR);
+    for(const ex of trainable){
+      // الأمثلة المتأكد إنها صح 100% (trust=1) بتتدرّب عليها الشبكة
+      // مرتين في كل epoch عشان "تتمسك" بيها أكتر من غيرها.
+      const reps = ex.trust>=1 ? 2 : 1;
+      for(let r=0;r<reps;r++){
+        network.trainStep([ex.vec], oneHot(ex.labelIndex, labels.length), LR);
+      }
     }
   }
 }
@@ -243,6 +266,83 @@ async function retrainNetwork(){
    ========================================================= */
 const INPUT_DIM = 192;           // حجم المتجه (زودناه عشان unigrams+bigrams يقللوا التصادم)
 const CONFIDENCE_THRESHOLD = 0.42;
+
+/* =========================================================
+   نظام "التصحيح بالإيموجي": بعد أي رد واثق من العقل، المستخدم
+   ممكن يبعت إيموجي لوحده (أو أكتر من واحد) بدل ما يكتب كلام،
+   والعقل بيفهم منه إن الرد كان صح أو غلط:
+     - إيموجي إيجابي  -> المثال ده بيتأكّد بثقة 100% (trust=1)
+       وبيتدرّب عليه بوزن أعلى عشان العقل "يتمسك" بيه.
+     - إيموجي سلبي    -> المثال بيتحط ثقته صفر% (trust=0) وبيتشال
+       فورًا من التشابه ومن التدريب - يعني "العقل مش هيكرهه" بمعنى
+       إنه مش هيتصرف بعناد، هو غالبًا بس هيهمله وينساه، وبيحاول
+       يحسّن نفسه بطلب الرد الصح فورًا من المستخدم.
+   القاموس ده بيغطي أشهر الإيموجيز المستخدمة، وأي إيموجي مش موجود
+   فيه بيتسأل عنه المستخدم مرة واحدة وبعدين بيتحفظ ويتعلمه للأبد.
+   ========================================================= */
+const DEFAULT_EMOJI_MEANINGS = {
+  // ===== إيجابي (صح 100%) =====
+  '👍':1,'👍🏻':1,'👍🏼':1,'👍🏽':1,'👍🏾':1,'👍🏿':1,
+  '👌':1,'👌🏻':1,'👌🏼':1,'👌🏽':1,
+  '✅':1,'✔️':1,'✔':1,'☑️':1,'🆗':1,'🔵':1,
+  '💯':1,'🔥':1,'✨':1,'⭐':1,'🌟':1,'💫':1,
+  '❤️':1,'❤':1,'🧡':1,'💛':1,'💚':1,'💙':1,'💜':1,'🤍':1,'🖤':1,'💗':1,'💖':1,'💕':1,'💓':1,'💞':1,'💝':1,
+  '😀':1,'😃':1,'😄':1,'😁':1,'😆':1,'😅':1,'🙂':1,'🙃':1,'😊':1,'😇':1,
+  '😍':1,'🥰':1,'😘':1,'😗':1,'😙':1,'😚':1,'😋':1,'😛':1,'😜':1,'🤩':1,
+  '🤗':1,'😌':1,'😉':1,'🥳':1,'🤝':1,'🙌':1,'🙌🏻':1,'👏':1,'👏🏻':1,'👏🏼':1,
+  '💪':1,'💪🏻':1,'🎉':1,'🎊':1,'🏆':1,'🥇':1,'😎':1,'🤟':1,'✊':1,'🫡':1,
+  '💐':1,'🌹':1,'🌸':1,'🌈':1,'☀️':1,'😻':1,'🐱':1,'👑':1,'🎯':1,'📌':1,
+  'صح':1,'تمام':1,'كويس':1,'برافو':1,
+
+  // ===== سلبي (غلط 0%) =====
+  '👎':0,'👎🏻':0,'👎🏼':0,'👎🏽':0,'👎🏾':0,'👎🏿':0,
+  '❌':0,'✖️':0,'✖':0,'🚫':0,'⛔':0,'🔴':0,'🆖':0,
+  '😞':0,'😔':0,'😟':0,'😕':0,'🙁':0,'☹️':0,'😣':0,'😖':0,'😫':0,'😩':0,
+  '😢':0,'😭':0,'😿':0,'😰':0,'😨':0,'😱':0,
+  '😡':0,'😠':0,'🤬':0,'👿':0,'😤':0,
+  '🤮':0,'🤢':0,'💩':0,'🖕':0,'🤦':0,'🤦🏻':0,'🤦♂️':0,'🤦♀️':0,
+  '🙄':0,'😒':0,'😑':0,'😐':0,'😬':0,'🥴':0,'😵':0,'💀':0,'☠️':0,
+  '⚠️':0,'❗':0,'❓':0,'😴':0,'🥱':0,'😶':0,'🤥':0,
+  'غلط':0,'خطأ':0,'لا':0,'مش صح':0
+};
+
+// إيموجيز اتعلمها العقل بنفسه من ردود المستخدم (بيتحفظ في Firestore
+// وبيتحمل مع بداية التشغيل، بيدمج مع القاموس الافتراضي فوق).
+let learnedEmojis = {};
+function emojiMeaning(e){
+  if(learnedEmojis.hasOwnProperty(e)) return learnedEmojis[e];
+  if(DEFAULT_EMOJI_MEANINGS.hasOwnProperty(e)) return DEFAULT_EMOJI_MEANINGS[e];
+  return null; // مش معروف
+}
+
+// تقسيم النص لعناصر إيموجي/كلمات منفصلة (بيستخدم Intl.Segmenter لو
+// متاح عشان يلم الإيموجيز المركبة صح، زي 👍🏽 أو ❤️).
+function splitGraphemes(text){
+  if(typeof Intl!=='undefined' && Intl.Segmenter){
+    try{
+      const seg = new Intl.Segmenter('ar', {granularity:'grapheme'});
+      return Array.from(seg.segment(text), s=>s.segment);
+    }catch(e){ /* fallback */ }
+  }
+  return Array.from(text);
+}
+const EMOJI_CHAR_TEST = /\p{Extended_Pictographic}/u;
+
+// رسالة "كلها إيموجي" (ممكن يبقى فيها أكتر من إيموجي مع مسافات)
+function isEmojiOnlyMessage(text){
+  const clusters = splitGraphemes(text.trim());
+  if(clusters.length===0) return false;
+  let hasEmoji=false;
+  for(const c of clusters){
+    if(c.trim()===''){ continue; }
+    if(EMOJI_CHAR_TEST.test(c)){ hasEmoji=true; continue; }
+    return false; // فيه حرف عادي مش إيموجي -> مش رسالة إيموجي خالصة
+  }
+  return hasEmoji;
+}
+function extractEmojis(text){
+  return splitGraphemes(text.trim()).filter(c=>c.trim()!=='' && EMOJI_CHAR_TEST.test(c));
+}
 
 // كلمات ربط شائعة بتشوش المقارنة من غير ما تضيف معنى - بنشيلها
 // قبل التحويل لمتجه عشان الشبكة تركّز على الكلمات المفصلية.
@@ -305,6 +405,7 @@ function attachVectors(){
 async function loadState(){
   labels = [];
   examples = [];
+  learnedEmojis = {};
   network = null;
   if(!firebaseReady || !db) return; // هيشتغل أوفلاين بذاكرة مؤقتة لو Firebase مش متاح
 
@@ -313,7 +414,13 @@ async function loadState(){
     if(snap.exists){
       const data = snap.data();
       labels = data.labels || [];
-      examples = data.examples || [];
+      examples = (data.examples || []).map(e=>({
+        id: e.id || makeExampleId(),
+        text: e.text,
+        labelIndex: e.labelIndex,
+        trust: e.trust===undefined ? 0.75 : e.trust
+      }));
+      learnedEmojis = data.emojiMeanings || {};
       attachVectors();
       await retrainNetwork(); // الشبكة مش بتتخزن (كبيرة نسبيًا) - بنعيد تدريبها من الأمثلة كل تحميل
     }
@@ -323,30 +430,39 @@ async function saveState(){
   if(!firebaseReady || !db) return;
   try{
     // بنشيل .vec قبل الحفظ (بيتحسب تاني وقت التحميل) عشان نوفر
-    // مساحة في Firestore - الأمثلة بس محتاجة النص والفئة. أوزان
-    // الشبكة كمان مش بتتخزن (بتكبر مع كل فئة) - بتتعاد تدريبها
+    // مساحة في Firestore - الأمثلة بس محتاجة النص والفئة والثقة
+    // ومعرّف ثابت (id) عشان نقدر نلاقيها تاني لما نصححها بإيموجي.
+    // أوزان الشبكة كمان مش بتتخزن (بتكبر مع كل فئة) - بتتعاد تدريبها
     // بسرعة عند التحميل بدل ما نخزن ملف تقيل.
-    const examplesToSave = examples.map(e=>({ text:e.text, labelIndex:e.labelIndex }));
+    const examplesToSave = examples.map(e=>({ id:e.id, text:e.text, labelIndex:e.labelIndex, trust:e.trust }));
     await brainDocRef().set({
-      labels, examples: examplesToSave,
+      labels, examples: examplesToSave, emojiMeanings: learnedEmojis,
       updatedAt: Date.now()
     });
   } catch(e){ console.error('تعذر الحفظ في Firebase', e); }
 }
 
-function addExample(text, labelIndex){
+function makeExampleId(){ return Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8); }
+
+// trust: 1 = اتأكدت إنها صح 100% (بتصحيح إيموجي إيجابي)
+//        0 = اتأكدت إنها غلط 0% - بتتشال من الاستخدام فورًا
+//        0.75 = افتراضي (متعلّمة عادي، لسه محدش صحّحها)
+function addExample(text, labelIndex, trust){
   const vec = textToVector(text);
-  examples.push({ text, labelIndex, vec });
+  examples.push({ id: makeExampleId(), text, labelIndex, vec, trust: (trust===undefined?0.75:trust) });
 }
 
 function classify(text){
-  if(examples.length===0) return { confident:false, confidence:0 };
+  const usable = examples.filter(ex=>ex.trust!==0); // الأمثلة المتأكد إنها غلط (trust=0) متتستخدمش تاني خالص
+  if(usable.length===0) return { confident:false, confidence:0 };
   const vec = textToVector(text);
 
-  // 1) نظام التشابه: أقرب مثال محفوظ
+  // 1) نظام التشابه: أقرب مثال محفوظ، مرجّح بمدى الثقة فيه
+  //    (مثال متأكد إنه صح 100% بيدّي وزن كامل، مثال لسه معلّم عادي
+  //    بيدّي وزن أقل شوية لحد ما حد يأكّده).
   let bestSim=-1, bestExample=null;
-  for(const ex of examples){
-    const sim = cosineSim(vec, ex.vec);
+  for(const ex of usable){
+    const sim = cosineSim(vec, ex.vec) * (0.6 + 0.4*ex.trust);
     if(sim>bestSim){ bestSim=sim; bestExample=ex; }
   }
   const simLabel = bestExample ? labels.find(l=>l.index===bestExample.labelIndex) : null;
@@ -364,13 +480,13 @@ function classify(text){
   if(simLabel && nnLabel && simLabel.index===nnLabel.index){
     const combined = Math.min(1, bestSim*0.7 + nnConf*0.3 + 0.08);
     if(combined < CONFIDENCE_THRESHOLD) return { confident:false, confidence:combined };
-    return { confident:true, confidence:combined, label:simLabel };
+    return { confident:true, confidence:combined, label:simLabel, matchedExample:bestExample };
   }
   // مختلفين - نظام التشابه بيفوز افتراضيًا لأنه بيحفظ الجملة الأصلية
   // بالظبط (أدق مع أمثلة قليلة)، والشبكة عادة محتاجة أمثلة أكتر
   // عشان تتفوق عليه بجدارة.
-  if(bestSim >= CONFIDENCE_THRESHOLD) return { confident:true, confidence:bestSim, label:simLabel };
-  if(nnConf >= CONFIDENCE_THRESHOLD+0.15) return { confident:true, confidence:nnConf, label:nnLabel }; // الشبكة لازم تكون واثقة أكتر عشان تتخطى التشابه
+  if(bestSim >= CONFIDENCE_THRESHOLD) return { confident:true, confidence:bestSim, label:simLabel, matchedExample:bestExample };
+  if(nnConf >= CONFIDENCE_THRESHOLD+0.15) return { confident:true, confidence:nnConf, label:nnLabel, matchedExample:null }; // الشبكة لازم تكون واثقة أكتر عشان تتخطى التشابه
   return { confident:false, confidence:Math.max(bestSim,0) };
 }
 
@@ -386,7 +502,12 @@ const statExamples = document.getElementById('stat-examples');
 
 function scrollToBottom(){ chatEl.scrollTop = chatEl.scrollHeight; }
 
-function addMessage(text, cls, confidence){
+// آخر رد واثق من العقل + المثال اللي طلع منه - ده اللي بيتصحّح لو
+// المستخدم بعت إيموجي بعده على طول (من غير ما يضطر يدوس على زرار).
+let lastFeedbackTarget = null;
+let lastBotMsgDiv = null;
+
+function addMessage(text, cls, confidence, feedbackTarget){
   const div = document.createElement('div');
   div.className = 'msg ' + cls;
   div.textContent = text;
@@ -395,6 +516,28 @@ function addMessage(text, cls, confidence){
     c.className='confidence mono';
     c.textContent = 'ثقة: ' + Math.round(confidence*100) + '%';
     div.appendChild(c);
+  }
+  if(cls && cls.indexOf('bot')!==-1){
+    lastBotMsgDiv = div;
+    lastFeedbackTarget = feedbackTarget || null;
+  }
+  if(feedbackTarget){
+    const row = document.createElement('div');
+    row.className = 'reaction-row';
+    const goodBtn = document.createElement('button');
+    goodBtn.className='reaction-btn'; goodBtn.textContent='👍 صح';
+    const badBtn = document.createElement('button');
+    badBtn.className='reaction-btn'; badBtn.textContent='👎 غلط';
+    goodBtn.addEventListener('click', ()=>{
+      goodBtn.classList.add('picked-good'); badBtn.disabled=true; goodBtn.disabled=true;
+      applyFeedback(feedbackTarget, 1, div);
+    });
+    badBtn.addEventListener('click', ()=>{
+      badBtn.classList.add('picked-bad'); badBtn.disabled=true; goodBtn.disabled=true;
+      applyFeedback(feedbackTarget, 0, div);
+    });
+    row.appendChild(goodBtn); row.appendChild(badBtn);
+    div.appendChild(row);
   }
   chatEl.appendChild(div);
   scrollToBottom();
@@ -474,9 +617,100 @@ function showTeachCard(originalText){
     // نجرب نصنّف نفس الرسالة تاني عشان نوريه إنه فهم فعلاً
     const result = classify(originalText);
     if(result.confident){
-      addMessage(result.label.responses[Math.floor(Math.random()*result.label.responses.length)], 'bot', result.confidence);
+      const target = { exampleId: result.matchedExample ? result.matchedExample.id : null, label: result.label, userText: originalText };
+      addMessage(result.label.responses[Math.floor(Math.random()*result.label.responses.length)], 'bot', result.confidence, target);
     }
   });
+}
+
+/* =========================================================
+   تطبيق تصحيح الإيموجي على مثال معيّن:
+   score=1 -> صح 100% (trust=1)، score=0 -> غلط 0% (trust=0 وبيتشال
+   من الاستخدام والتدريب فورًا، والعقل بيطلب الرد الصح بدل منه).
+   ========================================================= */
+async function applyFeedback(target, score, msgDiv){
+  if(!target) return;
+  if(target.exampleId){
+    const ex = examples.find(e=>e.id===target.exampleId);
+    if(ex){
+      ex.trust = score;
+      await retrainNetwork();
+      await saveState();
+      renderBrainGrid();
+      if(target.label) pulseNeuron(target.label.index);
+    }
+  }
+  if(msgDiv){
+    msgDiv.classList.remove('uncertain');
+    msgDiv.classList.add(score===1 ? 'trust-full' : 'trust-zero');
+    msgDiv.querySelectorAll('.reaction-btn').forEach(b=>{ b.disabled=true; });
+  }
+  if(score===1){
+    addSystem('تمام ✅ اتأكدت إن ده صح 100% - هتمسك بالرد ده في مواقف زي دي.');
+  } else {
+    addSystem('اتسجلت إنها غلط 100% (ثقة 0%) - مش هقولها تاني على الرسالة دي. علّمني الرد الصح 👇');
+    if(target.userText) showTeachCard(target.userText);
+  }
+}
+
+// كارت بيسأل عن معنى إيموجي مش معروف، وبيحفظ الإجابة للأبد.
+function showEmojiLearnCard(emoji, target, targetDiv, remaining, alreadyApplied){
+  const card = document.createElement('div');
+  card.className='emoji-learn-card';
+  card.innerHTML = `
+    <div class="label">مش عارف الإيموجي ${emoji} ده معناه إيه - علّمني مرة واحدة وهفتكرها دايمًا</div>
+    <div class="emoji-learn-row">
+      <button class="emoji-bad">❌ معناه غلط</button>
+      <button class="emoji-good">✅ معناه صح</button>
+    </div>
+  `;
+  chatEl.appendChild(card);
+  scrollToBottom();
+
+  const finish = async (score)=>{
+    learnedEmojis[emoji] = score;
+    await saveState();
+    card.remove();
+    addSystem('اتعلمت إن ' + emoji + ' معناها ' + (score===1?'صح ✅':'غلط ❌') + ' - هفتكرها دايمًا.');
+    if(!alreadyApplied && target){
+      await applyFeedback(target, score, targetDiv);
+      lastFeedbackTarget = null;
+    }
+    if(remaining && remaining.length>0){
+      showEmojiLearnCard(remaining[0], target, targetDiv, remaining.slice(1), true);
+    }
+  };
+  card.querySelector('.emoji-good').addEventListener('click', ()=>finish(1));
+  card.querySelector('.emoji-bad').addEventListener('click', ()=>finish(0));
+}
+
+// لما المستخدم يبعت رسالة كلها إيموجي، بنعتبرها تصحيح لآخر رد واثق
+// قاله العقل (سواء دوس على زرار 👍/👎 أو كتب أي إيموجي هو عايزه).
+async function handleEmojiFeedback(text){
+  if(!lastFeedbackTarget){
+    addSystem('لسه معنديش رد واثق قبل كده أصحح عليه - اكتبلي رسالة عادية الأول 🙂');
+    return;
+  }
+  const target = lastFeedbackTarget;
+  const targetDiv = lastBotMsgDiv;
+  const emojis = extractEmojis(text);
+  const known = [], unknown = [];
+  for(const e of emojis){
+    const m = emojiMeaning(e);
+    if(m===null) unknown.push(e); else known.push(m);
+  }
+
+  let applied = false;
+  if(known.length>0){
+    const avg = known.reduce((s,v)=>s+v,0)/known.length;
+    const score = avg>=0.5 ? 1 : 0;
+    await applyFeedback(target, score, targetDiv);
+    lastFeedbackTarget = null;
+    applied = true;
+  }
+  if(unknown.length>0){
+    showEmojiLearnCard(unknown[0], target, targetDiv, unknown.slice(1), applied);
+  }
 }
 
 function showBulkImportCard(){
@@ -534,12 +768,21 @@ async function handleSend(){
   const text = inputEl.value.trim();
   if(!text) return;
   inputEl.value='';
+
+  // رسالة كلها إيموجي = تصحيح لآخر رد، مش رسالة عادية بتتصنّف
+  if(isEmojiOnlyMessage(text)){
+    addMessage(text, 'user');
+    await handleEmojiFeedback(text);
+    return;
+  }
+
   addMessage(text, 'user');
 
   const result = classify(text);
   if(result.confident){
     const response = result.label.responses[Math.floor(Math.random()*result.label.responses.length)];
-    addMessage(response, 'bot', result.confidence);
+    const target = { exampleId: result.matchedExample ? result.matchedExample.id : null, label: result.label, userText: text };
+    addMessage(response, 'bot', result.confidence, target);
   } else {
     const bubble = addMessage('مش لسه اتعلمت رد مناسب على الكلام ده 🤔', 'bot uncertain', result.confidence);
     showTeachCard(text);
@@ -550,8 +793,9 @@ sendBtn.addEventListener('click', handleSend);
 inputEl.addEventListener('keydown', e=>{ if(e.key==='Enter') handleSend(); });
 
 document.getElementById('reset-btn').addEventListener('click', async ()=>{
-  if(!confirm('هتتمسح كل حاجة اتعلمها العقل. متأكد؟')) return;
-  labels=[]; examples=[]; network=null;
+  if(!confirm('هتتمسح كل حاجة اتعلمها العقل (وكل معاني الإيموجي اللي اتعلمها كمان). متأكد؟')) return;
+  labels=[]; examples=[]; network=null; learnedEmojis={};
+  lastFeedbackTarget=null; lastBotMsgDiv=null;
   await saveState();
   renderBrainGrid();
   chatEl.innerHTML='';
@@ -573,6 +817,7 @@ async function boot(){
 
   if(labels.length===0){
     addSystem('العقل ده فاضي دلوقتي - كل رد فيه إنت اللي هتعلّمه ليه بنفسك.');
+    addSystem('بعد أي رد واثق مني، ابعتلي إيموجي (زي 👍 أو 👎 أو أي إيموجي تاني) عشان تصحّح لي - صح = 100%، غلط = 0% وهطلب منك الرد الصح.');
     addMessage('اكتبلي أي رسالة، ولو معرفتش أرد هطلب منك تعلّمني 🧠', 'bot');
   } else {
     addSystem('اترجع العقل - عنده ' + labels.length + ' فئة اتعلمها قبل كده (متزامن من كل أجهزتك).');
