@@ -44,6 +44,11 @@
   .bulk-card .hint{font-size:11px;color:var(--text-dim);line-height:1.6;}
   .bulk-file-label{align-self:flex-start;background:rgba(124,92,255,.14);border:1px dashed rgba(124,92,255,.5);color:var(--synapse);border-radius:9px;padding:8px 12px;font-size:12px;font-weight:700;}
   .bulk-file-label:active{background:rgba(124,92,255,.22);}
+  .bulk-progress-wrap{display:none;flex-direction:column;gap:5px;}
+  .bulk-progress-wrap.active{display:flex;}
+  .bulk-progress-track{height:8px;border-radius:5px;background:rgba(255,255,255,.08);overflow:hidden;}
+  .bulk-progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--synapse),var(--ok));transition:width .25s ease;border-radius:5px;}
+  .bulk-progress-text{font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;display:flex;justify-content:space-between;}
   .bulk-row{display:flex;gap:8px;}
   .bulk-row button{flex:1;border:none;border-radius:9px;padding:10px;font-weight:700;font-size:13px;}
   .bulk-confirm{background:var(--synapse);color:#fff;}
@@ -238,11 +243,17 @@ let network = null; // بيتبني/يتعاد بناؤه كل ما عدد ال�
 /* تدريب الشبكة من الصفر على كل الأمثلة - بيتنادى بعد أي تعليم
    جديد أو استيراد جماعي. بما إن الشبكة صغيرة (64 خلية) والأمثلة
    عادةً مئات مش ملايين، ده بياخد أجزاء من الثانية على الموبايل. */
-async function retrainNetwork(){
+/* تدريب الشبكة من الصفر على كل الأمثلة - بيتنادى بعد أي تعليم
+   جديد أو استيراد جماعي. بما إن الشبكة صغيرة (64 خلية) والأمثلة
+   عادةً مئات مش ملايين، ده بياخد أجزاء من الثانية على الموبايل.
+   لو الأمثلة كتير (زي استيراد 3000 سطر) بياخد وقت أطول شوية، فبنـ
+   "يستريح" كل شوية Epochs عشان المتصفح يفضل رايق ويقدر يحدّث شريط
+   التقدّم لو onProgress موجودة. */
+async function retrainNetwork(onProgress){
   // الأمثلة اللي trust=0 (اتأكد إنها غلط بإيموجي سلبي) بتتشال تمامًا
   // من التدريب - العقل "بينساها" بدل ما يفضل يتمسك بيها.
   const trainable = examples.filter(ex=>ex.trust!==0);
-  if(labels.length===0 || trainable.length===0){ network=null; return; }
+  if(labels.length===0 || trainable.length===0){ network=null; if(onProgress) onProgress(1); return; }
   network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, labels.length]);
   const EPOCHS=180, LR=0.35;
   for(let e=0;e<EPOCHS;e++){
@@ -254,6 +265,9 @@ async function retrainNetwork(){
         network.trainStep([ex.vec], oneHot(ex.labelIndex, labels.length), LR);
       }
     }
+    if(onProgress) onProgress((e+1)/EPOCHS);
+    // نديّ فرصة للمتصفح يرسم شريط التقدّم بدل ما يهنج لحد ما يخلص
+    if(e % 4 === 0) await new Promise(r=>setTimeout(r, 0));
   }
 }
 
@@ -718,24 +732,45 @@ async function handleEmojiFeedback(text){
 // منطق الاستيراد نفسه، مستخرج في دالة مستقلة عشان نستخدمه سواء من
 // صندوق النص أو من ملف مرفوع مباشرة - في الحالتين بيتحفظ على
 // السيرفر (Firebase) على طول من غير أي خطوة يدوية زيادة.
-async function importLines(lines){
+// onProgress(ratio 0..1, phaseLabel) بتتنادى بانتظام عشان نوري
+// شريط تقدّم حقيقي بدل ما المستخدم يستنى من غير ما يعرف قربنا نخلص.
+async function importLines(lines, onProgress){
+  const report = (r, label)=>{ if(onProgress) onProgress(Math.min(1,r), label); };
+
+  report(0, 'بيقرأ السطور...');
   let added = 0, skipped = 0;
-  for(const line of lines){
+  for(let i=0;i<lines.length;i++){
+    const line = lines[i];
     const parts = line.split('|').map(p=>p.trim());
-    if(parts.length < 3 || !parts[0] || !parts[1] || !parts[2]){ skipped++; continue; }
-    const [catName, msg, resp] = parts;
-    let label = labels.find(l=>l.name===catName);
-    if(!label){
-      label = { index: labels.length, name: catName, responses: [] };
-      labels.push(label);
+    if(parts.length < 3 || !parts[0] || !parts[1] || !parts[2]){ skipped++; }
+    else{
+      const [catName, msg, resp] = parts;
+      let label = labels.find(l=>l.name===catName);
+      if(!label){
+        label = { index: labels.length, name: catName, responses: [] };
+        labels.push(label);
+      }
+      if(!label.responses.includes(resp)) label.responses.push(resp);
+      addExample(msg, label.index);
+      added++;
     }
-    if(!label.responses.includes(resp)) label.responses.push(resp);
-    addExample(msg, label.index);
-    added++;
+    // مرحلة إضافة الأمثلة = أول 20% من الشريط
+    if(i % 100 === 0){
+      report(0.2 * (i+1)/lines.length, 'بيضيف الأمثلة... (' + (i+1) + '/' + lines.length + ')');
+      await new Promise(r=>setTimeout(r,0));
+    }
   }
-  await retrainNetwork();
+  report(0.2, 'بيدرّب الشبكة العصبية...');
+
+  // مرحلة التدريب = من 20% لحد 95% من الشريط
+  await retrainNetwork(trainRatio=>{
+    report(0.2 + trainRatio*0.75, 'بيدرّب الشبكة العصبية... ' + Math.round(trainRatio*100) + '%');
+  });
+
+  report(0.97, 'بيحفظ على السيرفر...');
   await saveState(); // <-- هنا بيتحفظ فعليًا على السيرفر
   renderBrainGrid();
+  report(1, 'خلص ✓');
   return { added, skipped };
 }
 
@@ -748,6 +783,10 @@ function showBulkImportCard(){
     <label class="bulk-file-label" for="bulk-file-input">📎 ارفع ملف .txt (هيتحفظ على السيرفر أوتوماتيك من غير نسخ ولصق)</label>
     <input type="file" id="bulk-file-input" accept=".txt" style="display:none;">
     <textarea class="bulk-text" placeholder="تحية | اهلا | اهلا بيك&#10;تحية | السلام عليكم | وعليكم السلام&#10;وداع | مع السلامة | في أمان الله"></textarea>
+    <div class="bulk-progress-wrap">
+      <div class="bulk-progress-track"><div class="bulk-progress-fill"></div></div>
+      <div class="bulk-progress-text"><span class="bulk-progress-label">بيستعد...</span><span class="bulk-progress-pct">0%</span></div>
+    </div>
     <div class="bulk-row">
       <button class="bulk-cancel">إلغاء</button>
       <button class="bulk-confirm">استورد</button>
@@ -756,28 +795,42 @@ function showBulkImportCard(){
   chatEl.appendChild(card);
   scrollToBottom();
 
+  const progressWrap = card.querySelector('.bulk-progress-wrap');
+  const progressFill = card.querySelector('.bulk-progress-fill');
+  const progressLabel = card.querySelector('.bulk-progress-label');
+  const progressPct = card.querySelector('.bulk-progress-pct');
+  function showProgress(ratio, label){
+    progressWrap.classList.add('active');
+    progressFill.style.width = Math.round(ratio*100) + '%';
+    progressPct.textContent = Math.round(ratio*100) + '%';
+    if(label) progressLabel.textContent = label;
+    scrollToBottom();
+  }
+
   card.querySelector('.bulk-cancel').addEventListener('click', ()=>{ card.remove(); });
 
   // رفع ملف .txt: بيتقرأ من الجهاز، ولو الصيغة سليمة بيتستورد
-  // ويتحفظ على السيرفر فورًا من غير ما تدوس زرار "استورد" أصلاً.
+  // ويتحفظ على السيرفر فورًا من غير ما تدوس زرار "استورد" أصلاً،
+  // وشريط التقدّم بيوريك أنت وصلت فين بالظبط.
   const fileInput = card.querySelector('#bulk-file-input');
   fileInput.addEventListener('change', async ()=>{
     const file = fileInput.files[0];
     if(!file) return;
-    const label = card.querySelector('.bulk-file-label');
-    label.textContent = '⏳ بيقرأ الملف "' + file.name + '"...';
+    const fileLabel = card.querySelector('.bulk-file-label');
+    fileLabel.textContent = '⏳ بيقرأ الملف "' + file.name + '"...';
     try{
       const text = await file.text();
       card.querySelector('.bulk-text').value = text; // نوريه المحتوى اللي هيتستورد
       const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-      if(lines.length===0){ label.textContent='⚠️ الملف فاضي'; return; }
-      label.textContent = '⏳ بيستورد ويحفظ على السيرفر...';
-      const { added, skipped } = await importLines(lines);
+      if(lines.length===0){ fileLabel.textContent='⚠️ الملف فاضي'; return; }
+      fileLabel.textContent = '📎 ' + file.name + ' (' + lines.length + ' سطر)';
+      showProgress(0, 'بيبدأ الاستيراد...');
+      const { added, skipped } = await importLines(lines, showProgress);
       card.remove();
       addSystem('اتستوردت ' + added + ' مثال من "' + file.name + '" واتحفظت على السيرفر ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
     }catch(e){
       console.error(e);
-      label.textContent = '⚠️ تعذرت قراءة الملف';
+      fileLabel.textContent = '⚠️ تعذرت قراءة الملف';
     }
   });
 
@@ -786,10 +839,12 @@ function showBulkImportCard(){
     const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
     if(lines.length===0){ return; }
 
-    card.querySelector('.bulk-confirm').textContent = 'بيستورد وبيحفظ على السيرفر...';
+    card.querySelector('.bulk-confirm').textContent = 'بيستورد...';
     card.querySelector('.bulk-confirm').disabled = true;
+    card.querySelector('.bulk-cancel').disabled = true;
+    showProgress(0, 'بيبدأ الاستيراد...');
 
-    const { added, skipped } = await importLines(lines);
+    const { added, skipped } = await importLines(lines, showProgress);
     card.remove();
     addSystem('اتستوردت ' + added + ' مثال واتحفظت على السيرفر ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
   });
