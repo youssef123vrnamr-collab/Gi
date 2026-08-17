@@ -42,6 +42,8 @@
   .bulk-card .label{font-size:12px;color:var(--synapse);font-weight:700;}
   .bulk-card textarea{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px 11px;font-size:13px;font-family:'JetBrains Mono',monospace;min-height:140px;resize:vertical;direction:rtl;}
   .bulk-card .hint{font-size:11px;color:var(--text-dim);line-height:1.6;}
+  .bulk-file-label{align-self:flex-start;background:rgba(124,92,255,.14);border:1px dashed rgba(124,92,255,.5);color:var(--synapse);border-radius:9px;padding:8px 12px;font-size:12px;font-weight:700;}
+  .bulk-file-label:active{background:rgba(124,92,255,.22);}
   .bulk-row{display:flex;gap:8px;}
   .bulk-row button{flex:1;border:none;border-radius:9px;padding:10px;font-weight:700;font-size:13px;}
   .bulk-confirm{background:var(--synapse);color:#fff;}
@@ -713,12 +715,38 @@ async function handleEmojiFeedback(text){
   }
 }
 
+// منطق الاستيراد نفسه، مستخرج في دالة مستقلة عشان نستخدمه سواء من
+// صندوق النص أو من ملف مرفوع مباشرة - في الحالتين بيتحفظ على
+// السيرفر (Firebase) على طول من غير أي خطوة يدوية زيادة.
+async function importLines(lines){
+  let added = 0, skipped = 0;
+  for(const line of lines){
+    const parts = line.split('|').map(p=>p.trim());
+    if(parts.length < 3 || !parts[0] || !parts[1] || !parts[2]){ skipped++; continue; }
+    const [catName, msg, resp] = parts;
+    let label = labels.find(l=>l.name===catName);
+    if(!label){
+      label = { index: labels.length, name: catName, responses: [] };
+      labels.push(label);
+    }
+    if(!label.responses.includes(resp)) label.responses.push(resp);
+    addExample(msg, label.index);
+    added++;
+  }
+  await retrainNetwork();
+  await saveState(); // <-- هنا بيتحفظ فعليًا على السيرفر
+  renderBrainGrid();
+  return { added, skipped };
+}
+
 function showBulkImportCard(){
   const card = document.createElement('div');
   card.className='bulk-card';
   card.innerHTML = `
     <div class="label">استيراد جماعي - علّمه عشرات الأمثلة مرة واحدة</div>
     <div class="hint">كل سطر بالصيغة: <b class="mono">الفئة | الرسالة | الرد</b><br>لو الفئة موجودة قبل كده، الرسالة هتتضاف عليها كمثال جديد. مثال:<br><span class="mono">تحية | اهلا | اهلا بيك وسهلا</span></div>
+    <label class="bulk-file-label" for="bulk-file-input">📎 ارفع ملف .txt (هيتحفظ على السيرفر أوتوماتيك من غير نسخ ولصق)</label>
+    <input type="file" id="bulk-file-input" accept=".txt" style="display:none;">
     <textarea class="bulk-text" placeholder="تحية | اهلا | اهلا بيك&#10;تحية | السلام عليكم | وعليكم السلام&#10;وداع | مع السلامة | في أمان الله"></textarea>
     <div class="bulk-row">
       <button class="bulk-cancel">إلغاء</button>
@@ -729,36 +757,41 @@ function showBulkImportCard(){
   scrollToBottom();
 
   card.querySelector('.bulk-cancel').addEventListener('click', ()=>{ card.remove(); });
+
+  // رفع ملف .txt: بيتقرأ من الجهاز، ولو الصيغة سليمة بيتستورد
+  // ويتحفظ على السيرفر فورًا من غير ما تدوس زرار "استورد" أصلاً.
+  const fileInput = card.querySelector('#bulk-file-input');
+  fileInput.addEventListener('change', async ()=>{
+    const file = fileInput.files[0];
+    if(!file) return;
+    const label = card.querySelector('.bulk-file-label');
+    label.textContent = '⏳ بيقرأ الملف "' + file.name + '"...';
+    try{
+      const text = await file.text();
+      card.querySelector('.bulk-text').value = text; // نوريه المحتوى اللي هيتستورد
+      const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+      if(lines.length===0){ label.textContent='⚠️ الملف فاضي'; return; }
+      label.textContent = '⏳ بيستورد ويحفظ على السيرفر...';
+      const { added, skipped } = await importLines(lines);
+      card.remove();
+      addSystem('اتستوردت ' + added + ' مثال من "' + file.name + '" واتحفظت على السيرفر ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
+    }catch(e){
+      console.error(e);
+      label.textContent = '⚠️ تعذرت قراءة الملف';
+    }
+  });
+
   card.querySelector('.bulk-confirm').addEventListener('click', async ()=>{
     const raw = card.querySelector('.bulk-text').value;
     const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
     if(lines.length===0){ return; }
 
-    card.querySelector('.bulk-confirm').textContent = 'بيستورد...';
+    card.querySelector('.bulk-confirm').textContent = 'بيستورد وبيحفظ على السيرفر...';
     card.querySelector('.bulk-confirm').disabled = true;
 
-    let added = 0, skipped = 0;
-    for(const line of lines){
-      const parts = line.split('|').map(p=>p.trim());
-      if(parts.length < 3 || !parts[0] || !parts[1] || !parts[2]){ skipped++; continue; }
-      const [catName, msg, resp] = parts;
-      let label = labels.find(l=>l.name===catName);
-      if(!label){
-        label = { index: labels.length, name: catName, responses: [] };
-        labels.push(label);
-      }
-      if(!label.responses.includes(resp)) label.responses.push(resp);
-      addExample(msg, label.index);
-      added++;
-    }
-
-    card.querySelector('.bulk-confirm').textContent = 'بيدرّب الشبكة...';
-    await retrainNetwork();
-
-    await saveState();
-    renderBrainGrid();
+    const { added, skipped } = await importLines(lines);
     card.remove();
-    addSystem('اتستوردت ' + added + ' مثال ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
+    addSystem('اتستوردت ' + added + ' مثال واتحفظت على السيرفر ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
   });
 }
 
