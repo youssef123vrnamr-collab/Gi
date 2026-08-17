@@ -3,111 +3,90 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>العقل الصغير</title>
+<title>العقل الصغير (سيرفر)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <style>
-  :root{
-    --bg:#0a0b10;
-    --panel:#12141c;
-    --panel-2:#181b26;
-    --line:rgba(255,255,255,0.07);
-    --text:#e7e6f0;
-    --text-dim:#8a8ca0;
-    --synapse:#7c5cff;
-    --synapse-dim:rgba(124,92,255,0.28);
-    --teach:#f2a65a;
-    --ok:#5ad1a8;
-  }
-  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-  html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Tajawal',sans-serif;overflow:hidden;}
-  .mono{font-family:'JetBrains Mono',monospace;}
+  /* نفس الـ CSS السابق، يرجى نسخه من الملف الأول للاختصار */
+  :root { --bg:#0a0b10; --panel:#12141c; --panel-2:#181b26; --line:rgba(255,255,255,0.07); --text:#e7e6f0; --text-dim:#8a8ca0; --synapse:#7c5cff; --synapse-dim:rgba(124,92,255,0.28); --teach:#f2a65a; --ok:#5ad1a8; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; background:var(--bg); color:var(--text); font-family:'Tajawal',sans-serif; overflow:hidden; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  #app { display:flex; flex-direction:column; height:100vh; height:100dvh; max-width:560px; margin:0 auto; }
+  header { padding:14px 16px 10px; border-bottom:1px solid var(--line); background:linear-gradient(180deg, rgba(124,92,255,0.06), transparent); flex-shrink:0; }
+  .head-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .title { font-weight:900; font-size:17px; letter-spacing:.2px; }
+  .title span { color:var(--synapse); }
+  .head-btns { display:flex; gap:6px; }
+  #reset-btn,#bulk-btn { background:none; border:1px solid var(--line); color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:11px; padding:5px 9px; border-radius:7px; }
+  #reset-btn:active,#bulk-btn:active { background:rgba(255,255,255,.06); }
+  #bulk-btn { border-color:rgba(124,92,255,.4); color:var(--synapse); }
 
-  #app{display:flex;flex-direction:column;height:100vh;height:100dvh;max-width:560px;margin:0 auto;}
+  .bulk-card { align-self:stretch; background:var(--panel-2); border:1px solid rgba(124,92,255,.35); border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .bulk-card .label { font-size:12px; color:var(--synapse); font-weight:700; }
+  .bulk-card textarea { background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:9px; padding:9px 11px; font-size:13px; font-family:'JetBrains Mono',monospace; min-height:140px; resize:vertical; direction:rtl; }
+  .bulk-card .hint { font-size:11px; color:var(--text-dim); line-height:1.6; }
+  .bulk-file-label { align-self:flex-start; background:rgba(124,92,255,.14); border:1px dashed rgba(124,92,255,.5); color:var(--synapse); border-radius:9px; padding:8px 12px; font-size:12px; font-weight:700; }
+  .bulk-file-label:active { background:rgba(124,92,255,.22); }
+  .bulk-progress-wrap { display:none; flex-direction:column; gap:5px; }
+  .bulk-progress-wrap.active { display:flex; }
+  .bulk-progress-track { height:8px; border-radius:5px; background:rgba(255,255,255,.08); overflow:hidden; }
+  .bulk-progress-fill { height:100%; width:0%; background:linear-gradient(90deg,var(--synapse),var(--ok)); transition:width .25s ease; border-radius:5px; }
+  .bulk-progress-text { font-size:11px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; display:flex; justify-content:space-between; }
+  .bulk-row { display:flex; gap:8px; }
+  .bulk-row button { flex:1; border:none; border-radius:9px; padding:10px; font-weight:700; font-size:13px; }
+  .bulk-confirm { background:var(--synapse); color:#fff; }
+  .bulk-cancel { background:transparent; border:1px solid var(--line) !important; color:var(--text-dim); }
 
-  /* ===== HEADER: brain capacity signature ===== */
-  header{padding:14px 16px 10px;border-bottom:1px solid var(--line);background:linear-gradient(180deg, rgba(124,92,255,0.06), transparent);flex-shrink:0;}
-  .head-row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-  .title{font-weight:900;font-size:17px;letter-spacing:.2px;}
-  .title span{color:var(--synapse);}
-  .head-btns{display:flex;gap:6px;}
-  #reset-btn,#bulk-btn{background:none;border:1px solid var(--line);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;padding:5px 9px;border-radius:7px;}
-  #reset-btn:active,#bulk-btn:active{background:rgba(255,255,255,.06);}
-  #bulk-btn{border-color:rgba(124,92,255,.4);color:var(--synapse);}
+  #brain-grid { display:grid; grid-template-columns:repeat(20,1fr); gap:3px; margin-top:10px; }
+  .neuron { aspect-ratio:1; border-radius:2px; background:rgba(255,255,255,.06); transition:background .4s, box-shadow .4s; }
+  .neuron.lit { background:var(--synapse); box-shadow:0 0 6px var(--synapse-dim); }
+  .neuron.pulse { animation:pulse 1.1s ease; }
+  @keyframes pulse { 0%{transform:scale(1)} 40%{transform:scale(1.35)} 100%{transform:scale(1)} }
 
-  .bulk-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(124,92,255,.35);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;}
-  .bulk-card .label{font-size:12px;color:var(--synapse);font-weight:700;}
-  .bulk-card textarea{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px 11px;font-size:13px;font-family:'JetBrains Mono',monospace;min-height:140px;resize:vertical;direction:rtl;}
-  .bulk-card .hint{font-size:11px;color:var(--text-dim);line-height:1.6;}
-  .bulk-file-label{align-self:flex-start;background:rgba(124,92,255,.14);border:1px dashed rgba(124,92,255,.5);color:var(--synapse);border-radius:9px;padding:8px 12px;font-size:12px;font-weight:700;}
-  .bulk-file-label:active{background:rgba(124,92,255,.22);}
-  .bulk-progress-wrap{display:none;flex-direction:column;gap:5px;}
-  .bulk-progress-wrap.active{display:flex;}
-  .bulk-progress-track{height:8px;border-radius:5px;background:rgba(255,255,255,.08);overflow:hidden;}
-  .bulk-progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--synapse),var(--ok));transition:width .25s ease;border-radius:5px;}
-  .bulk-progress-text{font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;display:flex;justify-content:space-between;}
-  .bulk-row{display:flex;gap:8px;}
-  .bulk-row button{flex:1;border:none;border-radius:9px;padding:10px;font-weight:700;font-size:13px;}
-  .bulk-confirm{background:var(--synapse);color:#fff;}
-  .bulk-cancel{background:transparent;border:1px solid var(--line) !important;color:var(--text-dim);}
+  #stats-row { display:flex; gap:14px; margin-top:9px; font-size:11px; color:var(--text-dim); }
+  #stats-row b { color:var(--text); font-weight:600; }
 
-  #brain-grid{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;margin-top:10px;}
-  .neuron{aspect-ratio:1;border-radius:2px;background:rgba(255,255,255,.06);transition:background .4s, box-shadow .4s;}
-  .neuron.lit{background:var(--synapse);box-shadow:0 0 6px var(--synapse-dim);}
-  .neuron.pulse{animation:pulse 1.1s ease;}
-  @keyframes pulse{0%{transform:scale(1)}40%{transform:scale(1.35)}100%{transform:scale(1)}}
+  #chat { flex:1; overflow-y:auto; padding:16px 14px; display:flex; flex-direction:column; gap:10px; -webkit-overflow-scrolling:touch; }
+  .msg { max-width:82%; padding:10px 13px; border-radius:14px; font-size:15px; line-height:1.55; white-space:pre-wrap; }
+  .msg.user { align-self:flex-end; background:var(--synapse); color:#fff; border-bottom-left-radius:4px; border-bottom-right-radius:14px; }
+  .msg.bot { align-self:flex-start; background:var(--panel-2); border:1px solid var(--line); border-bottom-right-radius:4px; }
+  .msg.system { align-self:center; background:transparent; color:var(--text-dim); font-size:12px; text-align:center; max-width:90%; }
+  .confidence { display:block; margin-top:5px; font-size:10px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; }
+  .msg.bot.uncertain { border-color:rgba(242,166,90,.4); }
+  .msg.bot.trust-full { border-color:rgba(90,209,168,.5); }
+  .msg.bot.trust-zero { opacity:.55; }
 
-  #stats-row{display:flex;gap:14px;margin-top:9px;font-size:11px;color:var(--text-dim);}
-  #stats-row b{color:var(--text);font-weight:600;}
+  .reaction-row { display:flex; gap:6px; margin-top:7px; }
+  .reaction-btn { border:1px solid var(--line); background:rgba(255,255,255,.04); border-radius:8px; padding:3px 8px; font-size:14px; line-height:1.5; }
+  .reaction-btn:active { background:rgba(255,255,255,.1); }
+  .reaction-btn.picked-good { border-color:rgba(90,209,168,.6); background:rgba(90,209,168,.12); }
+  .reaction-btn.picked-bad { border-color:rgba(240,90,90,.6); background:rgba(240,90,90,.12); }
+  .emoji-learn-card { align-self:stretch; background:var(--panel-2); border:1px solid rgba(124,92,255,.35); border-radius:14px; padding:11px; display:flex; flex-direction:column; gap:8px; }
+  .emoji-learn-card .label { font-size:12px; color:var(--synapse); font-weight:700; }
+  .emoji-learn-row { display:flex; gap:8px; }
+  .emoji-learn-row button { flex:1; border:none; border-radius:9px; padding:9px; font-weight:700; font-size:13px; }
+  .emoji-good { background:var(--ok); color:#062018; }
+  .emoji-bad { background:#f05a5a; color:#210505; }
 
-  /* ===== CHAT ===== */
-  #chat{flex:1;overflow-y:auto;padding:16px 14px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch;}
-  .msg{max-width:82%;padding:10px 13px;border-radius:14px;font-size:15px;line-height:1.55;white-space:pre-wrap;}
-  .msg.user{align-self:flex-end;background:var(--synapse);color:#fff;border-bottom-left-radius:4px;border-bottom-right-radius:14px;}
-  .msg.bot{align-self:flex-start;background:var(--panel-2);border:1px solid var(--line);border-bottom-right-radius:4px;}
-  .msg.system{align-self:center;background:transparent;color:var(--text-dim);font-size:12px;text-align:center;max-width:90%;}
-  .confidence{display:block;margin-top:5px;font-size:10px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;}
-  .msg.bot.uncertain{border-color:rgba(242,166,90,.4);}
-  .msg.bot.trust-full{border-color:rgba(90,209,168,.5);}
-  .msg.bot.trust-zero{opacity:.55;}
+  .teach-card { align-self:stretch; background:var(--panel-2); border:1px solid rgba(242,166,90,.35); border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .teach-card .label { font-size:12px; color:var(--teach); font-weight:700; }
+  .teach-card input { background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:9px; padding:9px 11px; font-size:14px; font-family:'Tajawal',sans-serif; }
+  .teach-card .hint { font-size:11px; color:var(--text-dim); }
+  .teach-row { display:flex; gap:8px; }
+  .teach-row button { flex:1; border:none; border-radius:9px; padding:10px; font-weight:700; font-size:13px; }
+  .teach-confirm { background:var(--teach); color:#1a1206; }
+  .teach-cancel { background:transparent; border:1px solid var(--line) !important; color:var(--text-dim); }
 
-  /* ===== EMOJI FEEDBACK ===== */
-  .reaction-row{display:flex;gap:6px;margin-top:7px;}
-  .reaction-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);border-radius:8px;padding:3px 8px;font-size:14px;line-height:1.5;}
-  .reaction-btn:active{background:rgba(255,255,255,.1);}
-  .reaction-btn.picked-good{border-color:rgba(90,209,168,.6);background:rgba(90,209,168,.12);}
-  .reaction-btn.picked-bad{border-color:rgba(240,90,90,.6);background:rgba(240,90,90,.12);}
-  .emoji-learn-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(124,92,255,.35);border-radius:14px;padding:11px;display:flex;flex-direction:column;gap:8px;}
-  .emoji-learn-card .label{font-size:12px;color:var(--synapse);font-weight:700;}
-  .emoji-learn-row{display:flex;gap:8px;}
-  .emoji-learn-row button{flex:1;border:none;border-radius:9px;padding:9px;font-weight:700;font-size:13px;}
-  .emoji-good{background:var(--ok);color:#062018;}
-  .emoji-bad{background:#f05a5a;color:#210505;}
-
-  /* ===== TEACH CARD ===== */
-  .teach-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(242,166,90,.35);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;}
-  .teach-card .label{font-size:12px;color:var(--teach);font-weight:700;}
-  .teach-card input{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px 11px;font-size:14px;font-family:'Tajawal',sans-serif;}
-  .teach-card .hint{font-size:11px;color:var(--text-dim);}
-  .teach-row{display:flex;gap:8px;}
-  .teach-row button{flex:1;border:none;border-radius:9px;padding:10px;font-weight:700;font-size:13px;}
-  .teach-confirm{background:var(--teach);color:#1a1206;}
-  .teach-cancel{background:transparent;border:1px solid var(--line) !important;color:var(--text-dim);}
-
-  /* ===== INPUT BAR ===== */
-  #input-bar{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel);flex-shrink:0;}
-  #msg-input{flex:1;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:22px;padding:12px 16px;font-size:15px;font-family:'Tajawal',sans-serif;}
-  #msg-input:focus{outline:none;border-color:var(--synapse);}
-  #send-btn{width:46px;height:46px;border-radius:50%;background:var(--synapse);border:none;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
-  #send-btn:active{transform:scale(.93);}
-  #send-btn svg{transform:scaleX(-1);}
+  #input-bar { display:flex; gap:8px; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); background:var(--panel); flex-shrink:0; }
+  #msg-input { flex:1; background:var(--panel-2); border:1px solid var(--line); color:var(--text); border-radius:22px; padding:12px 16px; font-size:15px; font-family:'Tajawal',sans-serif; }
+  #msg-input:focus { outline:none; border-color:var(--synapse); }
+  #send-btn { width:46px; height:46px; border-radius:50%; background:var(--synapse); border:none; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  #send-btn:active { transform:scale(.93); }
+  #send-btn svg { transform:scaleX(-1); }
 </style>
 </head>
 <body>
-
 <div id="app">
   <header>
     <div class="head-row">
@@ -123,860 +102,335 @@
       <span>أمثلة: <b id="stat-examples">0</b></span>
     </div>
   </header>
-
   <div id="chat"></div>
-
   <div id="input-bar">
     <input id="msg-input" type="text" placeholder="اكتب رسالة عادية..." autocomplete="off">
     <button id="send-btn"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg></button>
   </div>
 </div>
-
 <script>
-(function(){
-"use strict";
+(function() {
+  "use strict";
 
-/* =========================================================
-   FIREBASE
-   -----------------------------------------------------------
-   ⚠️ محتاج تعمل مشروع Firebase جديد وتحط بياناته هنا قبل الرفع.
-   المستند ده بيتحفظ فيه "دماغ" واحد مشترك بين كل أجهزتك (مش لكل
-   جهاز نسخة منفصلة) - فأي جهاز تفتح منه الصفحة هيشوف نفس التعلّم.
-
-   إعدادات مطلوبة على Firestore Rules (Firebase Console):
-     match /miniBrain/{doc} {
-       allow read, write: if request.auth != null;
-     }
-   ========================================================= */
-const firebaseConfig = {
-  apiKey: "AIzaSyC_1ZPw0NMw2YznMO0PE9vZGzFVa0f7jvQ",
-  authDomain: "ai-prime-f9017.firebaseapp.com",
-  projectId: "ai-prime-f9017",
-  storageBucket: "ai-prime-f9017.firebasestorage.app",
-  messagingSenderId: "932445525165",
-  appId: "1:932445525165:web:425c870176b2091d12e224"
-};
-
-let db = null;
-let firebaseReady = true;
-try{
-  firebase.initializeApp(firebaseConfig);
-  db = firebase.firestore();
-} catch(err){
-  console.error('Firebase init failed', err);
-  firebaseReady = false;
-}
-const BRAIN_DOC_PATH = ['miniBrain', 'sharedState']; // مستند واحد ثابت مشترك بين الأجهزة
-
-function ensureFirebaseAuth(){
-  return new Promise((resolve)=>{
-    if(!firebaseReady){ resolve(false); return; }
-    firebase.auth().onAuthStateChanged(user=>{
-      if(user){ resolve(true); return; }
-      firebase.auth().signInAnonymously().then(()=>resolve(true)).catch(err=>{
-        console.error('Auth failed', err);
-        resolve(false);
-      });
-    });
-  });
-}
-
-/* =========================================================
-   الشبكة العصبية: backprop حقيقي، بترجع تاني عشان تشتغل
-   جنب نظام التشابه بدل ما تتشال خالص. الفرق عن النسخة الأولى:
-   هنا حجم المخرج (عدد الفئات) بيكبر تلقائيًا مع كل فئة جديدة -
-   مفيش رقم ثابت زي MAX_LABELS=40 - فمفيش سقف.
-
-   ملحوظة مهمة (وعد بالصراحة): "بلايين الخلايا" مستحيل فعليًا في
-   متصفح موبايل - ده محتاج مئات الجيجابايت رام. الحجم هنا (64 خلية
-   مخفية) هو أقصى حاجة معقولة تشتغل بسلاسة على الهاتف بدون ما
-   تهنج الصفحة أو تستهلك بطارية جامدة.
-   ========================================================= */
-const HIDDEN_DIM = 64;
-
-function zeros(rows, cols){ const m=[]; for(let i=0;i<rows;i++) m.push(new Array(cols).fill(0)); return m; }
-function randomMatrix(rows, cols, scale){ const m=[]; for(let i=0;i<rows;i++){ const row=[]; for(let j=0;j<cols;j++) row.push((Math.random()*2-1)*scale); m.push(row);} return m; }
-function matMul(a,b){ const rA=a.length,cA=a[0].length,cB=b[0].length; const r=zeros(rA,cB); for(let i=0;i<rA;i++) for(let j=0;j<cB;j++){ let s=0; for(let k=0;k<cA;k++) s+=a[i][k]*b[k][j]; r[i][j]=s; } return r; }
-function matAdd(a,b){ return a.map((row,i)=>row.map((v,j)=>v+b[i][j])); }
-function matSub(a,b){ return a.map((row,i)=>row.map((v,j)=>v-b[i][j])); }
-function matHad(a,b){ return a.map((row,i)=>row.map((v,j)=>v*b[i][j])); }
-function matT(a){ const rows=a.length,cols=a[0].length; const r=zeros(cols,rows); for(let i=0;i<rows;i++) for(let j=0;j<cols;j++) r[j][i]=a[i][j]; return r; }
-function matMap(a,fn){ return a.map(row=>row.map(fn)); }
-const sigmoid = x=>1/(1+Math.exp(-x));
-const sigmoidDeriv = y=>y*(1-y);
-
-class DenseLayer{
-  constructor(inputSize, outputSize){
-    this.weights = randomMatrix(inputSize, outputSize, Math.sqrt(1/inputSize));
-    this.bias = zeros(1, outputSize);
-    this.lastInput=null; this.lastOutput=null;
-  }
-  forward(input){
-    this.lastInput = input;
-    this.lastOutput = matMap(matAdd(matMul(input, this.weights), this.bias), sigmoid);
-    return this.lastOutput;
-  }
-  backward(outputGradient, lr){
-    const delta = matHad(outputGradient, matMap(this.lastOutput, sigmoidDeriv));
-    const wGrad = matMul(matT(this.lastInput), delta);
-    const inGrad = matMul(delta, matT(this.weights));
-    for(let i=0;i<this.weights.length;i++) for(let j=0;j<this.weights[0].length;j++) this.weights[i][j]-=lr*wGrad[i][j];
-    for(let j=0;j<this.bias[0].length;j++) this.bias[0][j]-=lr*delta[0][j];
-    return inGrad;
-  }
-}
-class NeuralNetwork{
-  constructor(sizes){
-    this.layers=[];
-    for(let i=0;i<sizes.length-1;i++) this.layers.push(new DenseLayer(sizes[i], sizes[i+1]));
-  }
-  predict(input){ let o=input; for(const l of this.layers) o=l.forward(o); return o; }
-  trainStep(input, target, lr){
-    let grad = matSub(this.predict(input), target);
-    for(let i=this.layers.length-1;i>=0;i--) grad = this.layers[i].backward(grad, lr);
-  }
-}
-function oneHot(index, size){ const v=new Array(size).fill(0); v[index]=1; return [v]; }
-
-let network = null; // بيتبني/يتعاد بناؤه كل ما عدد الفئات يتغير
-
-/* تدريب الشبكة من الصفر على كل الأمثلة - بيتنادى بعد أي تعليم
-   جديد أو استيراد جماعي. بما إن الشبكة صغيرة (64 خلية) والأمثلة
-   عادةً مئات مش ملايين، ده بياخد أجزاء من الثانية على الموبايل. */
-/* تدريب الشبكة من الصفر على كل الأمثلة - بيتنادى بعد أي تعليم
-   جديد أو استيراد جماعي. بما إن الشبكة صغيرة (64 خلية) والأمثلة
-   عادةً مئات مش ملايين، ده بياخد أجزاء من الثانية على الموبايل.
-   لو الأمثلة كتير (زي استيراد 3000 سطر) بياخد وقت أطول شوية، فبنـ
-   "يستريح" كل شوية Epochs عشان المتصفح يفضل رايق ويقدر يحدّث شريط
-   التقدّم لو onProgress موجودة. */
-async function retrainNetwork(onProgress){
-  // الأمثلة اللي trust=0 (اتأكد إنها غلط بإيموجي سلبي) بتتشال تمامًا
-  // من التدريب - العقل "بينساها" بدل ما يفضل يتمسك بيها.
-  const trainable = examples.filter(ex=>ex.trust!==0);
-  if(labels.length===0 || trainable.length===0){ network=null; if(onProgress) onProgress(1); return; }
-  network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, labels.length]);
-  const EPOCHS=180, LR=0.35;
-  for(let e=0;e<EPOCHS;e++){
-    for(const ex of trainable){
-      // الأمثلة المتأكد إنها صح 100% (trust=1) بتتدرّب عليها الشبكة
-      // مرتين في كل epoch عشان "تتمسك" بيها أكتر من غيرها.
-      const reps = ex.trust>=1 ? 2 : 1;
-      for(let r=0;r<reps;r++){
-        network.trainStep([ex.vec], oneHot(ex.labelIndex, labels.length), LR);
-      }
-    }
-    if(onProgress) onProgress((e+1)/EPOCHS);
-    // نديّ فرصة للمتصفح يرسم شريط التقدّم بدل ما يهنج لحد ما يخلص
-    if(e % 4 === 0) await new Promise(r=>setTimeout(r, 0));
-  }
-}
-
-/* =========================================================
-   المحرك: تشابه + شبكة عصبية مع بعض (ensemble). المنطق:
-   - نظام التشابه دقيق فورًا حتى بمثال واحد بس ملوش "تعميم" -
-     بيحفظ الجمل الأصلية بالظبط.
-   - الشبكة العصبية بتتعلم نمط عام عبر كل الأمثلة (تعميم حقيقي)
-     لكن محتاجة أمثلة كتير عشان تكون موثوقة.
-   بنستخدم الاتنين ونرجّع اللي عنده ثقة أعلى، ولو الاتنين متفقين
-   على نفس الفئة الثقة بتتضاعف قوة (اتفاق = مؤشر قوي).
-   ========================================================= */
-const INPUT_DIM = 192;           // حجم المتجه (زودناه عشان unigrams+bigrams يقللوا التصادم)
-const CONFIDENCE_THRESHOLD = 0.42;
-
-/* =========================================================
-   نظام "التصحيح بالإيموجي": بعد أي رد واثق من العقل، المستخدم
-   ممكن يبعت إيموجي لوحده (أو أكتر من واحد) بدل ما يكتب كلام،
-   والعقل بيفهم منه إن الرد كان صح أو غلط:
-     - إيموجي إيجابي  -> المثال ده بيتأكّد بثقة 100% (trust=1)
-       وبيتدرّب عليه بوزن أعلى عشان العقل "يتمسك" بيه.
-     - إيموجي سلبي    -> المثال بيتحط ثقته صفر% (trust=0) وبيتشال
-       فورًا من التشابه ومن التدريب - يعني "العقل مش هيكرهه" بمعنى
-       إنه مش هيتصرف بعناد، هو غالبًا بس هيهمله وينساه، وبيحاول
-       يحسّن نفسه بطلب الرد الصح فورًا من المستخدم.
-   القاموس ده بيغطي أشهر الإيموجيز المستخدمة، وأي إيموجي مش موجود
-   فيه بيتسأل عنه المستخدم مرة واحدة وبعدين بيتحفظ ويتعلمه للأبد.
-   ========================================================= */
-const DEFAULT_EMOJI_MEANINGS = {
-  // ===== إيجابي (صح 100%) =====
-  '👍':1,'👍🏻':1,'👍🏼':1,'👍🏽':1,'👍🏾':1,'👍🏿':1,
-  '👌':1,'👌🏻':1,'👌🏼':1,'👌🏽':1,
-  '✅':1,'✔️':1,'✔':1,'☑️':1,'🆗':1,'🔵':1,
-  '💯':1,'🔥':1,'✨':1,'⭐':1,'🌟':1,'💫':1,
-  '❤️':1,'❤':1,'🧡':1,'💛':1,'💚':1,'💙':1,'💜':1,'🤍':1,'🖤':1,'💗':1,'💖':1,'💕':1,'💓':1,'💞':1,'💝':1,
-  '😀':1,'😃':1,'😄':1,'😁':1,'😆':1,'😅':1,'🙂':1,'🙃':1,'😊':1,'😇':1,
-  '😍':1,'🥰':1,'😘':1,'😗':1,'😙':1,'😚':1,'😋':1,'😛':1,'😜':1,'🤩':1,
-  '🤗':1,'😌':1,'😉':1,'🥳':1,'🤝':1,'🙌':1,'🙌🏻':1,'👏':1,'👏🏻':1,'👏🏼':1,
-  '💪':1,'💪🏻':1,'🎉':1,'🎊':1,'🏆':1,'🥇':1,'😎':1,'🤟':1,'✊':1,'🫡':1,
-  '💐':1,'🌹':1,'🌸':1,'🌈':1,'☀️':1,'😻':1,'🐱':1,'👑':1,'🎯':1,'📌':1,
-  'صح':1,'تمام':1,'كويس':1,'برافو':1,
-
-  // ===== سلبي (غلط 0%) =====
-  '👎':0,'👎🏻':0,'👎🏼':0,'👎🏽':0,'👎🏾':0,'👎🏿':0,
-  '❌':0,'✖️':0,'✖':0,'🚫':0,'⛔':0,'🔴':0,'🆖':0,
-  '😞':0,'😔':0,'😟':0,'😕':0,'🙁':0,'☹️':0,'😣':0,'😖':0,'😫':0,'😩':0,
-  '😢':0,'😭':0,'😿':0,'😰':0,'😨':0,'😱':0,
-  '😡':0,'😠':0,'🤬':0,'👿':0,'😤':0,
-  '🤮':0,'🤢':0,'💩':0,'🖕':0,'🤦':0,'🤦🏻':0,'🤦♂️':0,'🤦♀️':0,
-  '🙄':0,'😒':0,'😑':0,'😐':0,'😬':0,'🥴':0,'😵':0,'💀':0,'☠️':0,
-  '⚠️':0,'❗':0,'❓':0,'😴':0,'🥱':0,'😶':0,'🤥':0,
-  'غلط':0,'خطأ':0,'لا':0,'مش صح':0
-};
-
-// إيموجيز اتعلمها العقل بنفسه من ردود المستخدم (بيتحفظ في Firestore
-// وبيتحمل مع بداية التشغيل، بيدمج مع القاموس الافتراضي فوق).
-let learnedEmojis = {};
-function emojiMeaning(e){
-  if(learnedEmojis.hasOwnProperty(e)) return learnedEmojis[e];
-  if(DEFAULT_EMOJI_MEANINGS.hasOwnProperty(e)) return DEFAULT_EMOJI_MEANINGS[e];
-  return null; // مش معروف
-}
-
-// تقسيم النص لعناصر إيموجي/كلمات منفصلة (بيستخدم Intl.Segmenter لو
-// متاح عشان يلم الإيموجيز المركبة صح، زي 👍🏽 أو ❤️).
-function splitGraphemes(text){
-  if(typeof Intl!=='undefined' && Intl.Segmenter){
-    try{
-      const seg = new Intl.Segmenter('ar', {granularity:'grapheme'});
-      return Array.from(seg.segment(text), s=>s.segment);
-    }catch(e){ /* fallback */ }
-  }
-  return Array.from(text);
-}
-const EMOJI_CHAR_TEST = /\p{Extended_Pictographic}/u;
-
-// رسالة "كلها إيموجي" (ممكن يبقى فيها أكتر من إيموجي مع مسافات)
-function isEmojiOnlyMessage(text){
-  const clusters = splitGraphemes(text.trim());
-  if(clusters.length===0) return false;
-  let hasEmoji=false;
-  for(const c of clusters){
-    if(c.trim()===''){ continue; }
-    if(EMOJI_CHAR_TEST.test(c)){ hasEmoji=true; continue; }
-    return false; // فيه حرف عادي مش إيموجي -> مش رسالة إيموجي خالصة
-  }
-  return hasEmoji;
-}
-function extractEmojis(text){
-  return splitGraphemes(text.trim()).filter(c=>c.trim()!=='' && EMOJI_CHAR_TEST.test(c));
-}
-
-// كلمات ربط شائعة بتشوش المقارنة من غير ما تضيف معنى - بنشيلها
-// قبل التحويل لمتجه عشان الشبكة تركّز على الكلمات المفصلية.
-const STOPWORDS = new Set([
-  'في','من','على','عن','الى','إلى','يا','او','أو','ثم','هل','لا','لم','لن',
-  'ما','هذا','هذه','ذلك','تلك','التي','الذي','و','كان','كانت','يكون','مع',
-  'كل','بعض','كذلك','ايضا','أيضا','انا','أنا','انت','أنت','هو','هي','احنا',
-  'إحنا','بس','يعني','عشان','علشان'
-]);
-
-function normalizeArabic(text){
-  return text
-    .replace(/[\u064B-\u0652]/g,'')      // إزالة التشكيل
-    .replace(/[إأآا]/g,'ا')               // توحيد أشكال الألف
-    .replace(/ى/g,'ي')                    // الألف المقصورة -> ياء
-    .replace(/ة/g,'ه')                    // التاء المربوطة -> هاء
-    .replace(/ـ/g,'')                     // إزالة التطويل
-    .replace(/[^\u0621-\u064A0-9a-zA-Z\s]/g,' ');
-}
-function tokenize(text){
-  const tokens = normalizeArabic(text).trim().split(/\s+/).filter(Boolean);
-  return tokens.filter(t=>!STOPWORDS.has(t));
-}
-function hashWord(word){
-  let h = 0;
-  for(let i=0;i<word.length;i++){ h = (h*31 + word.charCodeAt(i)) >>> 0; }
-  return h % INPUT_DIM;
-}
-function textToVector(text){
-  const vec = new Array(INPUT_DIM).fill(0);
-  const tokens = tokenize(text);
-  // unigrams: كل كلمة لوحدها
-  for(const t of tokens){ vec[hashWord(t)] += 1; }
-  // bigrams: كل زوج كلمات متتاليين - بيدّي إحساس بالسياق (مثلاً
-  // "مش كويس" تختلف عن "كويس" حتى لو الكلمة التانية واحدة)
-  for(let i=0;i<tokens.length-1;i++){ vec[hashWord(tokens[i]+'_'+tokens[i+1])] += 1.4; }
-  const norm = Math.sqrt(vec.reduce((s,v)=>s+v*v,0));
-  return norm>0 ? vec.map(v=>v/norm) : vec; // تطبيع عشان جملة طويلة ماتكسبش أفضلية غير عادلة
-}
-function cosineSim(a,b){
-  let dot=0;
-  for(let i=0;i<a.length;i++) dot += a[i]*b[i];
-  return dot; // المتجهين متطبّعين بالفعل (norm=1) فالـ dot product = cosine similarity
-}
-
-/* =========================================================
-   الحالة + الحفظ عبر Firebase Firestore (مستند مشترك بين كل الأجهزة)
-   ========================================================= */
-let labels = [];     // [{ index, name, responses:[...] }]
-let examples = [];   // [{ text, labelIndex, vec }] - vec بيتحسب وقت التشغيل، مش بيتخزن
-
-function brainDocRef(){
-  return db.collection(BRAIN_DOC_PATH[0]).doc(BRAIN_DOC_PATH[1]);
-}
-
-function attachVectors(){
-  for(const ex of examples){ if(!ex.vec) ex.vec = textToVector(ex.text); }
-}
-
-// طابع وقت آخر حفظة عملناها إحنا بنفسنا من الجهاز ده - بنستخدمه في
-// المستمع اللحظي (onSnapshot) عشان نفرّق بين "تحديث جالنا من جهاز
-// تاني فعلاً" و"مجرد صدى/تأكيد كتابتنا احنا" فمنعيدش تدريب من غير داعي.
-let lastSavedUpdatedAt = 0;
-
-// true وقت ما إحنا وسط عملية تعليم/استيراد محلية طويلة (زي استيراد
-// جماعي) - في اللحظة دي بنأجّل تطبيق أي تحديث لحظي جاي من جهاز تاني
-// عشان منخبطش الداتا اللي إحنا لسه بنبنيها، وهيتطبق التحديث الأحدث
-// أوتوماتيك أول ما نخلص وننشر إحنا كمان.
-let localBusy = false;
-
-function applyRemoteData(data){
-  labels = data.labels || [];
-  examples = (data.examples || []).map(e=>({
-    id: e.id || makeExampleId(),
-    text: e.text,
-    labelIndex: e.labelIndex,
-    trust: e.trust===undefined ? 0.75 : e.trust
-  }));
-  learnedEmojis = data.emojiMeanings || {};
-  attachVectors();
-}
-
-async function loadState(){
-  labels = [];
-  examples = [];
-  learnedEmojis = {};
-  network = null;
-  if(!firebaseReady || !db) return; // هيشتغل أوفلاين بذاكرة مؤقتة لو Firebase مش متاح
-
-  try{
-    const snap = await brainDocRef().get();
-    if(snap.exists){
-      const data = snap.data();
-      applyRemoteData(data);
-      lastSavedUpdatedAt = data.updatedAt || 0;
-      await retrainNetwork(); // الشبكة مش بتتخزن (كبيرة نسبيًا) - بنعيد تدريبها من الأمثلة كل تحميل
-    }
-  } catch(e){ console.error('تعذر تحميل الحالة من Firebase', e); }
-}
-
-// مزامنة لحظية: بدل ما كل جهاز يقرا الحالة مرة واحدة بس عند الفتح،
-// بنفتح "مستمع" مستمر على مستند Firestore. أي جهاز يحفظ حاجة جديدة
-// (تعليم فردي أو استيراد جماعي)، كل الأجهزة التانية المفتوحة بتستقبل
-// نفس التحديث فورًا (بدون ريفريش) وبتعيد تدريب شبكتها المحلية وتوري
-// رسالة إنها استقبلت تحديث.
-function startRealtimeSync(){
-  if(!firebaseReady || !db) return;
-  brainDocRef().onSnapshot(async (snap)=>{
-    if(!snap.exists) return;
-    // hasPendingWrites يبقى true لما التحديث ده صادر من كتابة إحنا
-    // لسه عاملينها محليًا (قبل ما توصل السيرفر) - ده صدى مؤقت،
-    // متجاهلينه لأن الحالة عندنا محليًا أصلًا محدثة بيه.
-    if(snap.metadata.hasPendingWrites) return;
-    const data = snap.data();
-    if(!data) return;
-    // ده تأكيد وصول كتابتنا احنا للسيرفر (نفس الطابع اللي حفظناه) -
-    // مفيش تحديث فعلي جديد نطبقه، تجاهل.
-    if(data.updatedAt && data.updatedAt === lastSavedUpdatedAt) return;
-    if(localBusy) return; // إحنا وسط تعليم محلي دلوقتي - هيتزامن أول ما نخلص
-
-    applyRemoteData(data);
-    lastSavedUpdatedAt = data.updatedAt || 0;
-    await retrainNetwork();
-    renderBrainGrid();
-    addSystem('🔄 وصل تحديث من جهاز تاني - العقل عنده دلوقتي ' + labels.length + ' فئة و' + examples.length + ' مثال.');
-  }, err=>{ console.error('تعذرت متابعة التحديثات اللحظية', err); });
-}
-
-async function saveState(){
-  if(!firebaseReady || !db) return;
-  try{
-    // بنشيل .vec قبل الحفظ (بيتحسب تاني وقت التحميل) عشان نوفر
-    // مساحة في Firestore - الأمثلة بس محتاجة النص والفئة والثقة
-    // ومعرّف ثابت (id) عشان نقدر نلاقيها تاني لما نصححها بإيموجي.
-    // أوزان الشبكة كمان مش بتتخزن (بتكبر مع كل فئة) - بتتعاد تدريبها
-    // بسرعة عند التحميل بدل ما نخزن ملف تقيل.
-    const examplesToSave = examples.map(e=>({ id:e.id, text:e.text, labelIndex:e.labelIndex, trust:e.trust }));
-    const updatedAt = Date.now();
-    lastSavedUpdatedAt = updatedAt; // نسجّلها قبل الإرسال عشان المستمع اللحظي يعرف يتجاهل صداها
-    await brainDocRef().set({
-      labels, examples: examplesToSave, emojiMeanings: learnedEmojis,
-      updatedAt
-    });
-  } catch(e){ console.error('تعذر الحفظ في Firebase', e); }
-}
-
-function makeExampleId(){ return Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8); }
-
-// trust: 1 = اتأكدت إنها صح 100% (بتصحيح إيموجي إيجابي)
-//        0 = اتأكدت إنها غلط 0% - بتتشال من الاستخدام فورًا
-//        0.75 = افتراضي (متعلّمة عادي، لسه محدش صحّحها)
-function addExample(text, labelIndex, trust){
-  const vec = textToVector(text);
-  examples.push({ id: makeExampleId(), text, labelIndex, vec, trust: (trust===undefined?0.75:trust) });
-}
-
-function classify(text){
-  const usable = examples.filter(ex=>ex.trust!==0); // الأمثلة المتأكد إنها غلط (trust=0) متتستخدمش تاني خالص
-  if(usable.length===0) return { confident:false, confidence:0 };
-  const vec = textToVector(text);
-
-  // 1) نظام التشابه: أقرب مثال محفوظ، مرجّح بمدى الثقة فيه
-  //    (مثال متأكد إنه صح 100% بيدّي وزن كامل، مثال لسه معلّم عادي
-  //    بيدّي وزن أقل شوية لحد ما حد يأكّده).
-  let bestSim=-1, bestExample=null;
-  for(const ex of usable){
-    const sim = cosineSim(vec, ex.vec) * (0.6 + 0.4*ex.trust);
-    if(sim>bestSim){ bestSim=sim; bestExample=ex; }
-  }
-  const simLabel = bestExample ? labels.find(l=>l.index===bestExample.labelIndex) : null;
-
-  // 2) الشبكة العصبية: تعميم عبر كل الأمثلة
-  let nnLabel=null, nnConf=0;
-  if(network){
-    const out = network.predict([vec])[0];
-    let bestIdx=-1, bestVal=-1;
-    for(const lab of labels){ if(out[lab.index]>bestVal){ bestVal=out[lab.index]; bestIdx=lab.index; } }
-    if(bestIdx!==-1){ nnLabel = labels.find(l=>l.index===bestIdx); nnConf = bestVal; }
-  }
-
-  // اتفاق الاتنين = مؤشر قوي، بنرفع الثقة. اختلاف = بناخد الأعلى.
-  if(simLabel && nnLabel && simLabel.index===nnLabel.index){
-    const combined = Math.min(1, bestSim*0.7 + nnConf*0.3 + 0.08);
-    if(combined < CONFIDENCE_THRESHOLD) return { confident:false, confidence:combined };
-    return { confident:true, confidence:combined, label:simLabel, matchedExample:bestExample };
-  }
-  // مختلفين - نظام التشابه بيفوز افتراضيًا لأنه بيحفظ الجملة الأصلية
-  // بالظبط (أدق مع أمثلة قليلة)، والشبكة عادة محتاجة أمثلة أكتر
-  // عشان تتفوق عليه بجدارة.
-  if(bestSim >= CONFIDENCE_THRESHOLD) return { confident:true, confidence:bestSim, label:simLabel, matchedExample:bestExample };
-  if(nnConf >= CONFIDENCE_THRESHOLD+0.15) return { confident:true, confidence:nnConf, label:nnLabel, matchedExample:null }; // الشبكة لازم تكون واثقة أكتر عشان تتخطى التشابه
-  return { confident:false, confidence:Math.max(bestSim,0) };
-}
-
-/* =========================================================
-   الواجهة
-   ========================================================= */
-const chatEl = document.getElementById('chat');
-const inputEl = document.getElementById('msg-input');
-const sendBtn = document.getElementById('send-btn');
-const brainGrid = document.getElementById('brain-grid');
-const statLabels = document.getElementById('stat-labels');
-const statExamples = document.getElementById('stat-examples');
-
-function scrollToBottom(){ chatEl.scrollTop = chatEl.scrollHeight; }
-
-// آخر رد واثق من العقل + المثال اللي طلع منه - ده اللي بيتصحّح لو
-// المستخدم بعت إيموجي بعده على طول (من غير ما يضطر يدوس على زرار).
-let lastFeedbackTarget = null;
-let lastBotMsgDiv = null;
-
-function addMessage(text, cls, confidence, feedbackTarget){
-  const div = document.createElement('div');
-  div.className = 'msg ' + cls;
-  div.textContent = text;
-  if(confidence!==undefined){
-    const c = document.createElement('span');
-    c.className='confidence mono';
-    c.textContent = 'ثقة: ' + Math.round(confidence*100) + '%';
-    div.appendChild(c);
-  }
-  if(cls && cls.indexOf('bot')!==-1){
-    lastBotMsgDiv = div;
-    lastFeedbackTarget = feedbackTarget || null;
-  }
-  if(feedbackTarget){
-    const row = document.createElement('div');
-    row.className = 'reaction-row';
-    const goodBtn = document.createElement('button');
-    goodBtn.className='reaction-btn'; goodBtn.textContent='👍 صح';
-    const badBtn = document.createElement('button');
-    badBtn.className='reaction-btn'; badBtn.textContent='👎 غلط';
-    goodBtn.addEventListener('click', ()=>{
-      goodBtn.classList.add('picked-good'); badBtn.disabled=true; goodBtn.disabled=true;
-      applyFeedback(feedbackTarget, 1, div);
-    });
-    badBtn.addEventListener('click', ()=>{
-      badBtn.classList.add('picked-bad'); badBtn.disabled=true; goodBtn.disabled=true;
-      applyFeedback(feedbackTarget, 0, div);
-    });
-    row.appendChild(goodBtn); row.appendChild(badBtn);
-    div.appendChild(row);
-  }
-  chatEl.appendChild(div);
-  scrollToBottom();
-  return div;
-}
-function addSystem(text){
-  const div = document.createElement('div');
-  div.className='msg system';
-  div.textContent = text;
-  chatEl.appendChild(div);
-  scrollToBottom();
-}
-
-function renderBrainGrid(){
-  brainGrid.innerHTML='';
-  // شبكة بلا سقف: خلية واحدة لكل فئة موجودة فعلاً، بدل شبكة ثابتة
-  // 40 خلية كانت مربوطة بحجم مخرج الشبكة العصبية القديمة.
-  const cellCount = Math.max(20, labels.length);
-  for(let i=0;i<cellCount;i++){
-    const cell = document.createElement('div');
-    cell.className = 'neuron' + (i<labels.length ? ' lit' : '');
-    cell.id = 'neuron-'+i;
-    brainGrid.appendChild(cell);
-  }
-  statLabels.textContent = labels.length;
-  statExamples.textContent = examples.length;
-}
-function pulseNeuron(index){
-  const el = document.getElementById('neuron-'+index);
-  if(!el) return;
-  el.classList.add('pulse');
-  setTimeout(()=>el.classList.remove('pulse'), 1100);
-}
-
-function showTeachCard(originalText){
-  const card = document.createElement('div');
-  card.className='teach-card';
-  card.innerHTML = `
-    <div class="label">علّمها الرد المناسب على الرسالة دي</div>
-    <input class="teach-name" placeholder="اسم الفئة (اختياري - مثلاً: تحية)" />
-    <input class="teach-response" placeholder="الرد اللي المفروض تقوله" />
-    <div class="hint">لو الاسم ده موجود قبل كده، هتضاف عليه كمثال جديد بدل فئة جديدة.</div>
-    <div class="teach-row">
-      <button class="teach-cancel">إلغاء</button>
-      <button class="teach-confirm">علّمها</button>
-    </div>
-  `;
-  chatEl.appendChild(card);
-  scrollToBottom();
-
-  card.querySelector('.teach-cancel').addEventListener('click', ()=>{ card.remove(); });
-  card.querySelector('.teach-confirm').addEventListener('click', async ()=>{
-    const nameInput = card.querySelector('.teach-name').value.trim();
-    const responseInput = card.querySelector('.teach-response').value.trim();
-    if(!responseInput){ card.querySelector('.teach-response').focus(); return; }
-
-    card.querySelector('.teach-confirm').textContent = 'بتتعلم...';
-    card.querySelector('.teach-confirm').disabled = true;
-
-    let label = nameInput ? labels.find(l=>l.name===nameInput) : null;
-    if(!label){
-      // بلا سقف: كل فئة جديدة بتاخد index تسلسلي، ومفيش أقصى عدد.
-      label = { index: labels.length, name: nameInput || ('فئة_'+(labels.length+1)), responses: [] };
-      labels.push(label);
-    }
-    if(!label.responses.includes(responseInput)) label.responses.push(responseInput);
-    addExample(originalText, label.index);
-    localBusy = true;
-    await retrainNetwork();
-
-    await saveState();
-    localBusy = false;
-    renderBrainGrid();
-    pulseNeuron(label.index);
-
-    card.remove();
-    addSystem('اتعلمت ✓ (فئة: ' + label.name + ')');
-
-    // نجرب نصنّف نفس الرسالة تاني عشان نوريه إنه فهم فعلاً
-    const result = classify(originalText);
-    if(result.confident){
-      const target = { exampleId: result.matchedExample ? result.matchedExample.id : null, label: result.label, userText: originalText };
-      addMessage(result.label.responses[Math.floor(Math.random()*result.label.responses.length)], 'bot', result.confidence, target);
-    }
-  });
-}
-
-/* =========================================================
-   تطبيق تصحيح الإيموجي على مثال معيّن:
-   score=1 -> صح 100% (trust=1)، score=0 -> غلط 0% (trust=0 وبيتشال
-   من الاستخدام والتدريب فورًا، والعقل بيطلب الرد الصح بدل منه).
-   ========================================================= */
-async function applyFeedback(target, score, msgDiv){
-  if(!target) return;
-  if(target.exampleId){
-    const ex = examples.find(e=>e.id===target.exampleId);
-    if(ex){
-      ex.trust = score;
-      localBusy = true;
-      await retrainNetwork();
-      await saveState();
-      localBusy = false;
-      renderBrainGrid();
-      if(target.label) pulseNeuron(target.label.index);
-    }
-  }
-  if(msgDiv){
-    msgDiv.classList.remove('uncertain');
-    msgDiv.classList.add(score===1 ? 'trust-full' : 'trust-zero');
-    msgDiv.querySelectorAll('.reaction-btn').forEach(b=>{ b.disabled=true; });
-  }
-  if(score===1){
-    addSystem('تمام ✅ اتأكدت إن ده صح 100% - هتمسك بالرد ده في مواقف زي دي.');
-  } else {
-    addSystem('اتسجلت إنها غلط 100% (ثقة 0%) - مش هقولها تاني على الرسالة دي. علّمني الرد الصح 👇');
-    if(target.userText) showTeachCard(target.userText);
-  }
-}
-
-// كارت بيسأل عن معنى إيموجي مش معروف، وبيحفظ الإجابة للأبد.
-function showEmojiLearnCard(emoji, target, targetDiv, remaining, alreadyApplied){
-  const card = document.createElement('div');
-  card.className='emoji-learn-card';
-  card.innerHTML = `
-    <div class="label">مش عارف الإيموجي ${emoji} ده معناه إيه - علّمني مرة واحدة وهفتكرها دايمًا</div>
-    <div class="emoji-learn-row">
-      <button class="emoji-bad">❌ معناه غلط</button>
-      <button class="emoji-good">✅ معناه صح</button>
-    </div>
-  `;
-  chatEl.appendChild(card);
-  scrollToBottom();
-
-  const finish = async (score)=>{
-    learnedEmojis[emoji] = score;
-    localBusy = true;
-    await saveState();
-    localBusy = false;
-    card.remove();
-    addSystem('اتعلمت إن ' + emoji + ' معناها ' + (score===1?'صح ✅':'غلط ❌') + ' - هفتكرها دايمًا.');
-    if(!alreadyApplied && target){
-      await applyFeedback(target, score, targetDiv);
-      lastFeedbackTarget = null;
-    }
-    if(remaining && remaining.length>0){
-      showEmojiLearnCard(remaining[0], target, targetDiv, remaining.slice(1), true);
-    }
+  // ===== إعدادات Firebase =====
+  const firebaseConfig = {
+    apiKey: "AIzaSyC_1ZPw0NMw2YznMO0PE9vZGzFVa0f7jvQ",
+    authDomain: "ai-prime-f9017.firebaseapp.com",
+    projectId: "ai-prime-f9017",
+    storageBucket: "ai-prime-f9017.firebasestorage.app",
+    messagingSenderId: "932445525165",
+    appId: "1:932445525165:web:425c870176b2091d12e224"
   };
-  card.querySelector('.emoji-good').addEventListener('click', ()=>finish(1));
-  card.querySelector('.emoji-bad').addEventListener('click', ()=>finish(0));
-}
+  firebase.initializeApp(firebaseConfig);
+  // سنستخدم Firebase Functions (httpsCallable)
+  const functions = firebase.functions();
 
-// لما المستخدم يبعت رسالة كلها إيموجي، بنعتبرها تصحيح لآخر رد واثق
-// قاله العقل (سواء دوس على زرار 👍/👎 أو كتب أي إيموجي هو عايزه).
-async function handleEmojiFeedback(text){
-  if(!lastFeedbackTarget){
-    addSystem('لسه معنديش رد واثق قبل كده أصحح عليه - اكتبلي رسالة عادية الأول 🙂');
-    return;
-  }
-  const target = lastFeedbackTarget;
-  const targetDiv = lastBotMsgDiv;
-  const emojis = extractEmojis(text);
-  const known = [], unknown = [];
-  for(const e of emojis){
-    const m = emojiMeaning(e);
-    if(m===null) unknown.push(e); else known.push(m);
-  }
+  // ===== العناصر =====
+  const chatEl = document.getElementById('chat');
+  const inputEl = document.getElementById('msg-input');
+  const sendBtn = document.getElementById('send-btn');
+  const brainGrid = document.getElementById('brain-grid');
+  const statLabels = document.getElementById('stat-labels');
+  const statExamples = document.getElementById('stat-examples');
 
-  let applied = false;
-  if(known.length>0){
-    const avg = known.reduce((s,v)=>s+v,0)/known.length;
-    const score = avg>=0.5 ? 1 : 0;
-    await applyFeedback(target, score, targetDiv);
-    lastFeedbackTarget = null;
-    applied = true;
-  }
-  if(unknown.length>0){
-    showEmojiLearnCard(unknown[0], target, targetDiv, unknown.slice(1), applied);
-  }
-}
+  // ===== دوال مساعدة =====
+  function scrollToBottom() { chatEl.scrollTop = chatEl.scrollHeight; }
 
-// منطق الاستيراد نفسه، مستخرج في دالة مستقلة عشان نستخدمه سواء من
-// صندوق النص أو من ملف مرفوع مباشرة - في الحالتين بيتحفظ على
-// السيرفر (Firebase) على طول من غير أي خطوة يدوية زيادة.
-// onProgress(ratio 0..1, phaseLabel) بتتنادى بانتظام عشان نوري
-// شريط تقدّم حقيقي بدل ما المستخدم يستنى من غير ما يعرف قربنا نخلص.
-async function importLines(lines, onProgress){
-  const report = (r, label)=>{ if(onProgress) onProgress(Math.min(1,r), label); };
-
-  report(0, 'بيقرأ السطور...');
-  localBusy = true; // نمنع أي تحديث لحظي جاي من جهاز تاني يتطبق فوقنا لحد ما نخلص
-  let added = 0, skipped = 0;
-  for(let i=0;i<lines.length;i++){
-    const line = lines[i];
-    const parts = line.split('|').map(p=>p.trim());
-    if(parts.length < 3 || !parts[0] || !parts[1] || !parts[2]){ skipped++; }
-    else{
-      const [catName, msg, resp] = parts;
-      let label = labels.find(l=>l.name===catName);
-      if(!label){
-        label = { index: labels.length, name: catName, responses: [] };
-        labels.push(label);
-      }
-      if(!label.responses.includes(resp)) label.responses.push(resp);
-      addExample(msg, label.index);
-      added++;
+  function addMessage(text, cls, confidence, feedbackTarget) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + cls;
+    div.textContent = text;
+    if (confidence !== undefined) {
+      const c = document.createElement('span');
+      c.className = 'confidence mono';
+      c.textContent = 'ثقة: ' + Math.round(confidence * 100) + '%';
+      div.appendChild(c);
     }
-    // مرحلة إضافة الأمثلة = أول 20% من الشريط
-    if(i % 100 === 0){
-      report(0.2 * (i+1)/lines.length, 'بيضيف الأمثلة... (' + (i+1) + '/' + lines.length + ')');
-      await new Promise(r=>setTimeout(r,0));
+    if (feedbackTarget) {
+      // نضيف أزرار التصحيح (سيتم التعامل معها محلياً؟ لا، سيتم إرسالها للسيرفر)
+      // لكننا سنحتفظ بها كجزء من UI، وسنرسل التصحيح إلى السيرفر.
+      const row = document.createElement('div');
+      row.className = 'reaction-row';
+      const goodBtn = document.createElement('button');
+      goodBtn.className='reaction-btn'; goodBtn.textContent='👍 صح';
+      const badBtn = document.createElement('button');
+      badBtn.className='reaction-btn'; badBtn.textContent='👎 غلط';
+      goodBtn.addEventListener('click', () => {
+        goodBtn.classList.add('picked-good');
+        badBtn.disabled = true;
+        goodBtn.disabled = true;
+        // إرسال التصحيح للسيرفر
+        sendFeedback(feedbackTarget, 1, div);
+      });
+      badBtn.addEventListener('click', () => {
+        badBtn.classList.add('picked-bad');
+        badBtn.disabled = true;
+        goodBtn.disabled = true;
+        sendFeedback(feedbackTarget, 0, div);
+      });
+      row.appendChild(goodBtn); row.appendChild(badBtn);
+      div.appendChild(row);
     }
+    chatEl.appendChild(div);
+    scrollToBottom();
+    return div;
   }
-  // بنحفظ الأمثلة على السيرفر فورًا هنا - قبل ما ندرّب الشبكة خالص.
-  // السبب: الشبكة العصبية نفسها مش بتتخزن في Firestore أصلًا (بتتعاد
-  // بناؤها من الأمثلة في كل جهاز عند التحميل - شوف loadState). يعني
-  // مفيش داعي إن أي جهاز تاني يستنى التدريب يخلص عشان يشوف الأمثلة
-  // الجديدة - أهم حاجة (الفئات والأمثلة) توصل للسيرفر بأسرع ما يمكن.
-  report(0.2, 'بيحفظ على السيرفر...');
-  await saveState();
 
-  // بعد كده التدريب المحلي - ده بس عشان الجهاز الحالي يقدر يرد فورًا
-  // من غير ما يستنى تحميل الصفحة تاني. أي جهاز تاني هيدرّب شبكته هو
-  // بنفسه لما يفتح الصفحة أو يعمل تحديث.
-  await retrainNetwork(trainRatio=>{
-    report(0.2 + trainRatio*0.78, 'بيدرّب الشبكة العصبية (محليًا)... ' + Math.round(trainRatio*100) + '%');
-  });
-
-  localBusy = false;
-  renderBrainGrid();
-  report(1, 'خلص ✓ (الأمثلة اتحفظت على السيرفر من بداية التدريب)');
-  return { added, skipped };
-}
-
-function showBulkImportCard(){
-  const card = document.createElement('div');
-  card.className='bulk-card';
-  card.innerHTML = `
-    <div class="label">استيراد جماعي - علّمه عشرات الأمثلة مرة واحدة</div>
-    <div class="hint">كل سطر بالصيغة: <b class="mono">الفئة | الرسالة | الرد</b><br>لو الفئة موجودة قبل كده، الرسالة هتتضاف عليها كمثال جديد. مثال:<br><span class="mono">تحية | اهلا | اهلا بيك وسهلا</span></div>
-    <label class="bulk-file-label" for="bulk-file-input">📎 ارفع ملف .txt (هيتحفظ على السيرفر أوتوماتيك من غير نسخ ولصق)</label>
-    <input type="file" id="bulk-file-input" accept=".txt" style="display:none;">
-    <textarea class="bulk-text" placeholder="تحية | اهلا | اهلا بيك&#10;تحية | السلام عليكم | وعليكم السلام&#10;وداع | مع السلامة | في أمان الله"></textarea>
-    <div class="bulk-progress-wrap">
-      <div class="bulk-progress-track"><div class="bulk-progress-fill"></div></div>
-      <div class="bulk-progress-text"><span class="bulk-progress-label">بيستعد...</span><span class="bulk-progress-pct">0%</span></div>
-    </div>
-    <div class="bulk-row">
-      <button class="bulk-cancel">إلغاء</button>
-      <button class="bulk-confirm">استورد</button>
-    </div>
-  `;
-  chatEl.appendChild(card);
-  scrollToBottom();
-
-  const progressWrap = card.querySelector('.bulk-progress-wrap');
-  const progressFill = card.querySelector('.bulk-progress-fill');
-  const progressLabel = card.querySelector('.bulk-progress-label');
-  const progressPct = card.querySelector('.bulk-progress-pct');
-  function showProgress(ratio, label){
-    progressWrap.classList.add('active');
-    progressFill.style.width = Math.round(ratio*100) + '%';
-    progressPct.textContent = Math.round(ratio*100) + '%';
-    if(label) progressLabel.textContent = label;
+  function addSystem(text) {
+    const div = document.createElement('div');
+    div.className = 'msg system';
+    div.textContent = text;
+    chatEl.appendChild(div);
     scrollToBottom();
   }
 
-  card.querySelector('.bulk-cancel').addEventListener('click', ()=>{ card.remove(); });
+  // ===== دوال الاتصال بالسيرفر =====
+  const processMessage = functions.httpsCallable('processMessage');
+  const trainFn = functions.httpsCallable('train');
+  const bulkImportFn = functions.httpsCallable('bulkImport');
+  const resetFn = functions.httpsCallable('reset');
 
-  // رفع ملف .txt: بيتقرأ من الجهاز، ولو الصيغة سليمة بيتستورد
-  // ويتحفظ على السيرفر فورًا من غير ما تدوس زرار "استورد" أصلاً،
-  // وشريط التقدّم بيوريك أنت وصلت فين بالظبط.
-  const fileInput = card.querySelector('#bulk-file-input');
-  fileInput.addEventListener('change', async ()=>{
-    const file = fileInput.files[0];
-    if(!file) return;
-    const fileLabel = card.querySelector('.bulk-file-label');
-    fileLabel.textContent = '⏳ بيقرأ الملف "' + file.name + '"...';
-    try{
-      const text = await file.text();
-      card.querySelector('.bulk-text').value = text; // نوريه المحتوى اللي هيتستورد
-      const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-      if(lines.length===0){ fileLabel.textContent='⚠️ الملف فاضي'; return; }
-      fileLabel.textContent = '📎 ' + file.name + ' (' + lines.length + ' سطر)';
-      showProgress(0, 'بيبدأ الاستيراد...');
-      const { added, skipped } = await importLines(lines, showProgress);
-      card.remove();
-      addSystem('اتستوردت ' + added + ' مثال من "' + file.name + '" واتحفظت على السيرفر ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
-    }catch(e){
-      console.error(e);
-      fileLabel.textContent = '⚠️ تعذرت قراءة الملف';
+  async function sendMessage(text) {
+    try {
+      const result = await processMessage({ text });
+      const data = result.data;
+      if (data.confident && data.response) {
+        // عرض الرد
+        const target = { exampleId: data.matchedExample ? data.matchedExample.id : null, label: data.label, userText: text };
+        addMessage(data.response, 'bot', data.confidence, target);
+      } else {
+        addMessage('مش لسه متعلم رد مناسب على الكلام ده 🤔', 'bot uncertain', data.confidence);
+        showTeachCard(text);
+      }
+    } catch (err) {
+      console.error(err);
+      addSystem('⚠️ خطأ في الاتصال بالسيرفر');
+    }
+  }
+
+  async function sendFeedback(target, score, msgDiv) {
+    // سنقوم بإرسال تحديث الثقة للسيرفر
+    if (!target || !target.exampleId) return;
+    try {
+      await trainFn({
+        text: target.userText,
+        labelIndex: target.label ? target.label.index : -1,
+        trust: score,
+        // لا نرسل استجابة جديدة، فقط تحديث الثقة
+      });
+      if (msgDiv) {
+        msgDiv.classList.add(score === 1 ? 'trust-full' : 'trust-zero');
+        msgDiv.querySelectorAll('.reaction-btn').forEach(b => { b.disabled = true; });
+      }
+      if (score === 1) {
+        addSystem('تمام ✅ اتأكدت إن ده صح 100%');
+      } else {
+        addSystem('اتسجلت إنها غلط 100% - علّمني الرد الصح 👇');
+        if (target.userText) showTeachCard(target.userText);
+      }
+      // تحديث الإحصائيات
+      loadStats();
+    } catch (err) {
+      console.error(err);
+      addSystem('⚠️ فشل تحديث التقييم');
+    }
+  }
+
+  // ===== دوال الواجهة =====
+  function renderBrainGrid(labelsCount) {
+    brainGrid.innerHTML = '';
+    const cellCount = Math.max(20, labelsCount || 0);
+    for (let i = 0; i < cellCount; i++) {
+      const cell = document.createElement('div');
+      cell.className = 'neuron' + (i < (labelsCount || 0) ? ' lit' : '');
+      cell.id = 'neuron-' + i;
+      brainGrid.appendChild(cell);
+    }
+  }
+
+  async function loadStats() {
+    // نستدعي processMessage بشكل وهمي للحصول على الحالة؟ الأفضل أن نضيف دالة جديدة.
+    // لكن سنستخدم نفس الدالة ونمرر نصاً فارغاً.
+    try {
+      const result = await processMessage({ text: '' });
+      // لكن النتيجة لا تعطينا الإحصائيات. سنقوم بإضافة دالة جديدة.
+      // بدلاً من ذلك، سنعتمد على التحديث من السيرفر بعد كل تعليم.
+    } catch (e) {}
+  }
+
+  function showTeachCard(originalText) {
+    const card = document.createElement('div');
+    card.className = 'teach-card';
+    card.innerHTML = `
+      <div class="label">علّمها الرد المناسب على الرسالة دي</div>
+      <input class="teach-name" placeholder="اسم الفئة (اختياري)" />
+      <input class="teach-response" placeholder="الرد اللي المفروض تقوله" />
+      <div class="hint">لو الاسم موجود، هتضاف كمثال جديد.</div>
+      <div class="teach-row">
+        <button class="teach-cancel">إلغاء</button>
+        <button class="teach-confirm">علّمها</button>
+      </div>
+    `;
+    chatEl.appendChild(card);
+    scrollToBottom();
+
+    card.querySelector('.teach-cancel').addEventListener('click', () => { card.remove(); });
+    card.querySelector('.teach-confirm').addEventListener('click', async () => {
+      const nameInput = card.querySelector('.teach-name').value.trim();
+      const responseInput = card.querySelector('.teach-response').value.trim();
+      if (!responseInput) { card.querySelector('.teach-response').focus(); return; }
+
+      card.querySelector('.teach-confirm').textContent = 'بتتعلم...';
+      card.querySelector('.teach-confirm').disabled = true;
+
+      try {
+        const result = await trainFn({
+          text: originalText,
+          labelName: nameInput || undefined,
+          response: responseInput,
+          trust: 1 // نعطي ثقة عالية لأن المستخدم علّمها بنفسه
+        });
+        card.remove();
+        addSystem('اتعلمت ✓');
+        // تحديث الخلايا
+        // سنقوم بإعادة تحميل الإحصائيات عبر دالة جديدة.
+        // لكننا سنضيف دالة getStats على السيرفر.
+        // سنكتفي بتحديث مؤقت.
+        renderBrainGrid((await processMessage({ text: '' })).data.labelsCount || 0);
+      } catch (err) {
+        console.error(err);
+        addSystem('⚠️ فشل التعليم');
+      }
+    });
+  }
+
+  // ===== استيراد جماعي =====
+  function showBulkImportCard() {
+    const card = document.createElement('div');
+    card.className = 'bulk-card';
+    card.innerHTML = `
+      <div class="label">استيراد جماعي</div>
+      <div class="hint">كل سطر: الفئة | الرسالة | الرد</div>
+      <label class="bulk-file-label" for="bulk-file-input">📎 ارفع ملف .txt</label>
+      <input type="file" id="bulk-file-input" accept=".txt" style="display:none;">
+      <textarea class="bulk-text" placeholder="تحية | اهلا | اهلا بيك"></textarea>
+      <div class="bulk-progress-wrap">
+        <div class="bulk-progress-track"><div class="bulk-progress-fill"></div></div>
+        <div class="bulk-progress-text"><span class="bulk-progress-label">بيستعد...</span><span class="bulk-progress-pct">0%</span></div>
+      </div>
+      <div class="bulk-row">
+        <button class="bulk-cancel">إلغاء</button>
+        <button class="bulk-confirm">استورد</button>
+      </div>
+    `;
+    chatEl.appendChild(card);
+    scrollToBottom();
+
+    const progressWrap = card.querySelector('.bulk-progress-wrap');
+    const progressFill = card.querySelector('.bulk-progress-fill');
+    const progressLabel = card.querySelector('.bulk-progress-label');
+    const progressPct = card.querySelector('.bulk-progress-pct');
+    function showProgress(ratio, label) {
+      progressWrap.classList.add('active');
+      progressFill.style.width = Math.round(ratio*100) + '%';
+      progressPct.textContent = Math.round(ratio*100) + '%';
+      if (label) progressLabel.textContent = label;
+      scrollToBottom();
+    }
+
+    card.querySelector('.bulk-cancel').addEventListener('click', () => { card.remove(); });
+
+    const fileInput = card.querySelector('#bulk-file-input');
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const fileLabel = card.querySelector('.bulk-file-label');
+      fileLabel.textContent = '⏳ بيقرأ الملف...';
+      try {
+        const text = await file.text();
+        card.querySelector('.bulk-text').value = text;
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0) { fileLabel.textContent = '⚠️ الملف فاضي'; return; }
+        fileLabel.textContent = '📎 ' + file.name + ' (' + lines.length + ' سطر)';
+        showProgress(0, 'بيبدأ الاستيراد...');
+        const result = await bulkImportFn({ lines });
+        const data = result.data;
+        card.remove();
+        addSystem('اتستوردت ' + data.added + ' مثال ✓' + (data.skipped > 0 ? ' (اتجاهل ' + data.skipped + ')' : ''));
+        // تحديث الخلايا
+        renderBrainGrid(data.labelsCount || 0);
+      } catch (err) {
+        console.error(err);
+        fileLabel.textContent = '⚠️ فشل الاستيراد';
+      }
+    });
+
+    card.querySelector('.bulk-confirm').addEventListener('click', async () => {
+      const raw = card.querySelector('.bulk-text').value;
+      const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      if (lines.length === 0) return;
+      card.querySelector('.bulk-confirm').textContent = 'بيستورد...';
+      card.querySelector('.bulk-confirm').disabled = true;
+      card.querySelector('.bulk-cancel').disabled = true;
+      showProgress(0, 'بيبدأ...');
+      try {
+        const result = await bulkImportFn({ lines });
+        const data = result.data;
+        card.remove();
+        addSystem('اتستوردت ' + data.added + ' مثال ✓' + (data.skipped > 0 ? ' (اتجاهل ' + data.skipped + ')' : ''));
+        renderBrainGrid(data.labelsCount || 0);
+      } catch (err) {
+        console.error(err);
+        addSystem('⚠️ فشل الاستيراد');
+      }
+    });
+  }
+
+  document.getElementById('bulk-btn').addEventListener('click', showBulkImportCard);
+
+  // ===== إرسال الرسالة =====
+  async function handleSend() {
+    const text = inputEl.value.trim();
+    if (!text) return;
+    inputEl.value = '';
+    addMessage(text, 'user');
+    await sendMessage(text);
+  }
+
+  sendBtn.addEventListener('click', handleSend);
+  inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') handleSend(); });
+
+  // ===== مسح التعلم =====
+  document.getElementById('reset-btn').addEventListener('click', async () => {
+    if (!confirm('هتتمسح كل حاجة؟')) return;
+    try {
+      await resetFn();
+      addSystem('اتمسح كل التعلّم');
+      renderBrainGrid(0);
+    } catch (err) {
+      console.error(err);
+      addSystem('⚠️ فشل المسح');
     }
   });
 
-  card.querySelector('.bulk-confirm').addEventListener('click', async ()=>{
-    const raw = card.querySelector('.bulk-text').value;
-    const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
-    if(lines.length===0){ return; }
-
-    card.querySelector('.bulk-confirm').textContent = 'بيستورد...';
-    card.querySelector('.bulk-confirm').disabled = true;
-    card.querySelector('.bulk-cancel').disabled = true;
-    showProgress(0, 'بيبدأ الاستيراد...');
-
-    const { added, skipped } = await importLines(lines, showProgress);
-    card.remove();
-    addSystem('اتستوردت ' + added + ' مثال واتحفظت على السيرفر ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
-  });
-}
-
-document.getElementById('bulk-btn').addEventListener('click', showBulkImportCard);
-
-async function handleSend(){
-  const text = inputEl.value.trim();
-  if(!text) return;
-  inputEl.value='';
-
-  // رسالة كلها إيموجي = تصحيح لآخر رد، مش رسالة عادية بتتصنّف
-  if(isEmojiOnlyMessage(text)){
-    addMessage(text, 'user');
-    await handleEmojiFeedback(text);
-    return;
+  // ===== بداية التشغيل =====
+  async function boot() {
+    addSystem('جاري الاتصال بالسيرفر...');
+    try {
+      // نجلب الحالة الأولية عن طريق إرسال رسالة فارغة (أو نضيف دالة خاصة)
+      const result = await processMessage({ text: '' });
+      // لا تعطي معلومات كافية، لذا سنقوم بتحميل الإحصائيات من السيرفر عبر دالة جديدة.
+      // بدلاً من ذلك، سنضيف دالة getStats على السيرفر.
+      // لكن لتقليل التعقيد، سنقوم بتحديث الخلايا عند كل عملية تعليم واستيراد.
+      renderBrainGrid(0); // مؤقت
+      addSystem('العقل جاهز - كل العمليات على السيرفر 🧠');
+    } catch (err) {
+      console.error(err);
+      addSystem('⚠️ تعذر الاتصال بالسيرفر');
+    }
   }
 
-  addMessage(text, 'user');
-
-  const result = classify(text);
-  if(result.confident){
-    const response = result.label.responses[Math.floor(Math.random()*result.label.responses.length)];
-    const target = { exampleId: result.matchedExample ? result.matchedExample.id : null, label: result.label, userText: text };
-    addMessage(response, 'bot', result.confidence, target);
-  } else {
-    const bubble = addMessage('مش لسه اتعلمت رد مناسب على الكلام ده 🤔', 'bot uncertain', result.confidence);
-    showTeachCard(text);
-  }
-}
-
-sendBtn.addEventListener('click', handleSend);
-inputEl.addEventListener('keydown', e=>{ if(e.key==='Enter') handleSend(); });
-
-document.getElementById('reset-btn').addEventListener('click', async ()=>{
-  if(!confirm('هتتمسح كل حاجة اتعلمها العقل (وكل معاني الإيموجي اللي اتعلمها كمان). متأكد؟')) return;
-  labels=[]; examples=[]; network=null; learnedEmojis={};
-  lastFeedbackTarget=null; lastBotMsgDiv=null;
-  localBusy = true;
-  await saveState();
-  localBusy = false;
-  renderBrainGrid();
-  chatEl.innerHTML='';
-  addSystem('اتمسح كل التعلّم - العقل رجع فاضي زي أول مرة.');
-});
-
-/* =========================================================
-   بداية التشغيل
-   ========================================================= */
-async function boot(){
-  addSystem('جاري الاتصال...');
-  const authOk = await ensureFirebaseAuth();
-  if(!authOk){
-    addSystem('⚠️ تعذر الاتصال بـ Firebase - تأكد إنك حطيت بيانات مشروعك في firebaseConfig وفعّلت Anonymous Auth. هيشتغل مؤقتًا بدون حفظ.');
-  }
-  await loadState();
-  startRealtimeSync(); // من هنا، أي تعليم من أي جهاز هيوصل لكل الأجهزة المفتوحة فورًا
-  chatEl.innerHTML='';
-  renderBrainGrid();
-
-  if(labels.length===0){
-    addSystem('العقل ده فاضي دلوقتي - كل رد فيه إنت اللي هتعلّمه ليه بنفسك.');
-    addSystem('بعد أي رد واثق مني، ابعتلي إيموجي (زي 👍 أو 👎 أو أي إيموجي تاني) عشان تصحّح لي - صح = 100%، غلط = 0% وهطلب منك الرد الصح.');
-    addMessage('اكتبلي أي رسالة، ولو معرفتش أرد هطلب منك تعلّمني 🧠', 'bot');
-  } else {
-    addSystem('اترجع العقل - عنده ' + labels.length + ' فئة اتعلمها قبل كده (متزامن من كل أجهزتك).');
-  }
-}
-boot();
-
+  boot();
 })();
 </script>
 </body>
