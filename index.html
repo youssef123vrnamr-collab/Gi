@@ -33,8 +33,19 @@
   .head-row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
   .title{font-weight:900;font-size:17px;letter-spacing:.2px;}
   .title span{color:var(--synapse);}
-  #reset-btn{background:none;border:1px solid var(--line);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;padding:5px 9px;border-radius:7px;}
-  #reset-btn:active{background:rgba(255,255,255,.06);}
+  .head-btns{display:flex;gap:6px;}
+  #reset-btn,#bulk-btn{background:none;border:1px solid var(--line);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;padding:5px 9px;border-radius:7px;}
+  #reset-btn:active,#bulk-btn:active{background:rgba(255,255,255,.06);}
+  #bulk-btn{border-color:rgba(124,92,255,.4);color:var(--synapse);}
+
+  .bulk-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(124,92,255,.35);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;}
+  .bulk-card .label{font-size:12px;color:var(--synapse);font-weight:700;}
+  .bulk-card textarea{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px 11px;font-size:13px;font-family:'JetBrains Mono',monospace;min-height:140px;resize:vertical;direction:rtl;}
+  .bulk-card .hint{font-size:11px;color:var(--text-dim);line-height:1.6;}
+  .bulk-row{display:flex;gap:8px;}
+  .bulk-row button{flex:1;border:none;border-radius:9px;padding:10px;font-weight:700;font-size:13px;}
+  .bulk-confirm{background:var(--synapse);color:#fff;}
+  .bulk-cancel{background:transparent;border:1px solid var(--line) !important;color:var(--text-dim);}
 
   #brain-grid{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;margin-top:10px;}
   .neuron{aspect-ratio:1;border-radius:2px;background:rgba(255,255,255,.06);transition:background .4s, box-shadow .4s;}
@@ -79,11 +90,14 @@
   <header>
     <div class="head-row">
       <div class="title"><span>العقل</span> الصغير</div>
-      <button id="reset-btn">مسح كل التعلّم</button>
+      <div class="head-btns">
+        <button id="bulk-btn">استيراد جماعي</button>
+        <button id="reset-btn">مسح كل التعلّم</button>
+      </div>
     </div>
     <div id="brain-grid"></div>
     <div id="stats-row">
-      <span>متعلّم: <b id="stat-labels">0</b>/<span id="stat-max">40</span> فئة</span>
+      <span>متعلّم: <b id="stat-labels">0</b> فئة</span>
       <span>أمثلة: <b id="stat-examples">0</b></span>
     </div>
   </header>
@@ -146,82 +160,38 @@ function ensureFirebaseAuth(){
 }
 
 /* =========================================================
-   المحرك: نفس محرك الشبكة العصبية اللي بنيناه من الصفر
-   (matrix ops + backprop) - منقول هنا للمتصفح بدون أي تعديل
-   جوهري في المنطق، بس من غير require/module.exports.
+   المحرك: مقارنة تشابه (similarity matching) بدل شبكة بمخرج
+   ثابت الحجم. المعمارية القديمة كانت مربوطة بعدد فئات ثابت
+   (MAX_LABELS=40) لأن آخر طبقة في الشبكة لازم يبقى حجمها معروف
+   مقدمًا. النظام ده بيشتغل بفكرة مختلفة تمامًا: كل مثال بيتحول
+   لمتجه، ولما رسالة جديدة توصل، بنقارنها بكل الأمثلة المحفوظة
+   (تشابه جيب التمام / cosine similarity) ونرجّع رد أقرب مثال.
+   ده معناه: مفيش سقف فئات خالص، وتقدر تعلّمه آلاف الأمثلة.
    ========================================================= */
-function zeros(rows, cols){ const m=[]; for(let i=0;i<rows;i++) m.push(new Array(cols).fill(0)); return m; }
-function randomMatrix(rows, cols, scale){ const m=[]; for(let i=0;i<rows;i++){ const row=[]; for(let j=0;j<cols;j++) row.push((Math.random()*2-1)*scale); m.push(row);} return m; }
-function multiply(a,b){ const rA=a.length,cA=a[0].length,cB=b[0].length; const r=zeros(rA,cB); for(let i=0;i<rA;i++) for(let j=0;j<cB;j++){ let s=0; for(let k=0;k<cA;k++) s+=a[i][k]*b[k][j]; r[i][j]=s; } return r; }
-function add(a,b){ return a.map((row,i)=>row.map((v,j)=>v+b[i][j])); }
-function subtract(a,b){ return a.map((row,i)=>row.map((v,j)=>v-b[i][j])); }
-function hadamard(a,b){ return a.map((row,i)=>row.map((v,j)=>v*b[i][j])); }
-function transpose(a){ const rows=a.length,cols=a[0].length; const r=zeros(cols,rows); for(let i=0;i<rows;i++) for(let j=0;j<cols;j++) r[j][i]=a[i][j]; return r; }
-function mapM(a,fn){ return a.map(row=>row.map(fn)); }
+const INPUT_DIM = 192;           // حجم المتجه (زودناه عشان unigrams+bigrams يقللوا التصادم)
+const CONFIDENCE_THRESHOLD = 0.42;
 
-const ACT = {
-  sigmoid: x=>1/(1+Math.exp(-x)),
-  sigmoidDerivative: y=>y*(1-y)
-};
+// كلمات ربط شائعة بتشوش المقارنة من غير ما تضيف معنى - بنشيلها
+// قبل التحويل لمتجه عشان الشبكة تركّز على الكلمات المفصلية.
+const STOPWORDS = new Set([
+  'في','من','على','عن','الى','إلى','يا','او','أو','ثم','هل','لا','لم','لن',
+  'ما','هذا','هذه','ذلك','تلك','التي','الذي','و','كان','كانت','يكون','مع',
+  'كل','بعض','كذلك','ايضا','أيضا','انا','أنا','انت','أنت','هو','هي','احنا',
+  'إحنا','بس','يعني','عشان','علشان'
+]);
 
-class DenseLayer{
-  constructor(inputSize, outputSize, w, b){
-    this.weights = w || randomMatrix(inputSize, outputSize, Math.sqrt(1/inputSize));
-    this.bias = b || zeros(1, outputSize);
-    this.lastInput=null; this.lastOutput=null;
-  }
-  forward(input){
-    this.lastInput = input;
-    const z = add(multiply(input, this.weights), this.bias);
-    const a = mapM(z, ACT.sigmoid);
-    this.lastOutput = a;
-    return a;
-  }
-  backward(outputGradient, lr){
-    const deriv = mapM(this.lastOutput, ACT.sigmoidDerivative);
-    const delta = hadamard(outputGradient, deriv);
-    const wGrad = multiply(transpose(this.lastInput), delta);
-    const inGrad = multiply(delta, transpose(this.weights));
-    for(let i=0;i<this.weights.length;i++) for(let j=0;j<this.weights[0].length;j++) this.weights[i][j]-=lr*wGrad[i][j];
-    for(let j=0;j<this.bias[0].length;j++) this.bias[0][j]-=lr*delta[0][j];
-    return inGrad;
-  }
-}
-
-class NeuralNetwork{
-  constructor(sizes, savedLayers){
-    this.layers=[];
-    for(let i=0;i<sizes.length-1;i++){
-      const saved = savedLayers && savedLayers[i];
-      this.layers.push(new DenseLayer(sizes[i], sizes[i+1], saved?saved.weights:null, saved?saved.bias:null));
-    }
-  }
-  predict(input){ let o=input; for(const l of this.layers) o=l.forward(o); return o; }
-  trainStep(input, target, lr){
-    const out = this.predict(input);
-    let grad = subtract(out, target);
-    for(let i=this.layers.length-1;i>=0;i--) grad = this.layers[i].backward(grad, lr);
-  }
-  serialize(){ return this.layers.map(l=>({weights:l.weights, bias:l.bias})); }
-}
-
-/* =========================================================
-   استخراج خصائص النص (feature extraction) بطريقة hashing:
-   بدل ما نحتاج نبني قاموس كلمات بيكبر بلا حدود (وده هيغيّر
-   حجم الشبكة كل مرة)، بنحوّل كل كلمة لرقم ثابت الحجم عن طريق
-   hash. كده حجم المدخل ثابت (INPUT_DIM) حتى لو الكلمات الجديدة
-   بلا نهاية.
-   ========================================================= */
-const INPUT_DIM = 64;
-const HIDDEN_DIM = 24;
-const MAX_LABELS = 40;
-const CONFIDENCE_THRESHOLD = 0.55;
-
-function tokenize(text){
+function normalizeArabic(text){
   return text
-    .replace(/[\u064B-\u0652]/g,'') // إزالة التشكيل
-    .replace(/[^\u0621-\u064A0-9a-zA-Z\s]/g,' ')
-    .trim().split(/\s+/).filter(Boolean);
+    .replace(/[\u064B-\u0652]/g,'')      // إزالة التشكيل
+    .replace(/[إأآا]/g,'ا')               // توحيد أشكال الألف
+    .replace(/ى/g,'ي')                    // الألف المقصورة -> ياء
+    .replace(/ة/g,'ه')                    // التاء المربوطة -> هاء
+    .replace(/ـ/g,'')                     // إزالة التطويل
+    .replace(/[^\u0621-\u064A0-9a-zA-Z\s]/g,' ');
+}
+function tokenize(text){
+  const tokens = normalizeArabic(text).trim().split(/\s+/).filter(Boolean);
+  return tokens.filter(t=>!STOPWORDS.has(t));
 }
 function hashWord(word){
   let h = 0;
@@ -231,29 +201,35 @@ function hashWord(word){
 function textToVector(text){
   const vec = new Array(INPUT_DIM).fill(0);
   const tokens = tokenize(text);
+  // unigrams: كل كلمة لوحدها
   for(const t of tokens){ vec[hashWord(t)] += 1; }
-  const maxVal = Math.max(1, ...vec);
-  return [vec.map(v=>v/maxVal)]; // مصفوفة 1×INPUT_DIM، منرملة بين 0 و1
+  // bigrams: كل زوج كلمات متتاليين - بيدّي إحساس بالسياق (مثلاً
+  // "مش كويس" تختلف عن "كويس" حتى لو الكلمة التانية واحدة)
+  for(let i=0;i<tokens.length-1;i++){ vec[hashWord(tokens[i]+'_'+tokens[i+1])] += 1.4; }
+  const norm = Math.sqrt(vec.reduce((s,v)=>s+v*v,0));
+  return norm>0 ? vec.map(v=>v/norm) : vec; // تطبيع عشان جملة طويلة ماتكسبش أفضلية غير عادلة
 }
-function oneHot(index, size){
-  const v = new Array(size).fill(0);
-  v[index] = 1;
-  return [v];
+function cosineSim(a,b){
+  let dot=0;
+  for(let i=0;i<a.length;i++) dot += a[i]*b[i];
+  return dot; // المتجهين متطبّعين بالفعل (norm=1) فالـ dot product = cosine similarity
 }
 
 /* =========================================================
    الحالة + الحفظ عبر Firebase Firestore (مستند مشترك بين كل الأجهزة)
    ========================================================= */
-let network = null;
 let labels = [];     // [{ index, name, responses:[...] }]
-let examples = [];   // [{ text, labelIndex }]
+let examples = [];   // [{ text, labelIndex, vec }] - vec بيتحسب وقت التشغيل، مش بيتخزن
 
 function brainDocRef(){
   return db.collection(BRAIN_DOC_PATH[0]).doc(BRAIN_DOC_PATH[1]);
 }
 
+function attachVectors(){
+  for(const ex of examples){ if(!ex.vec) ex.vec = textToVector(ex.text); }
+}
+
 async function loadState(){
-  network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, MAX_LABELS]);
   labels = [];
   examples = [];
   if(!firebaseReady || !db) return; // هيشتغل أوفلاين بذاكرة مؤقتة لو Firebase مش متاح
@@ -264,47 +240,40 @@ async function loadState(){
       const data = snap.data();
       labels = data.labels || [];
       examples = data.examples || [];
-      const layers = data.layersJson ? JSON.parse(data.layersJson) : null;
-      network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, MAX_LABELS], layers);
+      attachVectors();
     }
   } catch(e){ console.error('تعذر تحميل الحالة من Firebase', e); }
 }
 async function saveState(){
   if(!firebaseReady || !db) return;
   try{
-    // أوزان الشبكة بتتحفظ كنص JSON جوه حقل واحد (Firestore مش مريح
-    // مع مصفوفات متداخلة عميقة كحقول مباشرة).
+    // بنشيل .vec قبل الحفظ (بيتحسب تاني وقت التحميل) عشان نوفر
+    // مساحة في Firestore - الأمثلة بس محتاجة النص والفئة.
+    const examplesToSave = examples.map(e=>({ text:e.text, labelIndex:e.labelIndex }));
     await brainDocRef().set({
-      layersJson: JSON.stringify(network.serialize()),
-      labels, examples,
+      labels, examples: examplesToSave,
       updatedAt: Date.now()
     });
   } catch(e){ console.error('تعذر الحفظ في Firebase', e); }
 }
 
-/* إعادة تدريب الشبكة على كل الأمثلة المحفوظة من الصفر - بيمنع
-   "النسيان الكارثي" (catastrophic forgetting) اللي بيحصل لو دربنا
-   على مثال جديد بس من غير ما نراجع القديم. */
-async function retrainAll(){
-  network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, MAX_LABELS]);
-  if(examples.length === 0) return;
-  const EPOCHS = 250, LR = 0.4;
-  for(let e=0;e<EPOCHS;e++){
-    for(const ex of examples){
-      network.trainStep(textToVector(ex.text), oneHot(ex.labelIndex, MAX_LABELS), LR);
-    }
-  }
+function addExample(text, labelIndex){
+  const vec = textToVector(text);
+  examples.push({ text, labelIndex, vec });
 }
 
 function classify(text){
-  const out = network.predict(textToVector(text))[0];
-  let bestIdx=-1, bestVal=-1;
-  for(const lab of labels){
-    if(out[lab.index] > bestVal){ bestVal = out[lab.index]; bestIdx = lab.index; }
+  if(examples.length===0) return { confident:false, confidence:0 };
+  const vec = textToVector(text);
+  let bestSim=-1, bestExample=null;
+  for(const ex of examples){
+    const sim = cosineSim(vec, ex.vec);
+    if(sim>bestSim){ bestSim=sim; bestExample=ex; }
   }
-  if(bestIdx===-1 || bestVal < CONFIDENCE_THRESHOLD) return { confident:false, confidence:bestVal<0?0:bestVal };
-  const label = labels.find(l=>l.index===bestIdx);
-  return { confident:true, confidence:bestVal, label };
+  if(!bestExample || bestSim < CONFIDENCE_THRESHOLD) return { confident:false, confidence:bestSim<0?0:bestSim };
+  const label = labels.find(l=>l.index===bestExample.labelIndex);
+  if(!label) return { confident:false, confidence:0 };
+  return { confident:true, confidence:bestSim, label };
 }
 
 /* =========================================================
@@ -316,7 +285,6 @@ const sendBtn = document.getElementById('send-btn');
 const brainGrid = document.getElementById('brain-grid');
 const statLabels = document.getElementById('stat-labels');
 const statExamples = document.getElementById('stat-examples');
-document.getElementById('stat-max').textContent = MAX_LABELS;
 
 function scrollToBottom(){ chatEl.scrollTop = chatEl.scrollHeight; }
 
@@ -344,9 +312,12 @@ function addSystem(text){
 
 function renderBrainGrid(){
   brainGrid.innerHTML='';
-  for(let i=0;i<MAX_LABELS;i++){
+  // شبكة بلا سقف: خلية واحدة لكل فئة موجودة فعلاً، بدل شبكة ثابتة
+  // 40 خلية كانت مربوطة بحجم مخرج الشبكة العصبية القديمة.
+  const cellCount = Math.max(20, labels.length);
+  for(let i=0;i<cellCount;i++){
     const cell = document.createElement('div');
-    cell.className = 'neuron' + (labels.some(l=>l.index===i) ? ' lit' : '');
+    cell.className = 'neuron' + (i<labels.length ? ' lit' : '');
     cell.id = 'neuron-'+i;
     brainGrid.appendChild(cell);
   }
@@ -387,21 +358,13 @@ function showTeachCard(originalText){
 
     let label = nameInput ? labels.find(l=>l.name===nameInput) : null;
     if(!label){
-      if(labels.length >= MAX_LABELS){
-        card.remove();
-        addSystem('العقل وصل لأقصى عدد فئات (' + MAX_LABELS + ') - محتاج تكبير الشبكة عشان يتعلم أكتر.');
-        return;
-      }
-      const usedIndices = labels.map(l=>l.index);
-      let freeIndex = 0;
-      while(usedIndices.includes(freeIndex)) freeIndex++;
-      label = { index: freeIndex, name: nameInput || ('فئة_'+(labels.length+1)), responses: [] };
+      // بلا سقف: كل فئة جديدة بتاخد index تسلسلي، ومفيش أقصى عدد.
+      label = { index: labels.length, name: nameInput || ('فئة_'+(labels.length+1)), responses: [] };
       labels.push(label);
     }
     if(!label.responses.includes(responseInput)) label.responses.push(responseInput);
-    examples.push({ text: originalText, labelIndex: label.index });
+    addExample(originalText, label.index);
 
-    await retrainAll();
     await saveState();
     renderBrainGrid();
     pulseNeuron(label.index);
@@ -416,6 +379,54 @@ function showTeachCard(originalText){
     }
   });
 }
+
+function showBulkImportCard(){
+  const card = document.createElement('div');
+  card.className='bulk-card';
+  card.innerHTML = `
+    <div class="label">استيراد جماعي - علّمه عشرات الأمثلة مرة واحدة</div>
+    <div class="hint">كل سطر بالصيغة: <b class="mono">الفئة | الرسالة | الرد</b><br>لو الفئة موجودة قبل كده، الرسالة هتتضاف عليها كمثال جديد. مثال:<br><span class="mono">تحية | اهلا | اهلا بيك وسهلا</span></div>
+    <textarea class="bulk-text" placeholder="تحية | اهلا | اهلا بيك&#10;تحية | السلام عليكم | وعليكم السلام&#10;وداع | مع السلامة | في أمان الله"></textarea>
+    <div class="bulk-row">
+      <button class="bulk-cancel">إلغاء</button>
+      <button class="bulk-confirm">استورد</button>
+    </div>
+  `;
+  chatEl.appendChild(card);
+  scrollToBottom();
+
+  card.querySelector('.bulk-cancel').addEventListener('click', ()=>{ card.remove(); });
+  card.querySelector('.bulk-confirm').addEventListener('click', async ()=>{
+    const raw = card.querySelector('.bulk-text').value;
+    const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+    if(lines.length===0){ return; }
+
+    card.querySelector('.bulk-confirm').textContent = 'بيستورد...';
+    card.querySelector('.bulk-confirm').disabled = true;
+
+    let added = 0, skipped = 0;
+    for(const line of lines){
+      const parts = line.split('|').map(p=>p.trim());
+      if(parts.length < 3 || !parts[0] || !parts[1] || !parts[2]){ skipped++; continue; }
+      const [catName, msg, resp] = parts;
+      let label = labels.find(l=>l.name===catName);
+      if(!label){
+        label = { index: labels.length, name: catName, responses: [] };
+        labels.push(label);
+      }
+      if(!label.responses.includes(resp)) label.responses.push(resp);
+      addExample(msg, label.index);
+      added++;
+    }
+
+    await saveState();
+    renderBrainGrid();
+    card.remove();
+    addSystem('اتستوردت ' + added + ' مثال ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
+  });
+}
+
+document.getElementById('bulk-btn').addEventListener('click', showBulkImportCard);
 
 async function handleSend(){
   const text = inputEl.value.trim();
@@ -439,7 +450,6 @@ inputEl.addEventListener('keydown', e=>{ if(e.key==='Enter') handleSend(); });
 document.getElementById('reset-btn').addEventListener('click', async ()=>{
   if(!confirm('هتتمسح كل حاجة اتعلمها العقل. متأكد؟')) return;
   labels=[]; examples=[];
-  network = new NeuralNetwork([INPUT_DIM, HIDDEN_DIM, MAX_LABELS]);
   await saveState();
   renderBrainGrid();
   chatEl.innerHTML='';
