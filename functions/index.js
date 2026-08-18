@@ -56,12 +56,26 @@ const LR = 0.28;
 const CONTEXT_SIZE = 5;          // آخر كام رسالة نفتكرها للسياق
 
 /* ================= معالجة النص العربي ================= */
-const STOPWORDS = new Set([
-  'في','من','على','عن','الى','إلى','يا','او','أو','ثم','هل','لا','لم','لن',
-  'ما','هذا','هذه','ذلك','تلك','التي','الذي','و','كان','كانت','يكون','مع',
+// كلمات وصل/حروف جر أساسية - بتتشال دايمًا من أي تحليل معنى.
+const BASE_STOPWORDS = new Set([
+  'في','من','على','عن','الى','إلى','و','كان','كانت','يكون','مع',
   'كل','بعض','كذلك','ايضا','أيضا','انا','أنا','انت','أنت','هو','هي','احنا',
-  'إحنا','بس','يعني','عشان','علشان'
+  'إحنا','عشان','علشان'
 ]);
+// كلمات حشو وترحيب/إستئذان - مالهاش قيمة في تحديد "نية" السؤال، بس
+// لازم تفضل موجودة وقت التوليد (tokenizeForGen) عشان الجملة تطلع طبيعية،
+// وكمان لازم تفضل متاحة لتحليل المشاعر (sentimentScore) لأن كلمات زي
+// "تمام"/"وحش" بتحمل مشاعر حتى لو مالهاش دخل بالمعنى الأساسي للسؤال.
+const FILLER_WORDS = new Set([
+  'تمام','طيب','طب','خلاص','ماشي','ماشى','كده','كدا','بقى','بقه','بقولك',
+  'قولك','يلا','هلا','يا','عم','ثم','هل','لا','لم','لن','ما','هذا','هذه',
+  'ذلك','تلك','التي','الذي','بس','يعني','برضو','برضه','اصلا','أصلا',
+  'صراحة','بصراحة','اه','آه','ايوه','أيوه','ايوة','معلش','معلهش','حاضر',
+  'اوك','او','أو','لأ','فا','لسه','ولا','اهو','خلينا','ممكن','لو سمحت'
+]);
+// الاتحاد ده بيتستخدم بس وقت بناء متجه "المعنى/النية" (textToVector) -
+// مش وقت التوليد ولا تحليل المشاعر، عشان كل مرحلة تشوف الكلمات اللي محتاجاها بالظبط.
+const INTENT_STOPWORDS = new Set([...BASE_STOPWORDS, ...FILLER_WORDS]);
 
 function toWesternDigits(text){
   const map = { '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9' };
@@ -76,9 +90,10 @@ function normalizeArabic(text){
     .replace(/ـ/g,'')
     .replace(/[^\u0621-\u064A0-9a-zA-Z\s]/g,' ');
 }
-// تقطيع للتصنيف (بيشيل كلمات الوصل عشان يركّز على المعنى)
+// تقطيع لاستخراج "النية والمعنى" (بيشيل كلمات الوصل والحشو والترحيب
+// عشان يركّز بس على الأفعال/الأسماء/المفاهيم الأساسية في الجملة)
 function tokenize(text){
-  return normalizeArabic(text).trim().split(/\s+/).filter(Boolean).filter(t=>!STOPWORDS.has(t));
+  return normalizeArabic(text).trim().split(/\s+/).filter(Boolean).filter(t=>!INTENT_STOPWORDS.has(t));
 }
 // تقطيع للتوليد (بيسيب كلمات الوصل عشان الجملة تطلع طبيعية)
 function tokenizeForGen(text){
@@ -105,14 +120,57 @@ function sentimentScore(tokens){
 }
 
 const VECTOR_DIM = INPUT_DIM + 1;
-function textToVector(text){
+
+/* =========================================================
+   طبقة فهم المعنى والنية (Semantic / Intent Layer) - محلي بالكامل
+   وبدون أي API خارجي:
+   1) tokenize() فوق بيشيل كلمات الحشو/الترحيب فيركّز على المفاهيم.
+   2) هنا بنحسب TF-IDF محلي: أي كلمة بتتكرر في كتير من الأمثلة
+      (زي كلمات عامة جدًا نسيت الفلترة تشيلها) بتاخد وزن أقل تلقائيًا،
+      وأي كلمة نادرة/مميزة (زي "حنفية"، "إصلاح") بتاخد وزن أعلى -
+      وده اللي بيخلي البحث يركّز على "مضمون" الجملة مش مجرد حروفها.
+   ========================================================= */
+function idfWeight(df, totalDocs){
+  // IDF ملطّف (Smoothed) - دايمًا رقم موجب حتى لو الكلمة جديدة تمامًا (df=0)
+  return Math.log(((totalDocs||0) + 1) / ((df||0) + 1)) + 1;
+}
+// بيحسب/يحدّث جدول تكرار الكلمات عبر الوثائق (Document Frequency) بشكل
+// تراكمي من غير ما نحتاج نعيد قراءة كل الـ 3000+ مثال في كل مرة.
+const MAX_VOCAB = 6000; // سقف أمان لحجم القاموس عشان مستند Firestore ميكبرش أوي
+function updateIDF(existingDF, newTexts){
+  const df = Object.assign({}, existingDF || {});
+  let vocabSize = Object.keys(df).length;
+  for(const text of newTexts){
+    const uniqueTokens = new Set(tokenize(text));
+    for(const t of uniqueTokens){
+      if(df[t]!==undefined){ df[t] += 1; }
+      else if(vocabSize < MAX_VOCAB){ df[t] = 1; vocabSize++; }
+      // لو القاموس وصل للسقف، بنتجاهل كلمات جديدة تمامًا (نادرة جدًا أصلاً)
+      // بدل ما المستند يكبر من غير حدود - الكلمات المعروفة بتفضل تتحدث عادي.
+    }
+  }
+  return df;
+}
+
+function textToVector(text, idf){
   const vec = new Array(INPUT_DIM).fill(0);
   const tokens = tokenize(text);
-  for(const t of tokens){ vec[hashWord(t)] += 1; }
-  for(let i=0;i<tokens.length-1;i++){ vec[hashWord(tokens[i]+'_'+tokens[i+1])] += 1.4; }
+  const df = (idf && idf.df) || {};
+  const totalDocs = (idf && idf.totalDocs) || 0;
+  for(const t of tokens){
+    const w = idfWeight(df[t], totalDocs);
+    vec[hashWord(t)] += w;
+  }
+  // البايجرام (زوج كلمات متتاليين) بياخد وزن مضاعف بمتوسط IDF الكلمتين -
+  // ده اللي بيمسك سياق زي "إصلاح حنفية" كوحدة معنى واحدة مش كلمتين منفصلتين.
+  for(let i=0;i<tokens.length-1;i++){
+    const a=tokens[i], b=tokens[i+1];
+    const w = (idfWeight(df[a], totalDocs) + idfWeight(df[b], totalDocs)) / 2;
+    vec[hashWord(a+'_'+b)] += w * 1.4;
+  }
   const norm = Math.sqrt(vec.reduce((s,v)=>s+v*v,0));
   const normalized = norm>0 ? vec.map(v=>v/norm) : vec;
-  normalized.push(sentimentScore(tokens));
+  normalized.push(sentimentScore(tokenizeForGen(text)));
   return normalized;
 }
 function cosineSim(a,b){ let dot=0; for(let i=0;i<a.length;i++) dot += a[i]*b[i]; return dot; }
@@ -280,7 +338,7 @@ function generateSentence(model, maxWords=12){
    لأننا مش بنجيب كل brain_examples وقت الرد - بس الذاكرة
    الممثلة (Replay Buffer) المتخزنة جوه trainedModel.
    ========================================================= */
-let cache = { updatedAt: 0, labels: [], replayBuffer: [], net: null, markovByLabel: {} };
+let cache = { updatedAt: 0, labels: [], replayBuffer: [], replayVectors: [], net: null, markovByLabel: {}, idf: { df:{}, totalDocs:0 } };
 
 async function refreshCacheIfNeeded(){
   const [stateSnap, modelSnap] = await Promise.all([STATE_REF().get(), MODEL_REF().get()]);
@@ -297,9 +355,15 @@ async function refreshCacheIfNeeded(){
   cache.updatedAt = freshAt;
   cache.labels = state.labels || [];
   cache.replayBuffer = model.replayBuffer || [];
+  cache.idf = { df: model.idfDF || {}, totalDocs: model.idfTotalDocs || 0 };
   cache.net = (model.ready && model.weights)
     ? new NeuralNetwork([VECTOR_DIM, HIDDEN_DIM, cache.labels.length], model.weights)
     : null;
+
+  // بنجهّز متجه TF-IDF لكل مثال في الـ Replay Buffer مرة واحدة هنا (لما
+  // الكاش يتحدث بس)، بدل ما نعيد حسابه في كل رسالة مستخدم - كده البحث
+  // بالتشابه الدلالي (Cosine Similarity) بيبقى سريع جدًا وقت الرد الفعلي.
+  cache.replayVectors = cache.replayBuffer.map(ex => textToVector(ex.text, cache.idf));
 
   // بناء موديل Markov لكل فئة من عينة الذاكرة + الردود الجاهزة المرتبطة بيها
   const byLabel = {};
@@ -354,6 +418,12 @@ exports.onChunkWritten = onDocumentWritten('brain_examples/{chunkId}', async (ev
   const modelData = modelSnap.exists ? modelSnap.data() : {};
   let replayBuffer = modelData.replayBuffer || [];
 
+  // تحديث جدول TF-IDF تراكميًا بالأمثلة الجديدة بس (الـ Replay Buffer
+  // اتحسب بالفعل قبل كده، مش محتاجين نعيد عدّه عشان منضخمش الأرقام).
+  const idfDF = updateIDF(modelData.idfDF, newExamples.map(e=>e.text));
+  const idfTotalDocs = (modelData.idfTotalDocs || 0) + newExamples.length;
+  const idf = { df: idfDF, totalDocs: idfTotalDocs };
+
   // تحديث الـ Replay Buffer بعينة عشوائية متوازنة (Reservoir Sampling لكل فئة)
   const perLabelCount = {};
   for(const ex of replayBuffer) perLabelCount[ex.labelIndex] = (perLabelCount[ex.labelIndex]||0)+1;
@@ -380,7 +450,7 @@ exports.onChunkWritten = onDocumentWritten('brain_examples/{chunkId}', async (ev
   const trainingSet = newExamples.concat(replayBuffer);
   for(let e=0;e<EPOCHS_INCREMENTAL;e++){
     for(const ex of trainingSet){
-      const vec = textToVector(ex.text);
+      const vec = textToVector(ex.text, idf);
       const reps = ex.trust>=1 ? 2 : 1;
       for(let r=0;r<reps;r++) net.trainStep([vec], oneHot(ex.labelIndex, labels.length), LR);
     }
@@ -391,6 +461,8 @@ exports.onChunkWritten = onDocumentWritten('brain_examples/{chunkId}', async (ev
     weights: net.layers.map(l=>({ w:l.weights, b:l.bias })),
     labelsCount: labels.length,
     replayBuffer,
+    idfDF,
+    idfTotalDocs,
     trainedOn: (modelData.trainedOn||0) + newExamples.length,
     updatedAt: Date.now()
   });
@@ -450,7 +522,12 @@ exports.classify = onCall(async (request) => {
 
   const key = contextKeyFor(request);
 
-  // 1) محرك الحساب - لو الرسالة عملية حسابية، السيرفر بيحسبها فورًا
+  /* ---------- أ) فلترة كلمات الحشو وتنظيف النص ----------
+     tokenize() جوه textToVector هيشيل الترحيب/الحشو ("تمام"، "طيب"،
+     "بقولك"، "يا عم"...) ويسيب المفاهيم الأساسية بس - ده بيحصل تلقائيًا
+     في كل نداء لـ textToVector تحت. */
+
+  /* ---------- ب) فحص هل الرسالة معادلة رياضية ---------- */
   const mathResult = evaluateMathExpression(text);
   if(mathResult !== null){
     const reply = safeReply('الناتج = ' + mathResult);
@@ -458,7 +535,7 @@ exports.classify = onCall(async (request) => {
     return { type:'math', confident:true, confidence:100, reply, result:mathResult };
   }
 
-  // 2) تحميل السياق + الذاكرة الخفيفة (Cache)
+  // تحميل السياق + الذاكرة الخفيفة (Cache) - فيها IDF والمتجهات الجاهزة
   const [context, state] = await Promise.all([ loadContext(key), refreshCacheIfNeeded() ]);
   const labels = state.labels;
   if(labels.length===0 || state.replayBuffer.length===0){
@@ -467,18 +544,22 @@ exports.classify = onCall(async (request) => {
     return { confident:false, confidence:0, reply };
   }
 
-  const vec = textToVector(text);
+  // متجه الجملة بعد فلترة الحشو + توزين TF-IDF (وزن أعلى للمفاهيم النادرة/المميزة)
+  const vec = textToVector(text, state.idf);
 
-  // 3) نظام التشابه (على عينة الذاكرة الممثلة بس - مش كل الداتا)
+  /* ---------- ج) البحث عن أقرب معنى بـ Cosine Similarity ----------
+     المتجهات جاهزة ومحسوبة مسبقًا في الكاش (cache.replayVectors) بنفس
+     أوزان TF-IDF، فمفيش حساب مكرر ولا مطابقة حروف عشوائية. */
   let bestSim=-1, bestExample=null;
-  for(const ex of state.replayBuffer){
-    const exVec = textToVector(ex.text);
+  for(let i=0;i<state.replayBuffer.length;i++){
+    const ex = state.replayBuffer[i];
+    const exVec = state.replayVectors[i];
     const sim = cosineSim(vec, exVec) * (0.6 + 0.4*ex.trust);
     if(sim>bestSim){ bestSim=sim; bestExample=ex; }
   }
   const simLabel = bestExample ? labels.find(l=>l.index===bestExample.labelIndex) : null;
 
-  // 4) الشبكة العصبية المدرّبة تراكميًا
+  // الشبكة العصبية المدرّبة تراكميًا (بنفس متجه TF-IDF المستخدم وقت التدريب)
   let nnLabel=null, nnConf=0;
   if(state.net){
     const out = state.net.predict([vec])[0];
@@ -487,7 +568,9 @@ exports.classify = onCall(async (request) => {
     if(bestIdx!==-1){ nnLabel = labels.find(l=>l.index===bestIdx); nnConf = bestVal; }
   }
 
-  const feeling = sentimentScore(tokenize(text));
+  // تحليل المشاعر بيشتغل على كل الكلمات (من غير فلترة الحشو) عشان كلمات
+  // زي "تمام"/"وحش" تفضل تتحسب حتى لو مالهاش دخل في تحديد "نية" السؤال
+  const feeling = sentimentScore(tokenizeForGen(text));
 
   let finalLabel = null, rawConfidence = 0;
   if(simLabel && nnLabel && simLabel.index===nnLabel.index){
@@ -510,7 +593,7 @@ exports.classify = onCall(async (request) => {
     return { confident:false, confidence:confidencePct, reply, feeling, source: ddgAnswer ? 'duckduckgo' : 'default' };
   }
 
-  // 5) محاولة التوليد أولاً (N-Gram) قبل الرجوع لرد ثابت
+  /* ---------- د) تطبيق محرك N-Gram التوليدي لو محتاج صياغة جديدة ---------- */
   const markov = state.markovByLabel[finalLabel.index];
   const generated = generateSentence(markov, 12);
   const isNewSentence = generated && !(finalLabel.responses||[]).includes(generated);
