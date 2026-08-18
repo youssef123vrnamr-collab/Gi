@@ -38,6 +38,10 @@ setGlobalOptions({ timeoutSeconds: 120, memory: '512MiB' });
 const STATE_REF   = () => db.collection('miniBrain').doc('sharedState');
 const MODEL_REF   = () => db.collection('miniBrain').doc('trainedModel');
 const EXAMPLES_COL = () => db.collection('brain_examples');
+// وثيقة إحصائيات خفيفة منفصلة - فيها رقمين بس (فئات + أمثلة) عشان الواجهة
+// تقدر تعرضهم فورًا من غير ما تحمّل مصفوفة الفئات الكاملة (labels) ولا أي
+// أمثلة، لا في أول تحميل ولا في أي تحديث لحظي بعد كده.
+const STATS_REF   = () => db.collection('miniBrain').doc('liveStats');
 const CONV_COL      = () => db.collection('brain_conversations');
 
 /* ================= إعدادات عامة ================= */
@@ -394,6 +398,13 @@ exports.onChunkWritten = onDocumentWritten('brain_examples/{chunkId}', async (ev
   await STATE_REF().set({
     totalExamples: FieldValue.increment(newExamples.length)
   }, { merge:true });
+
+  // نفس الرقم بيتحدّث في وثيقة الإحصائيات الخفيفة عشان الواجهة تستقبله
+  // فورًا من غير ما تسمع لتغييرات sharedState الكاملة (اللي فيها labels/responses)
+  await STATS_REF().set({
+    examples: FieldValue.increment(newExamples.length),
+    updatedAt: Date.now()
+  }, { merge:true });
 });
 
 /* =========================================================
@@ -536,6 +547,10 @@ exports.addExample = onCall(async (request) => {
       labels, currentChunkId: chunkId, currentChunkCount: chunkCount+1, updatedAt: Date.now()
     }, { merge:true });
 
+    // عدد الفئات الحالي دايمًا معروف هنا (طول labels بعد الإضافة) - نكتبه
+    // كرقم مطلق في وثيقة الإحصائيات الخفيفة عشان الواجهة تعرضه فورًا
+    tx.set(STATS_REF(), { categories: labels.length, updatedAt: Date.now() }, { merge:true });
+
     return { ok:true, labelName: name, labelIndex: label.index, chunkId };
   });
 });
@@ -577,6 +592,7 @@ exports.bulkImport = onCall(async (request) => {
     }
 
     tx.set(STATE_REF(), { labels, updatedAt: Date.now() }, { merge:true });
+    tx.set(STATS_REF(), { categories: labels.length, updatedAt: Date.now() }, { merge:true });
     return { labels, parsedExamples, added, skipped };
   });
 
@@ -684,7 +700,20 @@ exports.resetBrain = onCall(async () => {
     totalExamples: 0, updatedAt: Date.now()
   });
   await MODEL_REF().set({ ready:false, replayBuffer:[], updatedAt: Date.now() });
+  await STATS_REF().set({ categories: 0, examples: 0, updatedAt: Date.now() });
   cache = { updatedAt: 0, labels: [], replayBuffer: [], net: null, markovByLabel: {} };
 
   return { ok:true, chunksDeleted: deleted };
+});
+
+/* =========================================================
+   getStats: نداء خفيف جدًا (قراءة وثيقة واحدة صغيرة فيها رقمين
+   بس) عشان الواجهة تعرض عدد الفئات والأمثلة فورًا عند الفتح، من
+   غير ما تنتظر الـ Listener اللحظي يوصل أو تحمّل labels/responses
+   الكاملة. لو الوثيقة مش موجودة لسه (أول تشغيل)، بيرجع أصفار.
+   ========================================================= */
+exports.getStats = onCall(async () => {
+  const snap = await STATS_REF().get();
+  const data = snap.exists ? snap.data() : {};
+  return { categories: data.categories || 0, examples: data.examples || 0 };
 });
