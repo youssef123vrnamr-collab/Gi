@@ -37,8 +37,8 @@
   .server-dot{width:6px;height:6px;border-radius:50%;background:var(--ok);}
   .server-dot.off{background:#f05a5a;}
   .head-btns{display:flex;gap:6px;}
-  #reset-btn,#bulk-btn{background:none;border:1px solid var(--line);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;padding:5px 9px;border-radius:7px;}
-  #reset-btn:active,#bulk-btn:active{background:rgba(255,255,255,.06);}
+  #reset-btn,#bulk-btn,#diagnose-btn{background:none;border:1px solid var(--line);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;padding:5px 9px;border-radius:7px;}
+  #reset-btn:active,#bulk-btn:active,#diagnose-btn:active{background:rgba(255,255,255,.06);}
   #bulk-btn{border-color:rgba(124,92,255,.4);color:var(--synapse);}
 
   .bulk-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(124,92,255,.35);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;}
@@ -57,13 +57,7 @@
   .bulk-confirm{background:var(--synapse);color:#fff;}
   .bulk-cancel{background:transparent;border:1px solid var(--line) !important;color:var(--text-dim);}
 
-  #brain-grid{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;margin-top:10px;}
-  .neuron{aspect-ratio:1;border-radius:2px;background:rgba(255,255,255,.06);transition:background .4s, box-shadow .4s;}
-  .neuron.lit{background:var(--synapse);box-shadow:0 0 6px var(--synapse-dim);}
-  .neuron.pulse{animation:pulse 1.1s ease;}
-  @keyframes pulse{0%{transform:scale(1)}40%{transform:scale(1.35)}100%{transform:scale(1)}}
-
-  #stats-row{display:flex;gap:14px;margin-top:9px;font-size:11px;color:var(--text-dim);}
+  #stats-row{display:flex;gap:14px;margin-top:12px;font-size:11px;color:var(--text-dim);}
   #stats-row b{color:var(--text);font-weight:600;}
 
   #chat{flex:1;overflow-y:auto;padding:16px 14px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch;}
@@ -116,10 +110,10 @@
       </div>
       <div class="head-btns">
         <button id="bulk-btn">استيراد جماعي</button>
+        <button id="diagnose-btn">تشخيص وإصلاح العداد</button>
         <button id="reset-btn">مسح كل التعلّم</button>
       </div>
     </div>
-    <div id="brain-grid"></div>
     <div id="stats-row">
       <span>متعلّم: <b id="stat-labels">0</b> فئة</span>
       <span>أمثلة: <b id="stat-examples">0</b></span>
@@ -165,21 +159,10 @@ try{
 }
 const BRAIN_DOC_PATH = ['miniBrain', 'sharedState'];
 function brainDocRef(){ return db.collection(BRAIN_DOC_PATH[0]).doc(BRAIN_DOC_PATH[1]); }
-// كود نقل التمارين القديمة أوتوماتيك للسيستم الجديد
-(async function migrateExamples() {
-  try {
-    const mainDoc = await brainDocRef().get();
-    if (mainDoc.exists && mainDoc.data().examples && mainDoc.data().examples.length > 0) {
-      const oldExamples = mainDoc.data().examples;
-      await brainDocRef().collection('chunks').doc('0').set({
-        examples: oldExamples
-      }, { merge: true });
-      alert('الله ينور! تم نقل ' + oldExamples.length + ' مثال قديم للعقل بنجاح! 🎉');
-    }
-  } catch (err) {
-    console.error('Migration error:', err);
-  }
-})();
+// وثيقة الإحصائيات الخفيفة - رقمين بس (فئات + أمثلة)، من غير أي
+// مصفوفة فئات أو ردود كاملة، عشان تظهر فورًا حتى لو عندك آلاف الأمثلة.
+function statsDocRef(){ return db.collection('miniBrain').doc('liveStats'); }
+
 function ensureFirebaseAuth(){
   return new Promise((resolve)=>{
     if(!firebaseReady){ resolve(false); return; }
@@ -194,6 +177,21 @@ function ensureFirebaseAuth(){
 }
 
 /* =========================================================
+   جلسة ثابتة لكل جهاز - عشان السيرفر يقدر يفتكر آخر 5 رسائل
+   من المحادثة ويربط بيها ردوده (Server-Side Context Memory).
+   ========================================================= */
+function getOrCreateSessionId(){
+  const KEY = 'miniBrainSessionId';
+  let id = localStorage.getItem(KEY);
+  if(!id){
+    id = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,10);
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}
+const SESSION_ID = getOrCreateSessionId();
+
+/* =========================================================
    نداءات السيرفر (Cloud Functions) - ده كل "الذكاء" دلوقتي.
    المتصفح نفسه مبقاش فيه شبكة عصبية ولا حسابات تشابه خالص -
    بيبعت النص للسيرفر ويستنى الرد بس.
@@ -204,29 +202,36 @@ const callBulkImport    = ()=>functions.httpsCallable('bulkImport');
 const callSubmitFeedback= ()=>functions.httpsCallable('submitFeedback');
 const callLearnEmoji    = ()=>functions.httpsCallable('learnEmoji');
 const callResetBrain    = ()=>functions.httpsCallable('resetBrain');
+const callGetStats      = ()=>functions.httpsCallable('getStats');
+const callDiagnoseStats = ()=>functions.httpsCallable('diagnoseAndRepairStats');
+const callRebuildModel  = ()=>functions.httpsCallable('rebuildModelFromExistingData');
 
 /* =========================================================
-   الحالة المحلية - دلوقتي بس للعرض (كم فئة/مثال وشكل الشبكة في
-   الهيدر)، مش للحساب. بتتحدث لحظيًا من Firestore (onSnapshot)
-   عشان أي جهاز يشوف تعليم أي جهاز تاني فورًا.
+   الحالة المحلية - رقمين بس للعرض (فئات/أمثلة) + قاموس الإيموجي
+   المتعلّم. مفيش تخزين لمصفوفة الفئات ولا الأمثلة على الفرونت
+   إند خالص دلوقتي - كل حاجة بتتحسب وتتخزن على السيرفر فقط.
    ========================================================= */
-let labels = [];
-let examples = [];
+let liveCategories = 0;
+let liveExamples = 0;
 let learnedEmojis = {};
-
-function applyRemoteData(data){
-  labels = data.labels || [];
-  examples = data.examples || [];
-  learnedEmojis = data.emojiMeanings || {};
-}
 
 function startRealtimeSync(){
   if(!firebaseReady || !db) return;
+
+  // مزامنة لحظية لقاموس الإيموجي المتعلّم بس (مش الفئات ولا الأمثلة)
   brainDocRef().onSnapshot((snap)=>{
     if(!snap.exists) return;
-    applyRemoteData(snap.data());
-    renderBrainGrid();
-  }, err=>console.error('تعذرت متابعة التحديثات اللحظية', err));
+    learnedEmojis = snap.data().emojiMeanings || {};
+  }, err=>console.error('تعذرت متابعة الإيموجي المتعلّم', err));
+
+  // مزامنة لحظية للإحصائيات الخفيفة بس (رقمين، من غير أي بيانات تانية)
+  statsDocRef().onSnapshot((snap)=>{
+    if(!snap.exists) return;
+    const data = snap.data();
+    liveCategories = data.categories || 0;
+    liveExamples = data.examples || 0;
+    renderStats();
+  }, err=>console.error('تعذرت متابعة الإحصائيات اللحظية', err));
 }
 
 /* =========================================================
@@ -283,7 +288,6 @@ function extractEmojis(text){ return splitGraphemes(text.trim()).filter(c=>c.tri
 const chatEl = document.getElementById('chat');
 const inputEl = document.getElementById('msg-input');
 const sendBtn = document.getElementById('send-btn');
-const brainGrid = document.getElementById('brain-grid');
 const statLabels = document.getElementById('stat-labels');
 const statExamples = document.getElementById('stat-examples');
 const serverDot = document.getElementById('server-dot');
@@ -296,6 +300,15 @@ function setServerStatus(ok, label){
 
 function scrollToBottom(){ chatEl.scrollTop = chatEl.scrollHeight; }
 
+// شرط أمان موحّد: بيقرأ الرد من data.reply (الشكل الرسمي)، وبيرجع
+// لـ data.text لو موجود لأي سبب، وبعدين رد افتراضي لائق - عشان
+// كلمة "undefined" ميظهرش في الشاشة نهائيًا تحت أي ظرف.
+function getReplyText(data){
+  const val = (data && (data.reply || data.text));
+  if(typeof val === 'string' && val.trim().length) return val;
+  return 'أهلاً بك! كيف يمكنني مساعدتك؟';
+}
+
 let lastFeedbackTarget = null;
 let lastBotMsgDiv = null;
 
@@ -306,7 +319,7 @@ function addMessage(text, cls, confidence, feedbackTarget){
   if(confidence!==undefined){
     const c = document.createElement('span');
     c.className='confidence mono';
-    c.textContent = 'ثقة: ' + Math.round(confidence*100) + '%';
+    c.textContent = 'ثقة: ' + Math.round(confidence) + '%';
     div.appendChild(c);
   }
   if(cls && cls.indexOf('bot')!==-1){ lastBotMsgDiv = div; lastFeedbackTarget = feedbackTarget || null; }
@@ -340,23 +353,11 @@ function addSystem(text){
   scrollToBottom();
 }
 
-function renderBrainGrid(){
-  brainGrid.innerHTML='';
-  const cellCount = Math.max(20, labels.length);
-  for(let i=0;i<cellCount;i++){
-    const cell = document.createElement('div');
-    cell.className = 'neuron' + (i<labels.length ? ' lit' : '');
-    cell.id = 'neuron-'+i;
-    brainGrid.appendChild(cell);
-  }
-  statLabels.textContent = labels.length;
-  statExamples.textContent = examples.length;
-}
-function pulseNeuron(index){
-  const el = document.getElementById('neuron-'+index);
-  if(!el) return;
-  el.classList.add('pulse');
-  setTimeout(()=>el.classList.remove('pulse'), 1100);
+// عرض نصي بحت للأرقام - مفيش أي رسم DOM تاني هنا مهما كبر عدد
+// الأمثلة أو الفئات، فمفيش استهلاك معالج أو تحميل زيادة على الصفحة.
+function renderStats(){
+  statLabels.textContent = liveCategories;
+  statExamples.textContent = liveExamples;
 }
 
 function showTeachCard(originalText){
@@ -388,14 +389,18 @@ function showTeachCard(originalText){
       const res = await callAddExample()({ text: originalText, labelName: nameInput, response: responseInput });
       card.remove();
       addSystem('اتبعتت للسيرفر ✓ (فئة: ' + res.data.labelName + ') - بيدرّب الشبكة دلوقتي، هتلاقي رد أدق خلال ثواني.');
-      pulseNeuron(res.data.labelIndex);
       // نستنى شوية ونجرب نسأل السيرفر تاني عشان نوريه اتعلم فعلاً
       setTimeout(async ()=>{
         try{
-          const r = await callClassify()({ text: originalText });
+          const r = await callClassify()({ text: originalText, sessionId: SESSION_ID });
           if(r.data.confident){
-            const target = { exampleId: r.data.matchedExampleId, label: r.data.label, userText: originalText };
-            addMessage(r.data.label.responses[Math.floor(Math.random()*r.data.label.responses.length)], 'bot', r.data.confidence, target);
+            const target = {
+              exampleId: r.data.matchedExampleId,
+              chunkId: r.data.matchedExampleChunkId,
+              label: r.data.label,
+              userText: originalText
+            };
+            addMessage(getReplyText(r.data), 'bot', r.data.confidence, target);
           }
         }catch(e){ console.error(e); }
       }, 1500);
@@ -411,8 +416,7 @@ async function applyFeedback(target, score, msgDiv){
   if(!target) return;
   if(target.exampleId){
     try{
-      await callSubmitFeedback()({ exampleId: target.exampleId, score });
-      if(target.label) pulseNeuron(target.label.index);
+      await callSubmitFeedback()({ exampleId: target.exampleId, chunkId: target.chunkId, score });
     }catch(e){ console.error(e); }
   }
   if(msgDiv){
@@ -488,9 +492,42 @@ async function handleEmojiFeedback(text){
    واحدة - مفيش أي معالجة أو تدريب في المتصفح، فمهما كان الملف
    كبير مش هيهنج جهازك، لأن كل الشغل الحقيقي بيحصل عند جوجل.
    ========================================================= */
-async function importLines(lines){
-  const res = await callBulkImport()({ lines });
-  return res.data; // { added, skipped }
+/* =========================================================
+   السيرفر بيقبل لحد 500 سطر في النداء الواحد، لكن إحنا بنبعت
+   200 بس في كل نداء عشان نسيب مساحة أمان ونقدر نعرض progress
+   bar حقيقي أثناء الاستيراد بدل ما ننتظر ملف ضخم دفعة واحدة.
+   ========================================================= */
+const BATCH_SIZE = 200;
+function splitIntoBatches(lines, size = BATCH_SIZE){
+  const batches = [];
+  for(let i=0; i<lines.length; i+=size) batches.push(lines.slice(i, i+size));
+  return batches;
+}
+
+async function importLinesInBatches(lines, onProgress){
+  const batches = splitIntoBatches(lines);
+  let totalAdded = 0, totalSkipped = 0;
+  for(let i=0; i<batches.length; i++){
+    const batch = batches[i];
+    let result;
+    try{
+      result = await callBulkImport()({ lines: batch });
+    }catch(err){
+      console.warn('فشلت الدفعة رقم ' + (i+1) + '، بيحاول تاني...', err);
+      try{ result = await callBulkImport()({ lines: batch }); }
+      catch(err2){ throw new Error('حصل خطأ عند إرسال دفعة ' + (i+1) + ' من ' + batches.length); }
+    }
+    totalAdded += result.data.added;
+    totalSkipped += result.data.skipped;
+    if(typeof onProgress === 'function'){
+      onProgress({
+        batchIndex: i+1, totalBatches: batches.length,
+        percent: Math.round(((i+1)/batches.length)*100),
+        added: totalAdded, skipped: totalSkipped
+      });
+    }
+  }
+  return { added: totalAdded, skipped: totalSkipped };
 }
 
 function showBulkImportCard(){
@@ -531,8 +568,12 @@ function showBulkImportCard(){
       const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
       if(lines.length===0){ fileLabel.textContent='⚠️ الملف فاضي'; return; }
       fileLabel.textContent = '📎 ' + file.name + ' (' + lines.length + ' سطر)';
-      showBusy('بيبعت ' + lines.length + ' سطر للسيرفر ويدرّب هناك...');
-      const { added, skipped } = await importLines(lines);
+      showBusy('بيبعت ' + lines.length + ' سطر للسيرفر على دفعات...');
+      const { added, skipped } = await importLinesInBatches(lines, (p)=>{
+        card.querySelector('.bulk-progress-fill').style.width = p.percent + '%';
+        card.querySelector('.bulk-progress-pct').textContent = p.percent + '%';
+        card.querySelector('.bulk-progress-label').textContent = 'دفعة ' + p.batchIndex + ' من ' + p.totalBatches + ' (' + p.added + ' مثال لحد دلوقتي)';
+      });
       card.remove();
       addSystem('اتستوردت ' + added + ' مثال من "' + file.name + '" وبيتدرّب على السيرفر دلوقتي ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
     }catch(e){
@@ -548,9 +589,13 @@ function showBulkImportCard(){
     card.querySelector('.bulk-confirm').textContent = 'بيبعت للسيرفر...';
     card.querySelector('.bulk-confirm').disabled = true;
     card.querySelector('.bulk-cancel').disabled = true;
-    showBusy('بيبعت ' + lines.length + ' سطر للسيرفر ويدرّب هناك...');
+    showBusy('بيبعت ' + lines.length + ' سطر للسيرفر على دفعات...');
     try{
-      const { added, skipped } = await importLines(lines);
+      const { added, skipped } = await importLinesInBatches(lines, (p)=>{
+        card.querySelector('.bulk-progress-fill').style.width = p.percent + '%';
+        card.querySelector('.bulk-progress-pct').textContent = p.percent + '%';
+        card.querySelector('.bulk-progress-label').textContent = 'دفعة ' + p.batchIndex + ' من ' + p.totalBatches + ' (' + p.added + ' مثال لحد دلوقتي)';
+      });
       card.remove();
       addSystem('اتستوردت ' + added + ' مثال وبيتدرّب على السيرفر دلوقتي ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
     }catch(e){
@@ -577,14 +622,24 @@ async function handleSend(){
   addMessage(text, 'user');
   const thinking = addMessage('...بيفكر', 'bot system');
   try{
-    const res = await callClassify()({ text });
+    const res = await callClassify()({ text, sessionId: SESSION_ID });
     thinking.remove();
-    if(res.data.confident){
-      const response = res.data.label.responses[Math.floor(Math.random()*res.data.label.responses.length)];
-      const target = { exampleId: res.data.matchedExampleId, label: res.data.label, userText: text };
-      addMessage(response, 'bot', res.data.confidence, target);
+
+    if(res.data.type==='math'){
+      // السيرفر حسبها فورًا - مفيش تصنيف ولا تعليم هنا
+      addMessage(getReplyText(res.data), 'bot', res.data.confidence);
+    } else if(res.data.confident){
+      // الرد نفسه (مؤلَّف بمحرك N-Gram أو رد ثابت) بيجي جاهز من السيرفر
+      const replyText = getReplyText(res.data) + (res.data.generated ? ' ✨' : '');
+      const target = {
+        exampleId: res.data.matchedExampleId,
+        chunkId: res.data.matchedExampleChunkId,
+        label: res.data.label,
+        userText: text
+      };
+      addMessage(replyText, 'bot', res.data.confidence, target);
     } else {
-      addMessage('مش لسه اتعلمت رد مناسب على الكلام ده 🤔', 'bot uncertain', res.data.confidence);
+      addMessage(getReplyText(res.data), 'bot uncertain', res.data.confidence);
       showTeachCard(text);
     }
   }catch(e){
@@ -605,6 +660,46 @@ document.getElementById('reset-btn').addEventListener('click', async ()=>{
   }catch(e){ console.error(e); addSystem('⚠️ تعذر المسح - جرب تاني.'); }
 });
 
+// تشخيص وإصلاح: بيصلح عداد الفئات/الأمثلة فورًا، وبعدين (لو لقى أمثلة
+// حقيقية في brain_examples) بيعيد بناء الموديل منها عشان يتعرف على أي
+// جملة اتعلمها قبل كده حتى لو الـ replayBuffer الحالي متأخر عنها.
+document.getElementById('diagnose-btn').addEventListener('click', async ()=>{
+  const btn = document.getElementById('diagnose-btn');
+  btn.disabled = true; btn.textContent = 'بيفحص...';
+  try{
+    const diag = await callDiagnoseStats()();
+    const d = diag.data;
+    console.log('تقرير التشخيص الكامل:', d);
+    addSystem('تشخيص: لقيت ' + d.brainExamplesCollection.realExampleCount + ' مثال حقيقي في ' + d.brainExamplesCollection.chunksCount + ' Chunk، وتم تصحيح العداد فورًا.');
+    if(d.legacyDataFound && d.legacyDataFound.length){
+      addSystem('⚠️ لقيت بيانات في أماكن تانية برضو (تفاصيلها في الـ Console): ' + d.legacyDataFound.map(x=>x.location).join(' / '));
+    }
+
+    if(d.brainExamplesCollection.realExampleCount > 0){
+      btn.textContent = 'بيعيد بناء الموديل...';
+      const rebuild = await callRebuildModel()();
+      if(rebuild.data.ok){
+        addSystem('✓ اتبنى الموديل تاني من ' + rebuild.data.totalExamplesUsed + ' مثال حقيقي - جرب دلوقتي جمل قديمة زي "انت عاملة ايه".');
+        const stats = await callGetStats()();
+        liveCategories = stats.data.categories || 0;
+        liveExamples = stats.data.examples || 0;
+        renderStats();
+      } else {
+        addSystem('⚠️ ' + (rebuild.data.reason || 'تعذر إعادة بناء الموديل.'));
+      }
+    }
+  }catch(e){
+    console.error(e);
+    // بنعرض كود ورسالة الخطأ الحقيقية بدل نص عام - عشان تعرف السبب
+    // فورًا من غير ما تفتح Console (خصوصًا إنك بتشتغل من الموبايل).
+    // 'not-found'/'internal' غالبًا معناه الفانكشن دي لسه مش متعملها deploy.
+    const code = e.code ? ('[' + e.code + '] ') : '';
+    addSystem('⚠️ تعذر التشخيص: ' + code + (e.message || 'خطأ غير معروف') + '. لو الكود not-found أو internal، يبقى الأرجح إنك لسه محتاج تعمل deploy لآخر نسخة من functions/index.js.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'تشخيص وإصلاح العداد';
+  }
+});
+
 async function boot(){
   addSystem('جاري الاتصال بالسيرفر...');
   const authOk = await ensureFirebaseAuth();
@@ -614,20 +709,24 @@ async function boot(){
     return;
   }
   setServerStatus(true, 'متصل - الشبكة شغالة على السيرفر');
+
+  // نداء خفيف جدًا (رقمين بس) عشان الأرقام تظهر فورًا من غير أي تأخير
   try{
-    const snap = await brainDocRef().get();
-    if(snap.exists) applyRemoteData(snap.data());
+    const stats = await callGetStats()();
+    liveCategories = stats.data.categories || 0;
+    liveExamples = stats.data.examples || 0;
+    renderStats();
   }catch(e){ console.error(e); }
+
   startRealtimeSync();
   chatEl.innerHTML='';
-  renderBrainGrid();
 
-  if(labels.length===0){
+  if(liveCategories===0){
     addSystem('العقل ده فاضي دلوقتي - كل رد فيه إنت اللي هتعلّمه ليه بنفسك، والتدريب هيحصل على السيرفر مش على جهازك.');
     addSystem('بعد أي رد واثق مني، ابعتلي إيموجي (زي 👍 أو 👎) عشان تصحّح لي.');
     addMessage('اكتبلي أي رسالة، ولو معرفتش أرد هطلب منك تعلّمني 🧠', 'bot');
   } else {
-    addSystem('اترجع العقل - عنده ' + labels.length + ' فئة اتعلمها قبل كده (متزامن من كل أجهزتك، ومدرّب على السيرفر).');
+    addSystem('اترجع العقل - عنده ' + liveCategories + ' فئة اتعلمها قبل كده (متزامن من كل أجهزتك، ومدرّب على السيرفر).');
   }
 }
 boot();
