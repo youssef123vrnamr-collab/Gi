@@ -37,8 +37,8 @@
   .server-dot{width:6px;height:6px;border-radius:50%;background:var(--ok);}
   .server-dot.off{background:#f05a5a;}
   .head-btns{display:flex;gap:6px;}
-  #reset-btn,#bulk-btn{background:none;border:1px solid var(--line);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;padding:5px 9px;border-radius:7px;}
-  #reset-btn:active,#bulk-btn:active{background:rgba(255,255,255,.06);}
+  #reset-btn,#bulk-btn,#diagnose-btn{background:none;border:1px solid var(--line);color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:11px;padding:5px 9px;border-radius:7px;}
+  #reset-btn:active,#bulk-btn:active,#diagnose-btn:active{background:rgba(255,255,255,.06);}
   #bulk-btn{border-color:rgba(124,92,255,.4);color:var(--synapse);}
 
   .bulk-card{align-self:stretch;background:var(--panel-2);border:1px solid rgba(124,92,255,.35);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;}
@@ -110,6 +110,7 @@
       </div>
       <div class="head-btns">
         <button id="bulk-btn">استيراد جماعي</button>
+        <button id="diagnose-btn">تشخيص وإصلاح العداد</button>
         <button id="reset-btn">مسح كل التعلّم</button>
       </div>
     </div>
@@ -202,6 +203,8 @@ const callSubmitFeedback= ()=>functions.httpsCallable('submitFeedback');
 const callLearnEmoji    = ()=>functions.httpsCallable('learnEmoji');
 const callResetBrain    = ()=>functions.httpsCallable('resetBrain');
 const callGetStats      = ()=>functions.httpsCallable('getStats');
+const callDiagnoseStats = ()=>functions.httpsCallable('diagnoseAndRepairStats');
+const callRebuildModel  = ()=>functions.httpsCallable('rebuildModelFromExistingData');
 
 /* =========================================================
    الحالة المحلية - رقمين بس للعرض (فئات/أمثلة) + قاموس الإيموجي
@@ -655,6 +658,42 @@ document.getElementById('reset-btn').addEventListener('click', async ()=>{
     chatEl.innerHTML='';
     addSystem('اتمسح كل التعلّم من على السيرفر - العقل رجع فاضي زي أول مرة.');
   }catch(e){ console.error(e); addSystem('⚠️ تعذر المسح - جرب تاني.'); }
+});
+
+// تشخيص وإصلاح: بيصلح عداد الفئات/الأمثلة فورًا، وبعدين (لو لقى أمثلة
+// حقيقية في brain_examples) بيعيد بناء الموديل منها عشان يتعرف على أي
+// جملة اتعلمها قبل كده حتى لو الـ replayBuffer الحالي متأخر عنها.
+document.getElementById('diagnose-btn').addEventListener('click', async ()=>{
+  const btn = document.getElementById('diagnose-btn');
+  btn.disabled = true; btn.textContent = 'بيفحص...';
+  try{
+    const diag = await callDiagnoseStats()();
+    const d = diag.data;
+    console.log('تقرير التشخيص الكامل:', d);
+    addSystem('تشخيص: لقيت ' + d.brainExamplesCollection.realExampleCount + ' مثال حقيقي في ' + d.brainExamplesCollection.chunksCount + ' Chunk، وتم تصحيح العداد فورًا.');
+    if(d.legacyDataFound && d.legacyDataFound.length){
+      addSystem('⚠️ لقيت بيانات في أماكن تانية برضو (تفاصيلها في الـ Console): ' + d.legacyDataFound.map(x=>x.location).join(' / '));
+    }
+
+    if(d.brainExamplesCollection.realExampleCount > 0){
+      btn.textContent = 'بيعيد بناء الموديل...';
+      const rebuild = await callRebuildModel()();
+      if(rebuild.data.ok){
+        addSystem('✓ اتبنى الموديل تاني من ' + rebuild.data.totalExamplesUsed + ' مثال حقيقي - جرب دلوقتي جمل قديمة زي "انت عاملة ايه".');
+        const stats = await callGetStats()();
+        liveCategories = stats.data.categories || 0;
+        liveExamples = stats.data.examples || 0;
+        renderStats();
+      } else {
+        addSystem('⚠️ ' + (rebuild.data.reason || 'تعذر إعادة بناء الموديل.'));
+      }
+    }
+  }catch(e){
+    console.error(e);
+    addSystem('⚠️ تعذر التشخيص - جرب تاني.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'تشخيص وإصلاح العداد';
+  }
 });
 
 async function boot(){
