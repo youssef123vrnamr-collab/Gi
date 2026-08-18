@@ -1,8 +1,5 @@
 name: نشر تلقائي على Firebase
 
-# ده بيشتغل لوحده أي مرة تعمل فيها push على main - يعني أي رفع
-# كود جديد (زي اللي بتعمله من صفحة GitHub في المتصفح أو من الـ
-# Codespace) هيشغّل النشر أوتوماتيك من غير أي تدخل منك.
 on:
   push:
     branches:
@@ -28,6 +25,6 @@ jobs:
         run: npm install -g firebase-tools
 
       - name: النشر الكامل (functions + hosting + firestore)
-        run: firebase deploy --non-interactive --token "$FIREBASE_TOKEN"
+        run: firebase deploy --project ai-prime-f9017 --non-interactive --token "$FIREBASE_TOKEN"
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
