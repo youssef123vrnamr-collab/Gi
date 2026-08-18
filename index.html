@@ -180,6 +180,21 @@ function ensureFirebaseAuth(){
 }
 
 /* =========================================================
+   جلسة ثابتة لكل جهاز - عشان السيرفر يقدر يفتكر آخر 5 رسائل
+   من المحادثة ويربط بيها ردوده (Server-Side Context Memory).
+   ========================================================= */
+function getOrCreateSessionId(){
+  const KEY = 'miniBrainSessionId';
+  let id = localStorage.getItem(KEY);
+  if(!id){
+    id = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,10);
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}
+const SESSION_ID = getOrCreateSessionId();
+
+/* =========================================================
    نداءات السيرفر (Cloud Functions) - ده كل "الذكاء" دلوقتي.
    المتصفح نفسه مبقاش فيه شبكة عصبية ولا حسابات تشابه خالص -
    بيبعت النص للسيرفر ويستنى الرد بس.
@@ -197,12 +212,12 @@ const callResetBrain    = ()=>functions.httpsCallable('resetBrain');
    عشان أي جهاز يشوف تعليم أي جهاز تاني فورًا.
    ========================================================= */
 let labels = [];
-let examples = [];
+let examplesCount = 0; // دلوقتي بيجي من data.totalExamples - الأمثلة نفسها متخزنة في brain_examples مش هنا
 let learnedEmojis = {};
 
 function applyRemoteData(data){
   labels = data.labels || [];
-  examples = data.examples || [];
+  examplesCount = data.totalExamples || 0;
   learnedEmojis = data.emojiMeanings || {};
 }
 
@@ -292,7 +307,7 @@ function addMessage(text, cls, confidence, feedbackTarget){
   if(confidence!==undefined){
     const c = document.createElement('span');
     c.className='confidence mono';
-    c.textContent = 'ثقة: ' + Math.round(confidence*100) + '%';
+    c.textContent = 'ثقة: ' + Math.round(confidence) + '%';
     div.appendChild(c);
   }
   if(cls && cls.indexOf('bot')!==-1){ lastBotMsgDiv = div; lastFeedbackTarget = feedbackTarget || null; }
@@ -336,7 +351,7 @@ function renderBrainGrid(){
     brainGrid.appendChild(cell);
   }
   statLabels.textContent = labels.length;
-  statExamples.textContent = examples.length;
+  statExamples.textContent = examplesCount;
 }
 function pulseNeuron(index){
   const el = document.getElementById('neuron-'+index);
@@ -378,10 +393,15 @@ function showTeachCard(originalText){
       // نستنى شوية ونجرب نسأل السيرفر تاني عشان نوريه اتعلم فعلاً
       setTimeout(async ()=>{
         try{
-          const r = await callClassify()({ text: originalText });
+          const r = await callClassify()({ text: originalText, sessionId: SESSION_ID });
           if(r.data.confident){
-            const target = { exampleId: r.data.matchedExampleId, label: r.data.label, userText: originalText };
-            addMessage(r.data.label.responses[Math.floor(Math.random()*r.data.label.responses.length)], 'bot', r.data.confidence, target);
+            const target = {
+              exampleId: r.data.matchedExampleId,
+              chunkId: r.data.matchedExampleChunkId,
+              label: r.data.label,
+              userText: originalText
+            };
+            addMessage(r.data.reply, 'bot', r.data.confidence, target);
           }
         }catch(e){ console.error(e); }
       }, 1500);
@@ -397,7 +417,7 @@ async function applyFeedback(target, score, msgDiv){
   if(!target) return;
   if(target.exampleId){
     try{
-      await callSubmitFeedback()({ exampleId: target.exampleId, score });
+      await callSubmitFeedback()({ exampleId: target.exampleId, chunkId: target.chunkId, score });
       if(target.label) pulseNeuron(target.label.index);
     }catch(e){ console.error(e); }
   }
@@ -474,9 +494,42 @@ async function handleEmojiFeedback(text){
    واحدة - مفيش أي معالجة أو تدريب في المتصفح، فمهما كان الملف
    كبير مش هيهنج جهازك، لأن كل الشغل الحقيقي بيحصل عند جوجل.
    ========================================================= */
-async function importLines(lines){
-  const res = await callBulkImport()({ lines });
-  return res.data; // { added, skipped }
+/* =========================================================
+   السيرفر بيقبل لحد 500 سطر في النداء الواحد، لكن إحنا بنبعت
+   200 بس في كل نداء عشان نسيب مساحة أمان ونقدر نعرض progress
+   bar حقيقي أثناء الاستيراد بدل ما ننتظر ملف ضخم دفعة واحدة.
+   ========================================================= */
+const BATCH_SIZE = 200;
+function splitIntoBatches(lines, size = BATCH_SIZE){
+  const batches = [];
+  for(let i=0; i<lines.length; i+=size) batches.push(lines.slice(i, i+size));
+  return batches;
+}
+
+async function importLinesInBatches(lines, onProgress){
+  const batches = splitIntoBatches(lines);
+  let totalAdded = 0, totalSkipped = 0;
+  for(let i=0; i<batches.length; i++){
+    const batch = batches[i];
+    let result;
+    try{
+      result = await callBulkImport()({ lines: batch });
+    }catch(err){
+      console.warn('فشلت الدفعة رقم ' + (i+1) + '، بيحاول تاني...', err);
+      try{ result = await callBulkImport()({ lines: batch }); }
+      catch(err2){ throw new Error('حصل خطأ عند إرسال دفعة ' + (i+1) + ' من ' + batches.length); }
+    }
+    totalAdded += result.data.added;
+    totalSkipped += result.data.skipped;
+    if(typeof onProgress === 'function'){
+      onProgress({
+        batchIndex: i+1, totalBatches: batches.length,
+        percent: Math.round(((i+1)/batches.length)*100),
+        added: totalAdded, skipped: totalSkipped
+      });
+    }
+  }
+  return { added: totalAdded, skipped: totalSkipped };
 }
 
 function showBulkImportCard(){
@@ -517,8 +570,12 @@ function showBulkImportCard(){
       const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
       if(lines.length===0){ fileLabel.textContent='⚠️ الملف فاضي'; return; }
       fileLabel.textContent = '📎 ' + file.name + ' (' + lines.length + ' سطر)';
-      showBusy('بيبعت ' + lines.length + ' سطر للسيرفر ويدرّب هناك...');
-      const { added, skipped } = await importLines(lines);
+      showBusy('بيبعت ' + lines.length + ' سطر للسيرفر على دفعات...');
+      const { added, skipped } = await importLinesInBatches(lines, (p)=>{
+        card.querySelector('.bulk-progress-fill').style.width = p.percent + '%';
+        card.querySelector('.bulk-progress-pct').textContent = p.percent + '%';
+        card.querySelector('.bulk-progress-label').textContent = 'دفعة ' + p.batchIndex + ' من ' + p.totalBatches + ' (' + p.added + ' مثال لحد دلوقتي)';
+      });
       card.remove();
       addSystem('اتستوردت ' + added + ' مثال من "' + file.name + '" وبيتدرّب على السيرفر دلوقتي ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
     }catch(e){
@@ -534,9 +591,13 @@ function showBulkImportCard(){
     card.querySelector('.bulk-confirm').textContent = 'بيبعت للسيرفر...';
     card.querySelector('.bulk-confirm').disabled = true;
     card.querySelector('.bulk-cancel').disabled = true;
-    showBusy('بيبعت ' + lines.length + ' سطر للسيرفر ويدرّب هناك...');
+    showBusy('بيبعت ' + lines.length + ' سطر للسيرفر على دفعات...');
     try{
-      const { added, skipped } = await importLines(lines);
+      const { added, skipped } = await importLinesInBatches(lines, (p)=>{
+        card.querySelector('.bulk-progress-fill').style.width = p.percent + '%';
+        card.querySelector('.bulk-progress-pct').textContent = p.percent + '%';
+        card.querySelector('.bulk-progress-label').textContent = 'دفعة ' + p.batchIndex + ' من ' + p.totalBatches + ' (' + p.added + ' مثال لحد دلوقتي)';
+      });
       card.remove();
       addSystem('اتستوردت ' + added + ' مثال وبيتدرّب على السيرفر دلوقتي ✓' + (skipped>0 ? (' (اتجاهل ' + skipped + ' سطر بصيغة غلط)') : ''));
     }catch(e){
@@ -563,14 +624,24 @@ async function handleSend(){
   addMessage(text, 'user');
   const thinking = addMessage('...بيفكر', 'bot system');
   try{
-    const res = await callClassify()({ text });
+    const res = await callClassify()({ text, sessionId: SESSION_ID });
     thinking.remove();
-    if(res.data.confident){
-      const response = res.data.label.responses[Math.floor(Math.random()*res.data.label.responses.length)];
-      const target = { exampleId: res.data.matchedExampleId, label: res.data.label, userText: text };
-      addMessage(response, 'bot', res.data.confidence, target);
+
+    if(res.data.type==='math'){
+      // السيرفر حسبها فورًا - مفيش تصنيف ولا تعليم هنا
+      addMessage(res.data.reply, 'bot', res.data.confidence);
+    } else if(res.data.confident){
+      // الرد نفسه (مؤلَّف بمحرك N-Gram أو رد ثابت) بيجي جاهز من السيرفر
+      const replyText = res.data.reply + (res.data.generated ? ' ✨' : '');
+      const target = {
+        exampleId: res.data.matchedExampleId,
+        chunkId: res.data.matchedExampleChunkId,
+        label: res.data.label,
+        userText: text
+      };
+      addMessage(replyText, 'bot', res.data.confidence, target);
     } else {
-      addMessage('مش لسه اتعلمت رد مناسب على الكلام ده 🤔', 'bot uncertain', res.data.confidence);
+      addMessage(res.data.reply || 'مش لسه اتعلمت رد مناسب على الكلام ده 🤔', 'bot uncertain', res.data.confidence);
       showTeachCard(text);
     }
   }catch(e){
