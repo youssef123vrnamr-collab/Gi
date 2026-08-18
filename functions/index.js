@@ -408,9 +408,41 @@ exports.onChunkWritten = onDocumentWritten('brain_examples/{chunkId}', async (ev
 });
 
 /* =========================================================
+   ضمانة أمان: أي رد راجع من classify لازم يكون نص غير فاضي
+   دايمًا. لو القيمة undefined / null / فاضية، بيتم استبدالها
+   برد افتراضي لائق عشان الفرونت إند ميعرضش كلمة "undefined"
+   نهائيًا تحت أي ظرف.
+   ========================================================= */
+const DEFAULT_FALLBACK_REPLY = 'أهلاً بيك! 👋 مش لسه فاهم قصدك بالظبط، ممكن تقول لي بطريقة تانية؟';
+function safeReply(value, fallback){
+  const v = (value===undefined || value===null) ? '' : String(value).trim();
+  return v.length ? v : (fallback || DEFAULT_FALLBACK_REPLY);
+}
+
+// محاولة خفيفة لجلب رد سريع من DuckDuckGo Instant Answer API لما مفيش
+// تطابق كافي عندنا. بيرجع null لو فشل أو مفيش نتيجة، عشان نرجع
+// للرد الافتراضي اللائق من غير ما نكسر الطلب أبدًا.
+async function duckDuckGoFallback(query){
+  try{
+    const controller = new AbortController();
+    const timeout = setTimeout(()=>controller.abort(), 3000);
+    const url = 'https://api.duckduckgo.com/?q=' + encodeURIComponent(query) + '&format=json&no_html=1&skip_disambig=1';
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if(!res.ok) return null;
+    const json = await res.json();
+    const answer = (json.AbstractText || json.Answer || (json.RelatedTopics && json.RelatedTopics[0] && json.RelatedTopics[0].Text) || '').toString().trim();
+    return answer.length ? answer : null;
+  }catch(e){
+    return null; // أي خطأ (Timeout/شبكة) بيرجع null بهدوء - الرد الافتراضي هيتولى الباقي
+  }
+}
+
+/* =========================================================
    classify: نقطة الدخول الوحيدة من الفرونت إند لكل رسالة.
    الترتيب: حساب رياضي فوري -> سياق المحادثة -> تصنيف -> توليد
    جملة جديدة -> لو مفيش، رد ثابت -> لو مفيش ثقة، طلب توضيح.
+   الشكل الموحّد اللي بيترجع دايمًا لازم يحتوي: { reply, confidence }
    ========================================================= */
 exports.classify = onCall(async (request) => {
   const text = (request.data && request.data.text || '').toString();
@@ -421,7 +453,7 @@ exports.classify = onCall(async (request) => {
   // 1) محرك الحساب - لو الرسالة عملية حسابية، السيرفر بيحسبها فورًا
   const mathResult = evaluateMathExpression(text);
   if(mathResult !== null){
-    const reply = 'الناتج = ' + mathResult;
+    const reply = safeReply('الناتج = ' + mathResult);
     await saveContext(key, text, reply);
     return { type:'math', confident:true, confidence:100, reply, result:mathResult };
   }
@@ -430,7 +462,7 @@ exports.classify = onCall(async (request) => {
   const [context, state] = await Promise.all([ loadContext(key), refreshCacheIfNeeded() ]);
   const labels = state.labels;
   if(labels.length===0 || state.replayBuffer.length===0){
-    const reply = 'لسه ماتعلمتش حاجة كفاية عشان أرد عليك صح، علّمني شوية أمثلة الأول 🙏';
+    const reply = safeReply('لسه ماتعلمتش حاجة كفاية عشان أرد عليك صح، علّمني شوية أمثلة الأول 🙏');
     await saveContext(key, text, reply);
     return { confident:false, confidence:0, reply };
   }
@@ -470,20 +502,24 @@ exports.classify = onCall(async (request) => {
   const confidencePct = Math.min(100, Math.round(Math.max(rawConfidence,0)*100));
 
   if(!finalLabel || confidencePct < Math.round(CONFIDENCE_THRESHOLD*100)){
-    const reply = 'مش فاهم قصدك بالظبط 🤔 ممكن توضح أكتر؟';
+    // مفيش تطابق كافي - نجرب نحول السؤال لـ DuckDuckGo الأول،
+    // ولو مفيش نتيجة أو حصل خطأ، نرجع رد افتراضي لائق (مش undefined أبدًا).
+    const ddgAnswer = await duckDuckGoFallback(text);
+    const reply = safeReply(ddgAnswer, 'مش فاهم قصدك بالظبط 🤔 ممكن توضح أكتر؟');
     await saveContext(key, text, reply);
-    return { confident:false, confidence:confidencePct, reply, feeling };
+    return { confident:false, confidence:confidencePct, reply, feeling, source: ddgAnswer ? 'duckduckgo' : 'default' };
   }
 
   // 5) محاولة التوليد أولاً (N-Gram) قبل الرجوع لرد ثابت
   const markov = state.markovByLabel[finalLabel.index];
   const generated = generateSentence(markov, 12);
   const isNewSentence = generated && !(finalLabel.responses||[]).includes(generated);
-  const reply = isNewSentence ? generated : (
-    (finalLabel.responses && finalLabel.responses.length)
-      ? finalLabel.responses[Math.floor(Math.random()*finalLabel.responses.length)]
-      : 'تمام 👍'
+  // بنفلتر أي رد فاضي أو undefined جوه المصفوفة قبل ما نختار منها عشوائيًا
+  const responsesPool = (finalLabel.responses||[]).filter(r => typeof r === 'string' && r.trim().length);
+  const pickedReply = isNewSentence ? generated : (
+    responsesPool.length ? responsesPool[Math.floor(Math.random()*responsesPool.length)] : null
   );
+  const reply = safeReply(pickedReply, 'تمام 👍');
 
   await saveContext(key, text, reply);
   return {
