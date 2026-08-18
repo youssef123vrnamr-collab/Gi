@@ -165,7 +165,21 @@ try{
 }
 const BRAIN_DOC_PATH = ['miniBrain', 'sharedState'];
 function brainDocRef(){ return db.collection(BRAIN_DOC_PATH[0]).doc(BRAIN_DOC_PATH[1]); }
-
+// كود نقل التمارين القديمة أوتوماتيك للسيستم الجديد
+(async function migrateExamples() {
+  try {
+    const mainDoc = await brainDocRef().get();
+    if (mainDoc.exists && mainDoc.data().examples && mainDoc.data().examples.length > 0) {
+      const oldExamples = mainDoc.data().examples;
+      await brainDocRef().collection('chunks').doc('0').set({
+        examples: oldExamples
+      }, { merge: true });
+      alert('الله ينور! تم نقل ' + oldExamples.length + ' مثال قديم للعقل بنجاح! 🎉');
+    }
+  } catch (err) {
+    console.error('Migration error:', err);
+  }
+})();
 function ensureFirebaseAuth(){
   return new Promise((resolve)=>{
     if(!firebaseReady){ resolve(false); return; }
