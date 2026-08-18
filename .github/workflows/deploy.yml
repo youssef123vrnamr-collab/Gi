@@ -1,0 +1,33 @@
+name: نشر تلقائي على Firebase
+
+# ده بيشتغل لوحده أي مرة تعمل فيها push على main - يعني أي رفع
+# كود جديد (زي اللي بتعمله من صفحة GitHub في المتصفح أو من الـ
+# Codespace) هيشغّل النشر أوتوماتيك من غير أي تدخل منك.
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: تنزيل الكود من المستودع
+        uses: actions/checkout@v4
+
+      - name: تجهيز Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: تثبيت مكتبات السيرفر (functions)
+        run: npm install
+        working-directory: functions
+
+      - name: تثبيت أداة Firebase CLI
+        run: npm install -g firebase-tools
+
+      - name: النشر الكامل (functions + hosting + firestore)
+        run: firebase deploy --non-interactive --token "$FIREBASE_TOKEN"
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
