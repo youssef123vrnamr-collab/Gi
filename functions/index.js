@@ -820,7 +820,7 @@ exports.resetBrain = onCall(async () => {
   });
   await MODEL_REF().set({ ready:false, replayBuffer:[], updatedAt: Date.now() });
   await STATS_REF().set({ categories: 0, examples: 0, updatedAt: Date.now() });
-  cache = { updatedAt: 0, labels: [], replayBuffer: [], net: null, markovByLabel: {} };
+  cache = { updatedAt: 0, labels: [], replayBuffer: [], replayVectors: [], net: null, markovByLabel: {}, idf: { df:{}, totalDocs:0 } };
 
   return { ok:true, chunksDeleted: deleted };
 });
@@ -835,4 +835,178 @@ exports.getStats = onCall(async () => {
   const snap = await STATS_REF().get();
   const data = snap.exists ? snap.data() : {};
   return { categories: data.categories || 0, examples: data.examples || 0 };
+});
+
+/* =========================================================
+   diagnoseAndRepairStats: بيحل مشكلة "0 فئة / 0 أمثلة" من غير ما
+   يخمّن اسم Collection قديم عشوائي. بيعمل حاجتين:
+
+   1) تشخيص: بيفحص أماكن التخزين الحالية (miniBrain/sharedState،
+      brain_examples) وكمان أشهر الأسماء المحتملة لأي بيانات قديمة
+      قبل التحويل لهيكلة الـ V2 الحالية (examples/knowledge/dataset
+      كـ Collections، أو حقل examples[] جوه sharedState نفسها زي
+      ما كانت الهيكلة الأصلية قبل التقسيم لـ Chunks). التقرير ده
+      بيوريك بالظبط فين البيانات الحقيقية موجودة دلوقتي.
+
+   2) إصلاح فوري وآمن: بيعيد حساب miniBrain/liveStats من الأرقام
+      الحقيقية الموجودة فعلاً في sharedState.labels و brain_examples
+      (عدّ حقيقي، مش الرقم المتراكم القديم اللي ممكن يبقى متأخر أو
+      اتصفّر). العملية دي آمنة 100% - بتصحّح رقم بس، مش بتمسح
+      ولا تعدّل أي بيانات فعلية.
+   ========================================================= */
+exports.diagnoseAndRepairStats = onCall(async () => {
+  const report = { checkedLocations: [], legacyDataFound: [] };
+
+  // 1) الوضع الحالي في sharedState - بنشوف هل فيه حقل "examples" قديم
+  //    متبقي من قبل التحويل لـ Chunks (الهيكلة القديمة كانت Document
+  //    واحد فيه examples[] بدل Collection مستقلة)
+  const stateSnap = await STATE_REF().get();
+  const stateData = stateSnap.exists ? stateSnap.data() : {};
+  const labels = stateData.labels || [];
+  report.sharedState = {
+    exists: stateSnap.exists,
+    labelsCount: labels.length,
+    totalExamplesField: stateData.totalExamples || 0,
+    hasLegacyExamplesArrayField: Array.isArray(stateData.examples) && stateData.examples.length > 0
+  };
+  if(report.sharedState.hasLegacyExamplesArrayField){
+    report.legacyDataFound.push({
+      location: 'miniBrain/sharedState.examples (حقل قديم جوه نفس الوثيقة)',
+      count: stateData.examples.length
+    });
+  }
+
+  // 2) العدّ الحقيقي من brain_examples (مصدر الحقيقة الفعلي حاليًا)
+  const chunksSnap = await EXAMPLES_COL().get();
+  let realExampleCount = 0;
+  chunksSnap.forEach(doc=>{
+    const arr = doc.data().examples;
+    if(Array.isArray(arr)) realExampleCount += arr.length;
+  });
+  report.brainExamplesCollection = { chunksCount: chunksSnap.size, realExampleCount };
+
+  // 3) فحص أشهر الأسماء المحتملة لأي Collection أو Document قديم مرتبط
+  //    بالتعلّم قبل الهيكلة الحالية، عشان نتأكد إن مفيش بيانات متيتّمة
+  const candidateCollections = ['examples', 'knowledge', 'dataset', 'training_data', 'qa_pairs', 'brain'];
+  for(const name of candidateCollections){
+    const snap = await db.collection(name).limit(3).get();
+    report.checkedLocations.push({ collection: name, found: !snap.empty, sampleCount: snap.size });
+    if(!snap.empty){
+      report.legacyDataFound.push({
+        location: 'collection: ' + name,
+        sampleIds: snap.docs.map(d=>d.id),
+        sampleData: snap.docs.map(d=>d.data())
+      });
+    }
+  }
+  const candidateDocs = [['miniBrain','brainData'], ['miniBrain','legacyExamples'], ['brain','data']];
+  for(const [col,doc] of candidateDocs){
+    const snap = await db.collection(col).doc(doc).get();
+    report.checkedLocations.push({ doc: col+'/'+doc, found: snap.exists });
+    if(snap.exists){
+      report.legacyDataFound.push({ location: 'doc: ' + col + '/' + doc, data: snap.data() });
+    }
+  }
+
+  // 4) إصلاح فوري وآمن: نعيد كتابة liveStats بالأرقام الحقيقية الموجودة
+  //    فعلاً دلوقتي (labels.length + العدّ الحقيقي من brain_examples)
+  await STATS_REF().set({
+    categories: labels.length,
+    examples: realExampleCount,
+    updatedAt: Date.now()
+  }, { merge:true });
+  // بنصحح كمان totalExamples في sharedState لو كان متأخر عن العدّ الحقيقي
+  if((stateData.totalExamples || 0) !== realExampleCount){
+    await STATE_REF().set({ totalExamples: realExampleCount }, { merge:true });
+  }
+
+  report.repaired = { categories: labels.length, examples: realExampleCount };
+  return report;
+});
+
+/* =========================================================
+   rebuildModelFromExistingData: بيحل مشكلة "الموديل مش بيتعرف على
+   جمل قديمة اتعلمها قبل كده" (زي "انت عاملة ايه"، "كم عمرك").
+
+   السبب: trainedModel.replayBuffer (اللي عليه البحث بالتشابه
+   والتدريب) بيتبني بس من onChunkWritten وقت ما Chunk جديد يتكتب -
+   فلو فيه أمثلة قديمة كانت مكتوبة في brain_examples قبل ما الكود
+   يتحدّث أو قبل ما الـ Trigger يشتغل عليها، مبتوصلش لـ replayBuffer
+   ولا للشبكة العصبية أبدًا لحد ما حد "يلمسها" بكتابة جديدة.
+
+   الحل: نعيد بناء الـ replayBuffer + جدول TF-IDF + الشبكة العصبية
+   من الصفر، بس المرة دي من *كل* الأمثلة الموجودة فعلاً في
+   brain_examples (مش بس الجديد)، فأي جملة اتعلمها قبل كده بترجع
+   تتعرف عليها فورًا بعد التشغيل ده.
+   ========================================================= */
+exports.rebuildModelFromExistingData = onCall({ timeoutSeconds: 300, memory: '1GiB' }, async () => {
+  const stateSnap = await STATE_REF().get();
+  const state = stateSnap.exists ? stateSnap.data() : {};
+  const labels = state.labels || [];
+  if(labels.length===0){
+    return { ok:false, reason: 'مفيش فئات (labels) في sharedState أصلاً - شغّل diagnoseAndRepairStats الأول عشان تعرف فين البيانات الحقيقية.' };
+  }
+
+  // 1) اقرأ *كل* الأمثلة الحقيقية من كل الـ Chunks - دي المرة الوحيدة
+  //    اللي بنعمل فيها كده (مش وقت كل رسالة مستخدم) عشان كده آمن للـ RAM
+  const chunksSnap = await EXAMPLES_COL().get();
+  let allExamples = [];
+  chunksSnap.forEach(doc=>{
+    const arr = doc.data().examples;
+    if(Array.isArray(arr)) allExamples = allExamples.concat(arr.filter(e=>e && e.trust!==0 && e.text));
+  });
+  if(allExamples.length===0){
+    return { ok:false, reason: 'brain_examples فاضية تمامًا - مفيش أمثلة نبني منها الموديل.' };
+  }
+
+  // 2) TF-IDF من كل الأمثلة الحقيقية (مش عينة) - مرة واحدة بس هنا
+  const idfDF = updateIDF({}, allExamples.map(e=>e.text));
+  const idfTotalDocs = allExamples.length;
+  const idf = { df: idfDF, totalDocs: idfTotalDocs };
+
+  // 3) عينة ممثلة متوازنة لكل فئة (Reservoir) من كل التاريخ - مش بس آخر Chunk
+  const byLabel = {};
+  for(const ex of allExamples){ (byLabel[ex.labelIndex] = byLabel[ex.labelIndex] || []).push(ex); }
+  let replayBuffer = [];
+  for(const key of Object.keys(byLabel)){
+    const pool = byLabel[key];
+    if(pool.length <= REPLAY_PER_LABEL){ replayBuffer = replayBuffer.concat(pool); continue; }
+    // اختيار عشوائي لعينة REPLAY_PER_LABEL من كل تاريخ الفئة دي
+    const shuffled = pool.slice().sort(()=>Math.random()-0.5);
+    replayBuffer = replayBuffer.concat(shuffled.slice(0, REPLAY_PER_LABEL));
+  }
+
+  // 4) تدريب الشبكة من الصفر على العينة الممثلة (بنفس عدد الـ Epochs
+  //    المستخدم في التدريب التراكمي العادي، عشان الجودة تفضل ثابتة)
+  const net = new NeuralNetwork([VECTOR_DIM, HIDDEN_DIM, labels.length], null);
+  for(let e=0;e<EPOCHS_INCREMENTAL;e++){
+    for(const ex of replayBuffer){
+      const vec = textToVector(ex.text, idf);
+      const reps = ex.trust>=1 ? 2 : 1;
+      for(let r=0;r<reps;r++) net.trainStep([vec], oneHot(ex.labelIndex, labels.length), LR);
+    }
+  }
+
+  await MODEL_REF().set({
+    ready: true,
+    weights: net.layers.map(l=>({ w:l.weights, b:l.bias })),
+    labelsCount: labels.length,
+    replayBuffer,
+    idfDF,
+    idfTotalDocs,
+    trainedOn: allExamples.length,
+    updatedAt: Date.now()
+  });
+  await STATS_REF().set({ categories: labels.length, examples: allExamples.length, updatedAt: Date.now() }, { merge:true });
+  await STATE_REF().set({ totalExamples: allExamples.length }, { merge:true });
+
+  // نفضّي الكاش المحلي عشان أول رسالة جاية تجيب النسخة الجديدة فورًا
+  cache = { updatedAt: 0, labels: [], replayBuffer: [], replayVectors: [], net: null, markovByLabel: {}, idf: { df:{}, totalDocs:0 } };
+
+  return {
+    ok:true,
+    totalExamplesUsed: allExamples.length,
+    replayBufferSize: replayBuffer.length,
+    labelsCount: labels.length
+  };
 });
