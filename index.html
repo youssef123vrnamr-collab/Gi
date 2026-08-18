@@ -297,6 +297,15 @@ function setServerStatus(ok, label){
 
 function scrollToBottom(){ chatEl.scrollTop = chatEl.scrollHeight; }
 
+// شرط أمان موحّد: بيقرأ الرد من data.reply (الشكل الرسمي)، وبيرجع
+// لـ data.text لو موجود لأي سبب، وبعدين رد افتراضي لائق - عشان
+// كلمة "undefined" ميظهرش في الشاشة نهائيًا تحت أي ظرف.
+function getReplyText(data){
+  const val = (data && (data.reply || data.text));
+  if(typeof val === 'string' && val.trim().length) return val;
+  return 'أهلاً بك! كيف يمكنني مساعدتك؟';
+}
+
 let lastFeedbackTarget = null;
 let lastBotMsgDiv = null;
 
@@ -388,7 +397,7 @@ function showTeachCard(originalText){
               label: r.data.label,
               userText: originalText
             };
-            addMessage(r.data.reply, 'bot', r.data.confidence, target);
+            addMessage(getReplyText(r.data), 'bot', r.data.confidence, target);
           }
         }catch(e){ console.error(e); }
       }, 1500);
@@ -615,10 +624,10 @@ async function handleSend(){
 
     if(res.data.type==='math'){
       // السيرفر حسبها فورًا - مفيش تصنيف ولا تعليم هنا
-      addMessage(res.data.reply, 'bot', res.data.confidence);
+      addMessage(getReplyText(res.data), 'bot', res.data.confidence);
     } else if(res.data.confident){
       // الرد نفسه (مؤلَّف بمحرك N-Gram أو رد ثابت) بيجي جاهز من السيرفر
-      const replyText = res.data.reply + (res.data.generated ? ' ✨' : '');
+      const replyText = getReplyText(res.data) + (res.data.generated ? ' ✨' : '');
       const target = {
         exampleId: res.data.matchedExampleId,
         chunkId: res.data.matchedExampleChunkId,
@@ -627,7 +636,7 @@ async function handleSend(){
       };
       addMessage(replyText, 'bot', res.data.confidence, target);
     } else {
-      addMessage(res.data.reply || 'مش لسه اتعلمت رد مناسب على الكلام ده 🤔', 'bot uncertain', res.data.confidence);
+      addMessage(getReplyText(res.data), 'bot uncertain', res.data.confidence);
       showTeachCard(text);
     }
   }catch(e){
