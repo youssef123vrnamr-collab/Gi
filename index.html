@@ -690,7 +690,11 @@ document.getElementById('diagnose-btn').addEventListener('click', async ()=>{
     }
   }catch(e){
     console.error(e);
-    addSystem('⚠️ تعذر التشخيص - جرب تاني.');
+    // بنعرض كود ورسالة الخطأ الحقيقية بدل نص عام - عشان تعرف السبب
+    // فورًا من غير ما تفتح Console (خصوصًا إنك بتشتغل من الموبايل).
+    // 'not-found'/'internal' غالبًا معناه الفانكشن دي لسه مش متعملها deploy.
+    const code = e.code ? ('[' + e.code + '] ') : '';
+    addSystem('⚠️ تعذر التشخيص: ' + code + (e.message || 'خطأ غير معروف') + '. لو الكود not-found أو internal، يبقى الأرجح إنك لسه محتاج تعمل deploy لآخر نسخة من functions/index.js.');
   } finally {
     btn.disabled = false; btn.textContent = 'تشخيص وإصلاح العداد';
   }
