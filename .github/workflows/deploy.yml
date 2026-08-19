@@ -29,7 +29,39 @@ jobs:
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
 
-      - name: النشر الكامل (functions + hosting + firestore)
-        run: firebase deploy --project ai-prime-f9017 --force --non-interactive --token "$FIREBASE_TOKEN"
+      # ============================================================
+      # النشر بقى على دفعات صغيرة بدل مرة واحدة، عشان نتفادى
+      # "Quota exceeded for total allowable CPU per project per region"
+      # اللي بتحصل لو حاولنا ننشر كل الـ Cloud Functions مع بعض على
+      # حساب Free Trial. كل دفعة بتاخد استراحة (sleep) قبل اللي بعدها
+      # عشان نديله وقت يفضّي شوية من الـ CPU المستخدم.
+      # ============================================================
+
+      - name: النشر - الدفعة 1 (التصنيف + الأمثلة + التدريب)
+        run: firebase deploy --project ai-prime-f9017 --only functions:classify,functions:addExample,functions:bulkImport,functions:onBrainStateChange --force --non-interactive --token "$FIREBASE_TOKEN"
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+
+      - name: استراحة قبل الدفعة الجاية (تفريغ حصة CPU)
+        run: sleep 60
+
+      - name: النشر - الدفعة 2 (الفيدباك + الأدوات الديناميكية)
+        run: firebase deploy --project ai-prime-f9017 --only functions:submitFeedback,functions:learnEmoji,functions:resetBrain,functions:saveDynamicTool,functions:runDynamicTool --force --non-interactive --token "$FIREBASE_TOKEN"
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+
+      - name: استراحة قبل الدفعة الجاية (تفريغ حصة CPU)
+        run: sleep 60
+
+      - name: النشر - الدفعة 3 (إدارة الأدوات + التعلم من الويب)
+        run: firebase deploy --project ai-prime-f9017 --only functions:listDynamicTools,functions:toggleDynamicTool,functions:confirmPendingKnowledge,functions:rejectPendingKnowledge --force --non-interactive --token "$FIREBASE_TOKEN"
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+
+      - name: استراحة قبل نشر الاستضافة وقواعد Firestore
+        run: sleep 30
+
+      - name: النشر - الاستضافة وقواعد Firestore
+        run: firebase deploy --project ai-prime-f9017 --only hosting,firestore --force --non-interactive --token "$FIREBASE_TOKEN"
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
