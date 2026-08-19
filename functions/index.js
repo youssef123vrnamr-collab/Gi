@@ -22,7 +22,6 @@
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
-const { defineSecret } = require('firebase-functions/params');
 const admin = require('firebase-admin');
 const vm = require('node:vm');
 admin.initializeApp();
@@ -33,14 +32,17 @@ const MODEL_REF  = () => db.collection('miniBrain').doc('trainedModel');
 const TOOLS_COL  = () => db.collection('dynamic_tools');
 const TOOL_ERRORS_COL = () => db.collection('tool_errors');
 
-/* ================= إعدادات بصمة الصوت (Voice Cloning) =================
-   مفتاح ElevenLabs بيتخزن كـ Secret على مستوى Firebase (مش هارد كودد
-   في الملف ولا في المتصفح) - تتحطه مرة واحدة بالأمر:
-   firebase functions:secrets:set ELEVENLABS_API_KEY */
-const ELEVENLABS_API_KEY = defineSecret('ELEVENLABS_API_KEY');
-const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1';
+/* ================= إعدادات بصمة الصوت (Pitch Matching تقريبي) =================
+   مفيش أي خدمة خارجية هنا خالص - المتصفح نفسه (Web Audio API) بيحلل
+   المقطع الصوتي اللي المستخدم سجّله ويطلع منه "متوسط طبقة الصوت"
+   (Pitch بالهرتز) بحساب رياضي محلي (Autocorrelation)، وبيبعت للسيرفر
+   رقم واحد بس (مش الصوت الخام) يتخزن في system_settings/voice.
+   السيرفر هنا دوره بس إنه يحفظ الرقم ده ويرجّعه - زيرو استدعاء لأي
+   API خارجي، وزيرو تكلفة. */
 const SETTINGS_COL = () => db.collection('system_settings');
 const VOICE_DOC = () => SETTINGS_COL().doc('voice');
+const MIN_PITCH_HZ = 60;   // أقل حد منطقي لطبقة صوت بشري
+const MAX_PITCH_HZ = 500;  // أعلى حد منطقي لطبقة صوت بشري
 
 /* ================= طبقة التعلم المستمر من الويب =================
    pending_knowledge : "غرفة التصفية" - مسودات إجابات جاية من البحث
@@ -1441,128 +1443,53 @@ exports.dailyCleanup = onSchedule({
 });
 
 /* =========================================================
-   ============  بصمة صوت البوت (Voice Cloning & TTS)  ==========
+   ============  بصمة صوت البوت (Pitch Matching تقريبي)  ==========
    -----------------------------------------------------------
-   الفكرة: أول مستخدم يسجّل مقطع صوتي قصير (10-15 ثانية) مرة واحدة
-   بس، بيتبعت للسيرفر، والسيرفر (مش المتصفح) هو اللي بيكلّم ElevenLabs
-   بمفتاح الـ API المخزّن كـ Secret، وبيحفظ الـ voice_id الناتج في
-   system_settings/voice. بعد كده أي رد بيطلع صوت، بيتحوّل نص→صوت
-   بنفس الـ voice_id ده لكل المستخدمين - يعني صوت البوت موحّد وهو
-   صوت أول شخص سجّل، مهما كان بيكلمه مين.
+   الفكرة: أول مستخدم يسجّل مقطع صوتي قصير مرة واحدة بس - لكن
+   الصوت الخام نفسه *مبيتبعتش للسيرفر خالص*. التحليل بيحصل جوه
+   المتصفح بالكامل (Web Audio API + Autocorrelation) وبيطلع رقم
+   واحد بس: متوسط طبقة الصوت (Pitch بالهرتز). السيرفر بيحفظ الرقم
+   ده بس في system_settings/voice، وبعد كده أي رد بيتقال، المتصفح
+   (SpeechSynthesis العادي) بيظبط utterance.pitch بناءً على الرقم
+   ده - يعني تقريب لنفس طبقة الصوت، مش نسخة طبق الأصل من الصوت.
+   زيرو خدمة خارجية، زيرو تكلفة، الحساب كله محلي في السيرفر والمتصفح.
    ========================================================= */
 
 /**
- * getVoiceStatus: بيرجّع بس هل فيه صوت متسجّل قبل كده ولا لأ - من
- * غير ما نكشف أي تفاصيل حساسة (زي الـ voice_id الخام نفسه للمتصفح
- * لو مش لازم). الفرونت إند بيستخدمها عشان يقرر يعرض نافذة التسجيل
- * الأول مرة ولا لأ.
+ * getVoiceStatus: بيرجّع هل فيه بصمة (متوسط بيتش) متسجّلة قبل كده
+ * ولا لأ، وقيمتها لو موجودة، عشان المتصفح يقدر يظبط SpeechSynthesis
+ * محلياً من غير ما يحتاج يكلم السيرفر تاني مع كل رد.
  */
 exports.getVoiceStatus = onCall(async () => {
   const snap = await VOICE_DOC().get();
   const data = snap.exists ? snap.data() : null;
-  return { hasVoice: !!(data && data.owner_voice_id), createdAt: data ? data.createdAt : null };
+  const pitchHz = data ? data.ownerPitchHz : null;
+  return { hasVoice: typeof pitchHz === 'number', pitchHz: pitchHz || null, createdAt: data ? data.createdAt : null };
 });
 
 /**
- * createVoiceProfile: بتستقبل مقطع صوتي (base64) من أول مستخدم،
- * بتبعته لـ ElevenLabs عشان يبني "بصمة صوت" (Voice Clone)، وبتحفظ
- * الـ voice_id الناتج في system_settings/voice. لو فيه صوت متسجّل
- * قبل كده أصلاً، بترفض تسجّل تاني فوقه (عشان يفضل صوت واحد موحّد) -
-   إلا لو overwrite:true اتبعتت صراحة (لإعادة التسجيل عمداً).
+ * createVoiceProfile: بتستقبل رقم واحد بس (pitchHz) اتحسب في
+ * المتصفح مسبقاً من تحليل تسجيل قصير، وبتتأكد إنه في مدى منطقي
+ * لطبقة صوت بشري قبل ما تحفظه. لو فيه بصمة متسجّلة قبل كده، بترفض
+ * تستبدلها إلا لو overwrite:true اتبعتت صراحة.
  */
-exports.createVoiceProfile = onCall({ secrets: [ELEVENLABS_API_KEY], timeoutSeconds: 60 }, async (request) => {
-  const { audioBase64, mimeType, overwrite } = request.data || {};
-  if(!audioBase64) throw new HttpsError('invalid-argument', 'مفيش مقطع صوتي متبعوت');
+exports.createVoiceProfile = onCall(async (request) => {
+  const { pitchHz, overwrite } = request.data || {};
+  const parsedPitch = Number(pitchHz);
+  if(!pitchHz || !Number.isFinite(parsedPitch)) throw new HttpsError('invalid-argument', 'مفيش قيمة طبقة صوت صالحة متبعوتة');
+  if(parsedPitch < MIN_PITCH_HZ || parsedPitch > MAX_PITCH_HZ){
+    throw new HttpsError('invalid-argument', 'التسجيل مكنش واضح كفاية عشان نطلّع منه طبقة صوت منطقية - جرب سجّل تاني في مكان هادي');
+  }
 
   const existing = await VOICE_DOC().get();
-  if(existing.exists && existing.data().owner_voice_id && !overwrite){
-    throw new HttpsError('already-exists', 'فيه صوت متسجّل قبل كده - ابعت overwrite:true لو عايز تستبدله');
+  if(existing.exists && typeof existing.data().ownerPitchHz === 'number' && !overwrite){
+    throw new HttpsError('already-exists', 'فيه بصمة صوت متسجّلة قبل كده - ابعت overwrite:true لو عايز تستبدلها');
   }
 
-  const apiKey = ELEVENLABS_API_KEY.value();
-  if(!apiKey) throw new HttpsError('failed-precondition', 'مفتاح ElevenLabs مش متسجّل على السيرفر');
-
-  let audioBuffer;
-  try{
-    audioBuffer = Buffer.from(String(audioBase64), 'base64');
-  }catch(e){
-    throw new HttpsError('invalid-argument', 'صيغة الصوت (base64) غلط');
-  }
-  if(audioBuffer.length < 1000) throw new HttpsError('invalid-argument', 'المقطع الصوتي قصير جداً أو فاضي');
-  if(audioBuffer.length > 10 * 1024 * 1024) throw new HttpsError('invalid-argument', 'المقطع الصوتي أكبر من اللازم (حد أقصى 10 ميجا)');
-
-  try{
-    const form = new FormData();
-    form.append('name', 'MiniBrain_Owner_Voice_' + Date.now());
-    form.append('files', new Blob([audioBuffer], { type: mimeType || 'audio/webm' }), 'sample.webm');
-    form.append('description', 'صوت موحّد لكل ردود العقل الصغير');
-
-    const res = await fetch(ELEVENLABS_BASE + '/voices/add', {
-      method: 'POST',
-      headers: { 'xi-api-key': apiKey },
-      body: form
-    });
-    const data = await res.json();
-    if(!res.ok || !data.voice_id){
-      console.error('ElevenLabs add voice failed:', data);
-      throw new HttpsError('internal', 'فشل إنشاء بصمة الصوت عند ElevenLabs: ' + (data.detail && data.detail.message || JSON.stringify(data)));
-    }
-    await VOICE_DOC().set({
-      owner_voice_id: data.voice_id,
-      provider: 'elevenlabs',
-      createdAt: Date.now()
-    });
-    return { ok:true, voiceId: data.voice_id };
-  }catch(e){
-    if(e instanceof HttpsError) throw e;
-    console.error('createVoiceProfile error:', e);
-    throw new HttpsError('internal', 'حصل خطأ غير متوقع أثناء إنشاء بصمة الصوت');
-  }
-});
-
-/**
- * synthesizeSpeech: بتحوّل أي نص لصوت بصوت الـ owner_voice_id
- * المحفوظ (لو موجود) - وترجّع الصوت كـ base64 عشان المتصفح يشغّله
- * مباشرة. لو مفيش voice_id متسجّل أصلاً، بترجّع hasVoice:false
- * والفرونت إند وقتها بيرجع لـ Web Speech API العادي (SpeechSynthesis)
- * كـ fallback بدل ما يوقف.
- */
-exports.synthesizeSpeech = onCall({ secrets: [ELEVENLABS_API_KEY], timeoutSeconds: 30 }, async (request) => {
-  const { text } = request.data || {};
-  if(!text || !String(text).trim()) throw new HttpsError('invalid-argument', 'مفيش نص للتحويل لصوت');
-
-  const voiceSnap = await VOICE_DOC().get();
-  const ownerVoiceId = voiceSnap.exists ? voiceSnap.data().owner_voice_id : null;
-  if(!ownerVoiceId) return { ok:true, hasVoice:false };
-
-  const apiKey = ELEVENLABS_API_KEY.value();
-  if(!apiKey) return { ok:true, hasVoice:false };
-
-  try{
-    const cleanText = String(text).replace(/[*_`#>]/g, '').slice(0, 2000); // شيل رموز الماركداون قبل التحويل لصوت
-    const res = await fetch(ELEVENLABS_BASE + '/text-to-speech/' + ownerVoiceId, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': apiKey,
-        'Content-Type': 'application/json',
-        'Accept': 'audio/mpeg'
-      },
-      body: JSON.stringify({
-        text: cleanText,
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: { stability: 0.5, similarity_boost: 0.8 }
-      })
-    });
-    if(!res.ok){
-      const errText = await res.text();
-      console.error('ElevenLabs TTS failed:', errText);
-      return { ok:true, hasVoice:true, error:'فشل توليد الصوت' };
-    }
-    const arrayBuf = await res.arrayBuffer();
-    const audioBase64 = Buffer.from(arrayBuf).toString('base64');
-    return { ok:true, hasVoice:true, audioBase64, mimeType:'audio/mpeg' };
-  }catch(e){
-    console.error('synthesizeSpeech error:', e);
-    return { ok:true, hasVoice:true, error:'حصل خطأ غير متوقع أثناء توليد الصوت' };
-  }
+  await VOICE_DOC().set({
+    ownerPitchHz: parsedPitch,
+    provider: 'local-pitch-match', // زيرو خدمة خارجية - رقم محسوب في المتصفح بس
+    createdAt: Date.now()
+  });
+  return { ok:true, pitchHz: parsedPitch };
 });
