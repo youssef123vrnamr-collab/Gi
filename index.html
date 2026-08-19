@@ -670,6 +670,9 @@ document.getElementById('diagnose-btn').addEventListener('click', async ()=>{
     const diag = await callDiagnoseStats()();
     const d = diag.data;
     console.log('تقرير التشخيص الكامل:', d);
+    if(d.migration){
+      addSystem('✓ لقيت ' + (d.migration.migrated + d.migration.skipped) + ' مثال قديم في الحقل القديم، وتم ترحيل ' + d.migration.migrated + ' منهم فعليًا لـ brain_examples' + (d.migration.skipped ? (' (وتخطي ' + d.migration.skipped + ' ناقصين بيانات أساسية)') : '') + '.');
+    }
     addSystem('تشخيص: لقيت ' + d.brainExamplesCollection.realExampleCount + ' مثال حقيقي في ' + d.brainExamplesCollection.chunksCount + ' Chunk، وتم تصحيح العداد فورًا.');
     if(d.legacyDataFound && d.legacyDataFound.length){
       addSystem('⚠️ لقيت بيانات في أماكن تانية برضو (تفاصيلها في الـ Console): ' + d.legacyDataFound.map(x=>x.location).join(' / '));
