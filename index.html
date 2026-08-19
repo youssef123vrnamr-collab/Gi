@@ -232,7 +232,7 @@
 <div id="voice-setup-modal">
   <div class="voice-card">
     <h3>🎙️ سجّل بصمة صوت العقل الصغير</h3>
-    <p>إنت أول حد بيفتح العقل ده - سجّل مقطع صوتي قصير (10-15 ثانية، اتكلم بشكل طبيعي) وهيبقى ده صوت البوت لكل اللي هيكلموه بعد كده.</p>
+    <p>إنت أول حد بيفتح العقل ده - سجّل مقطع صوتي قصير (10-15 ثانية، اتكلم بشكل طبيعي). ده مش نسخ لصوتك بالظبط، لكن المتصفح هيحلل <b>طبقة صوتك</b> (حاد/غليظ) وهيضبط صوت البوت العادي على نفس الطبقة التقريبية دي لكل اللي هيكلموه بعد كده - كله بيتحسب جوه جهازك من غير ما أي حاجة من صوتك تتبعت لأي سيرفر.</p>
     <div class="voice-timer" id="voice-timer">00:00</div>
     <button class="voice-record-btn" id="voice-record-btn">🎙️ ابدأ التسجيل</button>
     <button class="voice-skip-btn" id="voice-skip-btn">تخطّي دلوقتي (هيستخدم صوت المتصفح العادي)</button>
@@ -302,7 +302,6 @@ const callConfirmPendingKnowledge = ()=>functions.httpsCallable('confirmPendingK
 const callRejectPendingKnowledge  = ()=>functions.httpsCallable('rejectPendingKnowledge');
 const callGetVoiceStatus  = ()=>functions.httpsCallable('getVoiceStatus');
 const callCreateVoiceProfile = ()=>functions.httpsCallable('createVoiceProfile');
-const callSynthesizeSpeech   = ()=>functions.httpsCallable('synthesizeSpeech');
 
 /* =========================================================
    الحالة المحلية - دلوقتي بس للعرض (كم فئة/مثال وشكل الشبكة في
@@ -466,11 +465,19 @@ function typewriterRender(bodyEl, fullText, onDone){
 }
 
 /* ============ قراءة الرد صوتيًا ============
-   لو فيه بصمة صوت موحّدة (owner_voice_id) متسجّلة، بنطلب الصوت من
-   السيرفر (ElevenLabs) - ولو لأ، أو حصل خطأ، بنرجع فورًا لـ Web
-   Speech API العادي (SpeechSynthesis) بصوت عربي من المتصفح، عشان
-   الميزة تفضل شغالة حتى لو حد مسجّلش بصمة صوت أصلاً. */
+   مفيش أي سيرفر بيتكلّم هنا خالص - كله Web Speech API العادي
+   (SpeechSynthesis) بصوت عربي من المتصفح. الفرق الوحيد: لو فيه
+   بصمة "طبقة صوت" (pitchHz) اتسجّلت قبل كده، بنظبط utterance.pitch
+   عشان يقرب من نفس الطبقة دي (تقريب مش نسخ حقيقي). ownerPitchHz
+   بتتحمّل مرة واحدة في checkVoiceSetup وتفضل محفوظة في الذاكرة. */
 let currentAudio = null;
+let ownerPitchHz = null;
+const BASELINE_PITCH_HZ = 190; // متوسط تقريبي لطبقة صوت المتصفح الافتراضية (pitch=1)
+function pitchHzToUtterPitch(hz){
+  if(!hz || !Number.isFinite(hz)) return 1;
+  const ratio = hz / BASELINE_PITCH_HZ;
+  return Math.max(0.5, Math.min(2, ratio)); // مدى SpeechSynthesisUtterance.pitch المسموح هو 0..2
+}
 function stopSpeaking(){
   if(currentAudio){ currentAudio.pause(); currentAudio = null; }
   if(window.speechSynthesis) window.speechSynthesis.cancel();
@@ -480,22 +487,13 @@ function speakWithBrowser(text, btn){
   if(!window.speechSynthesis){ return; }
   const utter = new SpeechSynthesisUtterance(text.replace(/[*_`#>]/g,''));
   utter.lang = 'ar-EG';
+  utter.pitch = pitchHzToUtterPitch(ownerPitchHz);
   utter.onend = ()=>{ if(btn) btn.classList.remove('speaking'); };
   window.speechSynthesis.speak(utter);
 }
-async function speakText(text, btn){
+function speakText(text, btn){
   stopSpeaking();
   if(btn) btn.classList.add('speaking');
-  try{
-    const res = await callSynthesizeSpeech()({ text });
-    if(res.data.hasVoice && res.data.audioBase64){
-      const audio = new Audio('data:' + (res.data.mimeType||'audio/mpeg') + ';base64,' + res.data.audioBase64);
-      currentAudio = audio;
-      audio.onended = ()=>{ if(btn) btn.classList.remove('speaking'); currentAudio=null; };
-      audio.play();
-      return;
-    }
-  }catch(e){ console.error('synthesizeSpeech failed, falling back to browser TTS', e); }
   speakWithBrowser(text, btn);
 }
 
@@ -1060,19 +1058,66 @@ async function checkVoiceSetup(){
   if(!navigator.mediaDevices || !window.MediaRecorder) return; // متصفح مش داعم - بنسيبها كده من غير ما نضايق حد
   try{
     const res = await callGetVoiceStatus()();
-    if(!res.data.hasVoice){ voiceModal.classList.add('open'); }
+    if(res.data.hasVoice && res.data.pitchHz){ ownerPitchHz = res.data.pitchHz; }
+    else { voiceModal.classList.add('open'); }
   }catch(e){ console.error('تعذر التأكد من حالة بصمة الصوت', e); }
 }
 
-let mediaRecorder = null, recordedChunks = [], recordTimerInterval = null, recordSeconds = 0;
-function blobToBase64(blob){
-  return new Promise((resolve, reject)=>{
-    const reader = new FileReader();
-    reader.onloadend = ()=>resolve(String(reader.result).split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+/* ============ تحليل طبقة الصوت محليًا (Autocorrelation) ============
+   الدالتين دول بيشتغلوا بالكامل جوه المتصفح (Web Audio API) - مفيش
+   ولا بايت واحد من الصوت الخام بيتبعت لأي حتة. بناخد الـ blob اللي
+   اتسجّل، نفكّه لعينات صوتية خام، ونقسّمه لفريمات صغيرة، ولكل فريم
+   بنحسب أقرب تردد أساسي (F0) بطريقة الـ Autocorrelation الكلاسيكية،
+   وفي الآخر بناخد الوسيط (median) لكل القيم المقبولة عشان نطلع
+   برقم واحد ثابت ومستقر بيمثل "متوسط طبقة الصوت". */
+function detectPitchInFrame(samples, sampleRate){
+  const SIZE = samples.length;
+  // شيل الفريمات الهادية جداً (سكوت) عشان متلوثش الحساب
+  let rms = 0;
+  for(let i=0;i<SIZE;i++) rms += samples[i]*samples[i];
+  rms = Math.sqrt(rms/SIZE);
+  if(rms < 0.01) return -1;
+
+  const minLag = Math.floor(sampleRate / 400); // أعلى تردد متوقع (400Hz)
+  const maxLag = Math.floor(sampleRate / 70);  // أقل تردد متوقع (70Hz)
+  let bestLag = -1, bestCorr = 0;
+  for(let lag = minLag; lag <= maxLag && lag < SIZE; lag++){
+    let corr = 0;
+    for(let i = 0; i < SIZE - lag; i++){ corr += samples[i] * samples[i+lag]; }
+    corr = corr / (SIZE - lag);
+    if(corr > bestCorr){ bestCorr = corr; bestLag = lag; }
+  }
+  if(bestLag <= 0 || bestCorr < 0.001) return -1;
+  return sampleRate / bestLag;
 }
+async function analyzeRecordingPitch(blob){
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if(!AudioCtx) return null;
+  const ctx = new AudioCtx();
+  try{
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+    const channel = audioBuffer.getChannelData(0);
+    const sampleRate = audioBuffer.sampleRate;
+    const frameSize = 2048, hop = 1024;
+    const pitches = [];
+    for(let start = 0; start + frameSize <= channel.length; start += hop){
+      const frame = channel.subarray(start, start + frameSize);
+      const f0 = detectPitchInFrame(frame, sampleRate);
+      if(f0 > 60 && f0 < 500) pitches.push(f0);
+    }
+    if(pitches.length < 3) return null; // عينة قليلة جداً عشان نثق فيها
+    pitches.sort((a,b)=>a-b);
+    return pitches[Math.floor(pitches.length/2)]; // الوسيط (median) أكتر استقرار من المتوسط
+  }catch(e){
+    console.error('تعذر تحليل طبقة الصوت محلياً', e);
+    return null;
+  }finally{
+    ctx.close();
+  }
+}
+
+let mediaRecorder = null, recordedChunks = [], recordTimerInterval = null, recordSeconds = 0;
 voiceRecordBtn.addEventListener('click', async ()=>{
   if(mediaRecorder && mediaRecorder.state === 'recording'){ mediaRecorder.stop(); return; }
   try{
@@ -1083,14 +1128,20 @@ voiceRecordBtn.addEventListener('click', async ()=>{
     mediaRecorder.onstop = async ()=>{
       clearInterval(recordTimerInterval);
       stream.getTracks().forEach(t=>t.stop());
-      voiceRecordBtn.textContent = '⏳ بيبعت الصوت للسيرفر...';
+      voiceRecordBtn.textContent = '⏳ بيحلّل طبقة صوتك محليًا...';
       voiceRecordBtn.disabled = true;
       try{
         const blob = new Blob(recordedChunks, { type: 'audio/webm' });
-        const base64 = await blobToBase64(blob);
-        await callCreateVoiceProfile()({ audioBase64: base64, mimeType: 'audio/webm' });
+        const pitchHz = await analyzeRecordingPitch(blob);
+        if(!pitchHz){
+          voiceRecordBtn.textContent = '⚠️ التسجيل مكنش واضح كفاية - اضغط لإعادة المحاولة';
+          voiceRecordBtn.disabled = false;
+          return;
+        }
+        await callCreateVoiceProfile()({ pitchHz });
+        ownerPitchHz = pitchHz;
         voiceModal.classList.remove('open');
-        addSystem('اتسجّلت بصمة صوت العقل الصغير بنجاح 🎙️ - كل الردود دلوقتي هتتقري بنفس الصوت ده.');
+        addSystem('اتسجّلت بصمة طبقة الصوت بنجاح 🎙️ - كل الردود دلوقتي هتتقري بصوت المتصفح مظبوط على نفس الطبقة التقريبية دي.');
       }catch(e){
         console.error(e);
         voiceRecordBtn.textContent = '⚠️ حصل خطأ - اضغط لإعادة المحاولة';
