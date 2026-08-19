@@ -52,7 +52,18 @@ const STOPWORDS = new Set([
   'في','من','على','عن','الى','إلى','يا','او','أو','ثم','هل','لا','لم','لن',
   'ما','هذا','هذه','ذلك','تلك','التي','الذي','و','كان','كانت','يكون','مع',
   'كل','بعض','كذلك','ايضا','أيضا','انا','أنا','انت','أنت','هو','هي','احنا',
-  'إحنا','بس','يعني','عشان','علشان'
+  'إحنا','بس','يعني','عشان','علشان',
+  /* ==== كلمات حشو وترحيب زودناها عشان محرك النية ====
+     دي كلمات بتتكرر كتير في بداية الجمل العامية (تمام، طيب، بقولك،
+     يا عم...) ومالهاش علاقة بمضمون السؤال نفسه - لو سبناها في
+     المتجه بتشتت التشابه عن الكلمات المهمة زي "حنفية"/"إصلاح". */
+  'تمام','طيب','بقولك','هقولك','قولتلك','بصراحه','الصراحه','بص','يابا',
+  'عم','ياعم','يابني','يابنتي','حبيبي','حبيبتي','لو','سمحت','سمحتي',
+  'ممكن','ممكن','ياريت','حابب','حابه','عايز','عايزه','محتاج','محتاجه',
+  'اقولك','هقول','قصدي','يعني','والله','فعلا','اصلا','خالص','جدا',
+  'شوي','شويه','دلوقتي','النهارده','امبارح','بكره','اهو','كده','كدا',
+  'برضو','برضه','فقط','فقد','اه','ايوه','ايوة','لأ','مين','فين','امتى',
+  'ازاي','ليه','اومال','خلاص','يلا','هيا','ماشي','اوك','اوكي'
 ]);
 
 function normalizeArabic(text){
@@ -96,17 +107,50 @@ function sentimentScore(tokens){
 
 const VECTOR_DIM = INPUT_DIM + 1; // +1 لبعد الإحساس
 
-function textToVector(text){
+/**
+ * textToVector: نفس المتجه الأصلي بالظبط (متوافق مع أوزان الشبكة
+ * العصبية المتدرّبة قبل كده) - لكن دلوقتي بياخد باراميتر اختياري
+ * "idf" (وزن كل خانة/bucket جوه المتجه). لو اتبعت، بيضاعف كل خانة
+ * بوزنها قبل التطبيع، فالكلمات المميزة/النادرة زي "حنفية" أو
+ * "إصلاح" بتاخد صوت أعلى من كلمات بتتكرر في كل مكان (زي "بقولك"
+ * أو "اسألك") حتى لو مش في قايمة الـ Stopwords الثابتة. من غير
+ * idf السلوك زي القديم بالظبط - عشان الشبكة العصبية (اللي اتدرّبت
+ * على المتجه الخام) تفضل شغالة صح.
+ */
+function textToVector(text, idf){
   const vec = new Array(INPUT_DIM).fill(0);
   const tokens = tokenize(text);
   for(const t of tokens){ vec[hashWord(t)] += 1; }
   for(let i=0;i<tokens.length-1;i++){ vec[hashWord(tokens[i]+'_'+tokens[i+1])] += 1.4; }
+  if(idf){ for(let i=0;i<vec.length;i++) vec[i] *= idf[i]; }
   const norm = Math.sqrt(vec.reduce((s,v)=>s+v*v,0));
   const normalized = norm>0 ? vec.map(v=>v/norm) : vec;
   normalized.push(sentimentScore(tokens));
   return normalized;
 }
 function cosineSim(a,b){ let dot=0; for(let i=0;i<a.length;i++) dot += a[i]*b[i]; return dot; }
+
+/* =========================================================
+   محرك فهم النية: وزن IDF محلي (Local TF-IDF) - بدون أي API
+   -----------------------------------------------------------
+   بنحسب لكل "خانة" (bucket) من الـ 192 خانة في المتجه، في كام
+   مثال مختلف ظهرت الكلمة اللي بتوصّل لها - لو ظهرت في أمثلة كتير
+   جداً (يعني كلمة شائعة عابرة زي "بقولك") وزنها بيقرب من صفر،
+   ولو ظهرت في أمثلة قليلة بس (يعني كلمة مميزة ومحدّدة للمضمون
+   زي "حنفية") وزنها بيبقى عالي. ده اللي بيخلي البحث يركّز على
+   "معنى" السؤال مش مجرد تطابق حروف عشوائي.
+   ========================================================= */
+function buildIdfTable(examples){
+  const df = new Array(INPUT_DIM).fill(0);
+  for(const ex of examples){
+    const tokens = tokenize(ex.text);
+    const seenBuckets = new Set(tokens.map(hashWord));
+    for(const b of seenBuckets) df[b]++;
+  }
+  const N = examples.length;
+  // smoothed idf: بيفضل دايماً رقم موجب حتى لو الكلمة موجودة في كل الأمثلة
+  return df.map(d => Math.log((N + 1) / (d + 1)) + 1);
+}
 
 /* ================= الشبكة العصبية (backprop حقيقي) ================= */
 function zeros(rows, cols){ const m=[]; for(let i=0;i<rows;i++) m.push(new Array(cols).fill(0)); return m; }
@@ -150,6 +194,146 @@ class NeuralNetwork{
   }
 }
 function oneHot(index, size){ const v=new Array(size).fill(0); v[index]=1; return [v]; }
+
+/* =========================================================
+   محرك المعادلات الرياضية (Math Engine) - بدون eval() خالص
+   -----------------------------------------------------------
+   بيتشغّل قبل أي بحث تشابه: لو الرسالة كلها/معظمها معادلة حسابية
+   (حتى لو مكتوبة بكلمات عربية زي "5 زائد 3")، بنحوّلها لرموز
+   حسابية وبعدين بنفسّرها بـ parser يدوي (Recursive Descent) بيدعم
+   + - * / ^ والأقواس - من غير أي استدعاء لـ eval أو Function خالص،
+   فمفيش أي مخاطرة أمنية حتى لو حد بعت نص غريب.
+   ========================================================= */
+const ARABIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+function convertArabicDigits(s){
+  return s.replace(/[٠-٩]/g, d => String(ARABIC_DIGITS.indexOf(d)));
+}
+function arabicMathWordsToSymbols(s){
+  return s
+    .replace(/زائد|جمع/g, '+')
+    .replace(/ناقص|طرح/g, '-')
+    .replace(/مضروب في|ضرب|×|في(?=\s|\d)/g, '*')
+    .replace(/مقسوم على|قسمة|÷|على(?=\s|\d)/g, '/')
+    .replace(/تربيع/g, '^2')
+    .replace(/يساوي|كام|بكام|\?|؟/g, '');
+}
+
+/** parser رياضي آمن يدوي - بيدعم + - * / ^ والأقواس والأعداد العشرية فقط */
+function safeMathEval(expr){
+  let pos = 0;
+  const peek = () => expr[pos];
+  const skipSpace = () => { while(pos<expr.length && expr[pos]===' ') pos++; };
+
+  function parseNumber(){
+    skipSpace();
+    const start = pos;
+    while(pos<expr.length && /[\d.]/.test(expr[pos])) pos++;
+    if(pos===start) throw new Error('رقم متوقع');
+    const n = parseFloat(expr.slice(start,pos));
+    if(Number.isNaN(n)) throw new Error('رقم غير صالح');
+    return n;
+  }
+  function parseFactor(){
+    skipSpace();
+    if(peek()==='('){
+      pos++; const v = parseExpr(); skipSpace();
+      if(peek()!==')') throw new Error('قوس ناقص');
+      pos++; return v;
+    }
+    if(peek()==='-'){ pos++; return -parseFactor(); }
+    if(peek()==='+'){ pos++; return parseFactor(); }
+    return parseNumber();
+  }
+  function parsePower(){
+    const base = parseFactor(); skipSpace();
+    if(peek()==='^'){ pos++; return Math.pow(base, parsePower()); }
+    return base;
+  }
+  function parseTerm(){
+    let v = parsePower(); skipSpace();
+    while(peek()==='*' || peek()==='/'){
+      const op = peek(); pos++;
+      const rhs = parsePower();
+      v = op==='*' ? v*rhs : v/rhs;
+      skipSpace();
+    }
+    return v;
+  }
+  function parseExpr(){
+    let v = parseTerm(); skipSpace();
+    while(peek()==='+' || peek()==='-'){
+      const op = peek(); pos++;
+      const rhs = parseTerm();
+      v = op==='+' ? v+rhs : v-rhs;
+      skipSpace();
+    }
+    return v;
+  }
+
+  const result = parseExpr();
+  skipSpace();
+  if(pos !== expr.length) throw new Error('رموز زيادة غير متوقعة في المعادلة');
+  return result;
+}
+
+/**
+ * تجربة اكتشاف وحل معادلة رياضية من نص المستخدم. بترجع رقم لو
+ * نجحت، أو null لو الرسالة مش معادلة أصلاً (مش خطأ - يبقى نكمّل
+ * على باقي الـ pipeline العادي).
+ */
+function tryEvalMathExpression(rawText){
+  let s = convertArabicDigits(rawText.trim());
+  s = arabicMathWordsToSymbols(s);
+  s = s.trim();
+  if(!s) return null;
+  if(!/\d/.test(s)) return null;              // لازم فيه رقم
+  if(!/[+\-*/^]/.test(s)) return null;        // لازم فيه عملية حسابية
+  if(/[^\d+\-*/^().\s]/.test(s)) return null; // لو فيه أي حروف متبقية، مش معادلة نقية
+
+  try{
+    const result = safeMathEval(s);
+    if(typeof result !== 'number' || !isFinite(result)) return null;
+    return Math.round(result * 1e8) / 1e8; // تقريب بسيط لتفادي أخطاء الفاصلة العشرية
+  }catch(e){ return null; }
+}
+
+/* =========================================================
+   محرك N-Gram توليدي محلي (بدون أي API خارجي)
+   -----------------------------------------------------------
+   لو الفئة اللي اتطابقت معاها الرسالة عندها أكتر من رد واحد
+   مخزّن (يعني الموديول اتعلم أكتر من صياغة لنفس المعنى)، بدل
+   ما نختار رد واحد عشوائي بس، بنبني نموذج Bigram بسيط من كل
+   الردود دي ونولّد جملة جديدة ممزوجة منها - صياغة "طازة" مبنية
+   على نفس الأسلوب اللي اتعلمه، مش نسخة طبق الأصل من رد واحد.
+   ========================================================= */
+function buildBigramModel(sentences){
+  const starts = [];
+  const nextMap = new Map();
+  for(const sent of sentences){
+    const words = String(sent).trim().split(/\s+/).filter(Boolean);
+    if(words.length===0) continue;
+    starts.push(words[0]);
+    for(let i=0;i<words.length-1;i++){
+      const key = words[i];
+      if(!nextMap.has(key)) nextMap.set(key, []);
+      nextMap.get(key).push(words[i+1]);
+    }
+  }
+  return { starts, nextMap };
+}
+function generateFromBigram(model, maxWords=22){
+  if(!model.starts.length) return null;
+  let word = model.starts[Math.floor(Math.random()*model.starts.length)];
+  const out = [word];
+  for(let i=0;i<maxWords-1;i++){
+    const nexts = model.nextMap.get(word);
+    if(!nexts || !nexts.length) break;
+    word = nexts[Math.floor(Math.random()*nexts.length)];
+    out.push(word);
+    if(out.length>=6 && Math.random()<0.3) break; // وقفة طبيعية بعد ما الجملة تاخد شكل معقول
+  }
+  return out.join(' ');
+}
 
 /* =========================================================
    طبقة الـ VM Sandbox - قلب نظام الـ Agent
@@ -352,38 +536,59 @@ exports.classify = onCall(async (request) => {
   const text = (request.data && request.data.text || '').toString();
   if(!text.trim()) throw new HttpsError('invalid-argument', 'الرسالة فاضية');
 
+  const feeling = sentimentScore(tokenize(text)); // نبرة الجملة -1..1، بترجع للواجهة لو حابب تعرضها
+
+  /* ============ أ) فلترة الحشو وتنظيف النص ============
+     tokenize() جوه textToVector بيشيل كلمات الحشو والترحيب
+     (تمام/طيب/بقولك/يا عم...) تلقائياً قبل أي حساب - مفيش خطوة
+     منفصلة هنا لأنها متضمّنة جوه بناء المتجه نفسه. */
+
+  /* ============ ب) فحص لو الرسالة معادلة رياضية ============
+     بيتشغّل قبل أي بحث في قاعدة البيانات - لو الرسالة معادلة
+     حسابية صافية بنحلها فوراً بمحرك آمن (من غير eval) ونرجّع
+     الناتج، من غير ما نضيّع وقت في البحث عن تشابه أو تشغيل شبكة. */
+  const mathAnswer = tryEvalMathExpression(text);
+  if(mathAnswer !== null){
+    return { confident:true, isMath:true, mathAnswer, confidence:1, feeling };
+  }
+
   const [stateSnap, modelSnap] = await Promise.all([STATE_REF().get(), MODEL_REF().get()]);
-  if(!stateSnap.exists) return { confident:false, confidence:0 };
+  if(!stateSnap.exists) return { confident:false, confidence:0, feeling };
   const state = stateSnap.data();
   const labels = state.labels || [];
   const usable = (state.examples || []).filter(e=>e.trust!==0);
-  if(usable.length===0) return { confident:false, confidence:0 };
+  if(usable.length===0) return { confident:false, confidence:0, feeling };
 
-  const vec = textToVector(text);
+  /* ============ ج) البحث عن أقرب معنى بالـ Cosine Similarity ============
+     بنحسب جدول IDF من كل الأمثلة المتاحة (كلمة نادرة/مميزة زي
+     "حنفية" وزنها عالي، كلمة شائعة عابرة زي "اسألك" وزنها بيقرب
+     من صفر) وبنستخدمه بس في خطوة التشابه - الشبكة العصبية تحت
+     فضلت شغالة بالمتجه الخام العادي عشان متبقاش أوزانها المدرّبة
+     قبل كده متسقة مع مساحة متجه مختلفة. */
+  const idf = buildIdfTable(usable);
+  const vec = textToVector(text, idf);       // للتشابه (موزون بالنية)
+  const vecRaw = textToVector(text);         // للشبكة العصبية (خام، زي التدريب بالظبط)
 
-  // 1) نظام التشابه
   let bestSim=-1, bestExample=null;
   for(const ex of usable){
-    const exVec = textToVector(ex.text);
+    const exVec = textToVector(ex.text, idf);
     const sim = cosineSim(vec, exVec) * (0.6 + 0.4*ex.trust);
     if(sim>bestSim){ bestSim=sim; bestExample=ex; }
   }
   const simLabel = bestExample ? labels.find(l=>l.index===bestExample.labelIndex) : null;
 
-  // 2) الشبكة العصبية المدرّبة (محفوظة من الـ trigger فوق)
+  // الشبكة العصبية المدرّبة (محفوظة من الـ trigger فوق) - بالمتجه الخام
   let nnLabel=null, nnConf=0;
   if(modelSnap.exists && modelSnap.data().ready){
     const net = new NeuralNetwork([VECTOR_DIM, HIDDEN_DIM, labels.length], modelSnap.data().weights);
-    const out = net.predict([vec])[0];
+    const out = net.predict([vecRaw])[0];
     let bestIdx=-1, bestVal=-1;
     for(const lab of labels){ if(out[lab.index]>bestVal){ bestVal=out[lab.index]; bestIdx=lab.index; } }
     if(bestIdx!==-1){ nnLabel = labels.find(l=>l.index===bestIdx); nnConf = bestVal; }
   }
 
-  const feeling = sentimentScore(tokenize(text)); // نبرة الجملة -1..1، بترجع للواجهة لو حابب تعرضها
-
   // نفس منطق القرار الأصلي بالظبط، بس بدل ما نعمل return فوري
-  // بنحفظه في result عشان نقدر نكمّل بطبقة الـ Agent لو لسه مش واثقين
+  // بنحفظه في result عشان نقدر نكمّل بمحرك التوليد وطبقة الـ Agent
   let result;
   if(simLabel && nnLabel && simLabel.index===nnLabel.index){
     const combined = Math.min(1, bestSim*0.7 + nnConf*0.3 + 0.08);
@@ -398,10 +603,24 @@ exports.classify = onCall(async (request) => {
     result = { confident:false, confidence:Math.max(bestSim,0), feeling };
   }
 
-  // 3) طبقة الـ Agent: تتفعّل بس لو الطبقتين فوق مالقوش رد واثق
+  /* ============ د) محرك الـ N-Gram التوليدي ============
+     لو الفئة اللي اتطابقت معاها عندها أكتر من رد واحد مخزّن،
+     يبقى محتاجة "صياغة جديدة" بدل ما نختار رد ثابت عشوائي - بنولّد
+     جملة ممزوجة من كل الصياغات المتعلّمة بنموذج Bigram محلي. لو
+     التوليد طلع قصير جداً أو فاشل، بنسيب الفرونت إند يختار من
+     الردود الجاهزة زي ما كان (fallback آمن). */
+  if(result.confident && result.label && Array.isArray(result.label.responses) && result.label.responses.length>1){
+    const bigram = buildBigramModel(result.label.responses);
+    const generated = generateFromBigram(bigram);
+    if(generated && generated.trim().split(/\s+/).length>=3){
+      result.generatedResponse = generated;
+    }
+  }
+
+  // ه) طبقة الـ Agent: تتفعّل بس لو كل الطبقات فوق مالقتش رد واثق
   if(!result.confident){
     try{
-      const { tool, sim } = await findBestTool(vec);
+      const { tool, sim } = await findBestTool(vecRaw);
       if(tool && sim >= TOOL_SIM_THRESHOLD){
         const toolRef = TOOLS_COL().doc(tool.id);
         const outcome = runCodeInSandbox(tool.code, text);
