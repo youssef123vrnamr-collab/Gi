@@ -10,6 +10,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-functions-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <style>
   :root{
     --bg:#0a0b10;
@@ -102,6 +103,79 @@
   #send-btn{width:46px;height:46px;border-radius:50%;background:var(--synapse);border:none;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
   #send-btn:active{transform:scale(.93);}
   #send-btn svg{transform:scaleX(-1);}
+
+  /* ---------- زرار الميكروفون ---------- */
+  #mic-btn{width:46px;height:46px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--text-dim);}
+  #mic-btn:active{transform:scale(.93);}
+  #mic-btn.listening{background:#f05a5a;border-color:#f05a5a;color:#fff;animation:mic-pulse 1.2s infinite;}
+  @keyframes mic-pulse{0%{box-shadow:0 0 0 0 rgba(240,90,90,.5);}70%{box-shadow:0 0 0 10px rgba(240,90,90,0);}100%{box-shadow:0 0 0 0 rgba(240,90,90,0);}}
+
+  /* ---------- زرار قراءة الرد صوتيًا ---------- */
+  .speak-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);border-radius:8px;padding:3px 8px;font-size:12px;color:var(--text-dim);display:inline-flex;align-items:center;gap:4px;}
+  .speak-btn:active{background:rgba(255,255,255,.1);}
+  .speak-btn.speaking{color:var(--synapse);border-color:var(--synapse-dim);}
+
+  /* ---------- تنسيق ماركداون جوه ردود البوت ---------- */
+  .md-body p{margin:0 0 8px;}
+  .md-body p:last-child{margin-bottom:0;}
+  .md-body ul,.md-body ol{margin:0 0 8px;padding-inline-start:22px;}
+  .md-body a{color:var(--synapse);text-decoration:underline;}
+  .md-body strong{color:#fff;}
+  .md-body code{background:rgba(255,255,255,.08);border-radius:4px;padding:1px 5px;font-family:'JetBrains Mono',monospace;font-size:13px;direction:ltr;display:inline-block;}
+  .md-body table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px;}
+  .md-body th,.md-body td{border:1px solid var(--line);padding:5px 8px;text-align:right;}
+  .md-body th{background:rgba(124,92,255,.12);}
+  .code-block-wrap{position:relative;margin:8px 0;border-radius:10px;overflow:hidden;border:1px solid var(--line);}
+  .code-block-wrap pre{margin:0;background:#0c0d13;padding:12px 13px;overflow-x:auto;direction:ltr;text-align:left;}
+  .code-block-wrap code{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#c9cadf;background:none;padding:0;}
+  .code-copy-btn{position:absolute;top:6px;left:6px;background:rgba(124,92,255,.85);color:#fff;border:none;border-radius:6px;padding:4px 9px;font-size:11px;font-family:'Tajawal',sans-serif;}
+  .code-copy-btn:active{background:var(--synapse);}
+  .code-copy-btn.copied{background:var(--ok);color:#062018;}
+
+  /* ---------- بطاقات مصادر البحث ---------- */
+  .sources-wrap{display:flex;flex-direction:column;gap:6px;margin-top:9px;}
+  .sources-label{font-size:11px;color:var(--text-dim);}
+  .source-card{display:block;background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:9px;padding:7px 10px;text-decoration:none;}
+  .source-card:active{background:rgba(255,255,255,.08);}
+  .source-title{font-size:12.5px;color:var(--text);font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .source-host{font-size:10.5px;color:var(--synapse);font-family:'JetBrains Mono',monospace;display:block;margin-top:2px;direction:ltr;text-align:right;}
+
+  /* ---------- زرار وباب لوحة الإدارة ---------- */
+  #admin-btn{border-color:rgba(90,209,168,.4);color:var(--ok);}
+  #admin-panel{position:fixed;inset:0;background:rgba(6,7,11,.92);backdrop-filter:blur(3px);z-index:50;display:none;flex-direction:column;}
+  #admin-panel.open{display:flex;}
+  .admin-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);flex-shrink:0;}
+  .admin-title{font-weight:900;font-size:16px;}
+  #admin-close{background:none;border:1px solid var(--line);color:var(--text-dim);border-radius:8px;padding:6px 10px;font-size:13px;}
+  .admin-tabs{display:flex;gap:6px;padding:10px 16px 0;flex-shrink:0;}
+  .admin-tab{flex:1;background:var(--panel-2);border:1px solid var(--line);color:var(--text-dim);padding:9px;border-radius:9px 9px 0 0;font-size:13px;font-weight:700;}
+  .admin-tab.active{color:var(--synapse);border-color:rgba(124,92,255,.4);background:rgba(124,92,255,.08);}
+  .admin-body{flex:1;overflow-y:auto;padding:12px 16px 24px;display:flex;flex-direction:column;gap:10px;}
+  .admin-empty{color:var(--text-dim);font-size:13px;text-align:center;padding:30px 0;}
+  .admin-card{background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:11px;display:flex;flex-direction:column;gap:6px;}
+  .admin-card.disabled{opacity:.55;}
+  .admin-card-title{font-weight:700;font-size:14px;}
+  .admin-card-desc{font-size:12px;color:var(--text-dim);line-height:1.5;}
+  .admin-card-meta{font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;display:flex;gap:10px;flex-wrap:wrap;}
+  .admin-card-meta b{color:var(--text);}
+  .admin-card-row{display:flex;gap:8px;margin-top:2px;}
+  .admin-card-row button{flex:1;border:none;border-radius:8px;padding:8px;font-weight:700;font-size:12.5px;}
+  .admin-btn-danger{background:#f05a5a;color:#210505;}
+  .admin-btn-ok{background:var(--ok);color:#062018;}
+  .admin-btn-neutral{background:rgba(255,255,255,.08);color:var(--text);}
+  .admin-pending-q{font-size:13px;font-weight:700;color:var(--teach);}
+  .admin-pending-a{font-size:12.5px;color:var(--text-dim);line-height:1.5;}
+
+  /* ---------- نافذة تسجيل بصمة الصوت أول مرة ---------- */
+  #voice-setup-modal{position:fixed;inset:0;background:rgba(6,7,11,.94);z-index:60;display:none;align-items:center;justify-content:center;padding:20px;}
+  #voice-setup-modal.open{display:flex;}
+  .voice-card{background:var(--panel);border:1px solid rgba(124,92,255,.4);border-radius:16px;padding:20px;max-width:380px;width:100%;display:flex;flex-direction:column;gap:12px;text-align:center;}
+  .voice-card h3{font-size:16px;color:var(--synapse);}
+  .voice-card p{font-size:13px;color:var(--text-dim);line-height:1.6;}
+  .voice-record-btn{background:var(--synapse);color:#fff;border:none;border-radius:12px;padding:14px;font-weight:700;font-size:14px;}
+  .voice-record-btn.recording{background:#f05a5a;animation:mic-pulse 1.2s infinite;}
+  .voice-skip-btn{background:none;border:1px solid var(--line);color:var(--text-dim);border-radius:10px;padding:9px;font-size:12.5px;}
+  .voice-timer{font-family:'JetBrains Mono',monospace;font-size:22px;color:var(--text);}
 </style>
 </head>
 <body>
@@ -114,6 +188,7 @@
         <div class="server-badge"><span class="server-dot off" id="server-dot"></span><span id="server-status">بيتصل بالسيرفر...</span></div>
       </div>
       <div class="head-btns">
+        <button id="admin-btn">لوحة الإدارة</button>
         <button id="bulk-btn">استيراد جماعي</button>
         <button id="reset-btn">مسح كل التعلّم</button>
       </div>
@@ -127,8 +202,40 @@
   <div id="chat"></div>
 
   <div id="input-bar">
+    <button id="mic-btn" title="تسجيل صوتي">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>
+      </svg>
+    </button>
     <input id="msg-input" type="text" placeholder="اكتب رسالة عادية..." autocomplete="off">
     <button id="send-btn"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="#fff" d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg></button>
+  </div>
+</div>
+
+<!-- ---------- لوحة الإدارة ---------- -->
+<div id="admin-panel">
+  <div class="admin-header">
+    <div class="admin-title">لوحة الإدارة</div>
+    <button id="admin-close">إغلاق ✕</button>
+  </div>
+  <div class="admin-tabs">
+    <button class="admin-tab active" data-tab="tools">الأدوات الديناميكية</button>
+    <button class="admin-tab" data-tab="pending">الأسئلة المعلّقة</button>
+  </div>
+  <div class="admin-body" id="admin-body">
+    <div class="admin-empty">بيحمّل...</div>
+  </div>
+</div>
+
+<!-- ---------- نافذة تسجيل بصمة الصوت أول مرة ---------- -->
+<div id="voice-setup-modal">
+  <div class="voice-card">
+    <h3>🎙️ سجّل بصمة صوت العقل الصغير</h3>
+    <p>إنت أول حد بيفتح العقل ده - سجّل مقطع صوتي قصير (10-15 ثانية، اتكلم بشكل طبيعي) وهيبقى ده صوت البوت لكل اللي هيكلموه بعد كده.</p>
+    <div class="voice-timer" id="voice-timer">00:00</div>
+    <button class="voice-record-btn" id="voice-record-btn">🎙️ ابدأ التسجيل</button>
+    <button class="voice-skip-btn" id="voice-skip-btn">تخطّي دلوقتي (هيستخدم صوت المتصفح العادي)</button>
   </div>
 </div>
 
@@ -188,6 +295,14 @@ const callBulkImport    = ()=>functions.httpsCallable('bulkImport');
 const callSubmitFeedback= ()=>functions.httpsCallable('submitFeedback');
 const callLearnEmoji    = ()=>functions.httpsCallable('learnEmoji');
 const callResetBrain    = ()=>functions.httpsCallable('resetBrain');
+const callListDynamicTools   = ()=>functions.httpsCallable('listDynamicTools');
+const callToggleDynamicTool  = ()=>functions.httpsCallable('toggleDynamicTool');
+const callListPendingKnowledge = ()=>functions.httpsCallable('listPendingKnowledge');
+const callConfirmPendingKnowledge = ()=>functions.httpsCallable('confirmPendingKnowledge');
+const callRejectPendingKnowledge  = ()=>functions.httpsCallable('rejectPendingKnowledge');
+const callGetVoiceStatus  = ()=>functions.httpsCallable('getVoiceStatus');
+const callCreateVoiceProfile = ()=>functions.httpsCallable('createVoiceProfile');
+const callSynthesizeSpeech   = ()=>functions.httpsCallable('synthesizeSpeech');
 
 /* =========================================================
    الحالة المحلية - دلوقتي بس للعرض (كم فئة/مثال وشكل الشبكة في
@@ -198,6 +313,17 @@ let labels = [];
 let examples = [];
 let learnedEmojis = {};
 let pendingFeedbackId = null; // لو السيرفر مستني تأكيد/تصحيح على رد جاي من البحث في النت
+
+/* ============ سجل المحادثة (لدعم السياق) ============
+   بنسيب آخر 3 رسايل بس (مستخدم + بوت بالتبادل) - بتتبعت مع كل
+   نداء classify عشان أسئلة المتابعة القصيرة تتفهم صح، خصوصًا وقت
+   البحث في النت. مفيش حفظ دائم - بيتصفّر لو الصفحة اتقفلت. */
+let conversationHistory = [];
+function pushHistory(role, text){
+  conversationHistory.push({ role, text: String(text).slice(0,500) });
+  if(conversationHistory.length > 6) conversationHistory = conversationHistory.slice(-6);
+}
+function historyForRequest(){ return conversationHistory.slice(-3); }
 
 function applyRemoteData(data){
   labels = data.labels || [];
@@ -284,16 +410,151 @@ function scrollToBottom(){ chatEl.scrollTop = chatEl.scrollHeight; }
 let lastFeedbackTarget = null;
 let lastBotMsgDiv = null;
 
-function addMessage(text, cls, confidence, feedbackTarget){
+/* ============ ماركداون + زرار نسخ الكود ============
+   بنستخدم marked.js لتحويل نص الرد لـ HTML جميل (عناوين، قوائم،
+   جداول، أكواد...) وبعد كده بندوّر على كل <pre><code> وبنلفّها
+   في wrapper فيه زرار "نسخ" - marked.js نفسه معندوش الميزة دي. */
+function renderMarkdownInto(container, rawText){
+  let html;
+  try{ html = marked.parse(rawText || ''); }
+  catch(e){ html = (rawText||'').replace(/</g,'&lt;'); }
+  container.innerHTML = html;
+  container.querySelectorAll('pre').forEach(pre=>{
+    const codeEl = pre.querySelector('code');
+    const wrap = document.createElement('div');
+    wrap.className = 'code-block-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+    const btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = 'نسخ';
+    btn.addEventListener('click', async ()=>{
+      try{
+        await navigator.clipboard.writeText(codeEl ? codeEl.textContent : pre.textContent);
+        btn.textContent = '✓ اتنسخ'; btn.classList.add('copied');
+        setTimeout(()=>{ btn.textContent='نسخ'; btn.classList.remove('copied'); }, 1500);
+      }catch(e){ btn.textContent = 'تعذّر النسخ'; }
+    });
+    wrap.appendChild(btn);
+  });
+}
+
+/* ============ الكتابة التدريجية (Typewriter) ============
+   بدل ما رد البوت يظهر مرة واحدة زي رسالة جاهزة في برواز، بنكتبه
+   على مراحل (كلمة كلمة) زي أي مساعد ذكاء اصطناعي حقيقي - وبعد ما
+   يخلص، بنستبدل النص الخام بنسخة الماركداون المنسّقة (عشان أثناء
+   الكتابة الرموز زي ** أو # تتقرأ صح لما تتحوّل بعدين). */
+function typewriterRender(bodyEl, fullText, onDone){
+  const words = String(fullText).split(/(\s+)/); // بنحافظ على المسافات نفسها
+  let i = 0;
+  bodyEl.textContent = '';
+  const speed = words.length > 120 ? 8 : (words.length > 50 ? 14 : 22); // كل ما الرد أطول كل ما نكتب أسرع
+  function step(){
+    if(i >= words.length){
+      renderMarkdownInto(bodyEl, fullText);
+      if(onDone) onDone();
+      return;
+    }
+    // بنكتب دفعة صغيرة من الكلمات كل مرة عشان الأداء يفضل خفيف
+    const chunk = words.slice(i, i+2).join('');
+    bodyEl.textContent += chunk;
+    i += 2;
+    scrollToBottom();
+    setTimeout(step, speed);
+  }
+  step();
+}
+
+/* ============ قراءة الرد صوتيًا ============
+   لو فيه بصمة صوت موحّدة (owner_voice_id) متسجّلة، بنطلب الصوت من
+   السيرفر (ElevenLabs) - ولو لأ، أو حصل خطأ، بنرجع فورًا لـ Web
+   Speech API العادي (SpeechSynthesis) بصوت عربي من المتصفح، عشان
+   الميزة تفضل شغالة حتى لو حد مسجّلش بصمة صوت أصلاً. */
+let currentAudio = null;
+function stopSpeaking(){
+  if(currentAudio){ currentAudio.pause(); currentAudio = null; }
+  if(window.speechSynthesis) window.speechSynthesis.cancel();
+  document.querySelectorAll('.speak-btn.speaking').forEach(b=>b.classList.remove('speaking'));
+}
+function speakWithBrowser(text, btn){
+  if(!window.speechSynthesis){ return; }
+  const utter = new SpeechSynthesisUtterance(text.replace(/[*_`#>]/g,''));
+  utter.lang = 'ar-EG';
+  utter.onend = ()=>{ if(btn) btn.classList.remove('speaking'); };
+  window.speechSynthesis.speak(utter);
+}
+async function speakText(text, btn){
+  stopSpeaking();
+  if(btn) btn.classList.add('speaking');
+  try{
+    const res = await callSynthesizeSpeech()({ text });
+    if(res.data.hasVoice && res.data.audioBase64){
+      const audio = new Audio('data:' + (res.data.mimeType||'audio/mpeg') + ';base64,' + res.data.audioBase64);
+      currentAudio = audio;
+      audio.onended = ()=>{ if(btn) btn.classList.remove('speaking'); currentAudio=null; };
+      audio.play();
+      return;
+    }
+  }catch(e){ console.error('synthesizeSpeech failed, falling back to browser TTS', e); }
+  speakWithBrowser(text, btn);
+}
+
+function addMessage(text, cls, confidence, feedbackTarget, opts){
+  opts = opts || {};
   const div = document.createElement('div');
   div.className = 'msg ' + cls;
-  div.textContent = text;
+
+  const isBot = cls && cls.indexOf('bot')!==-1 && cls.indexOf('system')===-1;
+  if(isBot){
+    const body = document.createElement('div');
+    body.className = 'md-body';
+    div.appendChild(body);
+    if(opts.instant){ renderMarkdownInto(body, text); }
+    else{ typewriterRender(body, text); }
+  } else {
+    div.textContent = text;
+  }
+
   if(confidence!==undefined){
     const c = document.createElement('span');
     c.className='confidence mono';
     c.textContent = 'ثقة: ' + Math.round(confidence*100) + '%';
     div.appendChild(c);
   }
+
+  // بطاقات مصادر البحث - بتظهر بس لو الرد جاي من بحث في النت وفيه مصادر فعلية
+  if(opts.sources && opts.sources.length > 0){
+    const wrap = document.createElement('div');
+    wrap.className = 'sources-wrap';
+    const label = document.createElement('div');
+    label.className = 'sources-label';
+    label.textContent = '🔎 المصادر:';
+    wrap.appendChild(label);
+    opts.sources.slice(0,4).forEach(src=>{
+      if(!src.url) return;
+      const a = document.createElement('a');
+      a.className = 'source-card'; a.href = src.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      let host = '';
+      try{ host = new URL(src.url).hostname.replace(/^www\./,''); }catch(e){ host = src.url; }
+      a.innerHTML = '<span class="source-title"></span><span class="source-host"></span>';
+      a.querySelector('.source-title').textContent = src.title || host;
+      a.querySelector('.source-host').textContent = host;
+      wrap.appendChild(a);
+    });
+    div.appendChild(wrap);
+  }
+
+  if(isBot){
+    const speakBtn = document.createElement('button');
+    speakBtn.className = 'speak-btn';
+    speakBtn.innerHTML = '🔊 اسمع الرد';
+    speakBtn.addEventListener('click', ()=>{
+      if(speakBtn.classList.contains('speaking')){ stopSpeaking(); return; }
+      speakText(text, speakBtn);
+    });
+    div.appendChild(speakBtn);
+  }
+
   if(cls && cls.indexOf('bot')!==-1){ lastBotMsgDiv = div; lastFeedbackTarget = feedbackTarget || null; }
   if(feedbackTarget){
     const row = document.createElement('div');
@@ -584,25 +845,31 @@ async function handleSend(){
   }
 
   addMessage(text, 'user');
+  pushHistory('user', text);
   const thinking = addMessage('...بيفكر', 'bot system');
   try{
     // لو فيه رد معلّق مستني تأكيد/تصحيح من قبل، لازم نبعت pendingId مع
     // الرسالة الجاية عشان السيرفر يعرف يربطها بيه (resolvePendingFeedback)
-    const payload = pendingFeedbackId ? { text, pendingId: pendingFeedbackId } : { text };
+    // وبنبعت كمان آخر 3 رسايل من المحادثة (history) عشان أسئلة المتابعة
+    // القصيرة تتفهم صح لو السيرفر احتاج يلجأ للبحث في النت.
+    const payload = { text, history: historyForRequest() };
+    if(pendingFeedbackId) payload.pendingId = pendingFeedbackId;
     const res = await callClassify()(payload);
     thinking.remove();
-    const wasAnsweringPending = !!pendingFeedbackId;
     pendingFeedbackId = null; // بنصفّرها افتراضيًا، وهنعيد ضبطها لو لسه في انتظار تأكيد
 
     if(res.data.isMath){
       // محرك المعادلات الرياضية جاوب مباشرة من غير ما يدوّر في الأمثلة
-      addMessage('= ' + res.data.mathAnswer, 'bot', res.data.confidence);
+      const ans = '= ' + res.data.mathAnswer;
+      addMessage(ans, 'bot', res.data.confidence);
+      pushHistory('bot', ans);
     } else if(res.data.viaTool){
       // رد جاي من أداة ديناميكية اتشغلت جوه الـ VM Sandbox على السيرفر
       const toolText = typeof res.data.toolResult === 'object'
         ? JSON.stringify(res.data.toolResult)
         : String(res.data.toolResult);
       addMessage(toolText, 'bot', res.data.confidence);
+      pushHistory('bot', toolText);
     } else if(res.data.needsCorrection){
       // المستخدم رد بـ 👎 لوحده على مسودة معلّقة - السيرفر مستني منه يكتب الرد الصح
       pendingFeedbackId = res.data.pendingId;
@@ -610,14 +877,16 @@ async function handleSend(){
     } else if(res.data.confirmed || res.data.corrected){
       // المستخدم أكّد أو صحّح مسودة كانت جايه من البحث في النت - اتحفظت في learned_knowledge
       addSystem((res.data.corrected ? 'اتصحّحت وحُفظت ✓' : 'اتأكّدت وحُفظت ✓') + ' - هترد بيها تاني أي وقت حد يسأل سؤال شبيه.');
-      if(res.data.answer) addMessage(res.data.answer, 'bot', 1);
+      if(res.data.answer){ addMessage(res.data.answer, 'bot', 1); pushHistory('bot', res.data.answer); }
       pulseStats();
     } else if(res.data.viaSmallTalk){
       // رد سريع على كلام دارج/تحية عادية - مفيش بحث ولا تعلّم هنا خالص
       addMessage(res.data.answer, 'bot', res.data.confidence);
+      pushHistory('bot', res.data.answer);
     } else if(res.data.viaLearnedKnowledge){
       // رد جاي من "المعرفة المعمّدة" - إجابة اتعلمناها واتأكدنا منها قبل كده
       addMessage(res.data.answer, 'bot', res.data.confidence);
+      pushHistory('bot', res.data.answer);
     } else if(res.data.viaWebSearch){
       if(res.data.searchFoundNothing){
         // حتى البحث في النت ملقاش حاجة - بنطلب من المستخدم يعلّمنا هو
@@ -626,9 +895,11 @@ async function handleSend(){
       } else if(res.data.needsConfirmation){
         // لقينا إجابة من النت بس لسه مش متأكدين منها - مستنيين تأكيد المستخدم
         pendingFeedbackId = res.data.pendingId;
-        addMessage(res.data.proposedAnswer + '\n\n(ده اللي لقيته في النت - صح كده؟ 👍/👎)', 'bot uncertain', res.data.confidence);
+        addMessage(res.data.proposedAnswer + '\n\n(ده اللي لقيته في النت - صح كده؟ 👍/👎)', 'bot uncertain', res.data.confidence, null, { sources: res.data.sources });
       } else {
-        addMessage(res.data.proposedAnswer || res.data.answer, 'bot', res.data.confidence);
+        const ans = res.data.proposedAnswer || res.data.answer;
+        addMessage(ans, 'bot', res.data.confidence, null, { sources: res.data.sources });
+        pushHistory('bot', ans);
       }
     } else if(res.data.confident){
       // لو محرك الـ N-Gram ولّد صياغة جديدة من الردود المتعلّمة، بنستخدمها،
@@ -637,6 +908,7 @@ async function handleSend(){
         || res.data.label.responses[Math.floor(Math.random()*res.data.label.responses.length)];
       const target = { exampleId: res.data.matchedExampleId, label: res.data.label, userText: text };
       addMessage(response, 'bot', res.data.confidence, target);
+      pushHistory('bot', response);
     } else {
       addMessage('مش لسه اتعلمت رد مناسب على الكلام ده 🤔', 'bot uncertain', res.data.confidence);
       showTeachCard(text);
@@ -650,6 +922,39 @@ async function handleSend(){
 sendBtn.addEventListener('click', handleSend);
 inputEl.addEventListener('keydown', e=>{ if(e.key==='Enter') handleSend(); });
 
+/* =========================================================
+   الميكروفون: تحويل الكلام لنص عبر Web Speech API - بيملى صندوق
+   الكتابة بس، مش بيبعت تلقائي، عشان المستخدم يقدر يراجع/يعدّل
+   قبل الإرسال. لو المتصفح مش داعم الميزة دي، الزرار بيتخفي.
+   ========================================================= */
+const micBtn = document.getElementById('mic-btn');
+const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+if(!SpeechRecognitionCtor){
+  micBtn.style.display = 'none';
+} else {
+  const recognizer = new SpeechRecognitionCtor();
+  recognizer.lang = 'ar-EG';
+  recognizer.interimResults = true;
+  recognizer.maxAlternatives = 1;
+  let isListening = false;
+  recognizer.onresult = (e)=>{
+    let finalText = '';
+    for(let i=0;i<e.results.length;i++){ finalText += e.results[i][0].transcript; }
+    inputEl.value = finalText;
+  };
+  recognizer.onend = ()=>{ isListening=false; micBtn.classList.remove('listening'); };
+  recognizer.onerror = ()=>{ isListening=false; micBtn.classList.remove('listening'); };
+  micBtn.addEventListener('click', ()=>{
+    if(isListening){ recognizer.stop(); return; }
+    stopSpeaking(); // منطقي نوقف أي رد بيتقرأ صوتيًا قبل ما نبدأ نسمع
+    try{
+      recognizer.start();
+      isListening = true;
+      micBtn.classList.add('listening');
+    }catch(e){ console.error('تعذر بدء التسجيل الصوتي', e); }
+  });
+}
+
 document.getElementById('reset-btn').addEventListener('click', async ()=>{
   if(!confirm('هتتمسح كل حاجة اتعلمها العقل (وكل معاني الإيموجي اللي اتعلمها كمان) من على السيرفر. متأكد؟')) return;
   try{
@@ -658,6 +963,158 @@ document.getElementById('reset-btn').addEventListener('click', async ()=>{
     addSystem('اتمسح كل التعلّم من على السيرفر - العقل رجع فاضي زي أول مرة.');
   }catch(e){ console.error(e); addSystem('⚠️ تعذر المسح - جرب تاني.'); }
 });
+
+/* =========================================================
+   لوحة الإدارة: الأدوات الديناميكية + الأسئلة المعلّقة
+   ========================================================= */
+const adminPanel = document.getElementById('admin-panel');
+const adminBody = document.getElementById('admin-body');
+let activeAdminTab = 'tools';
+
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function renderAdminTools(){
+  adminBody.innerHTML = '<div class="admin-empty">بيحمّل الأدوات...</div>';
+  try{
+    const res = await callListDynamicTools()();
+    const tools = res.data.tools || [];
+    if(tools.length===0){ adminBody.innerHTML = '<div class="admin-empty">مفيش أدوات ديناميكية اتعلمت لحد دلوقتي.</div>'; return; }
+    adminBody.innerHTML = '';
+    tools.forEach(t=>{
+      const card = document.createElement('div');
+      card.className = 'admin-card' + (t.disabled ? ' disabled' : '');
+      card.innerHTML = `
+        <div class="admin-card-title">${escapeHtml(t.name)}</div>
+        <div class="admin-card-desc">${escapeHtml(t.description || 'مفيش وصف')}</div>
+        <div class="admin-card-meta">
+          <span>استخدمت: <b>${t.usageCount||0}</b></span>
+          <span>أخطاء: <b>${t.errorCount||0}</b></span>
+          <span>${t.disabled ? '⛔ متوقفة' : '✅ شغالة'}</span>
+        </div>
+        <div class="admin-card-row">
+          <button class="${t.disabled ? 'admin-btn-ok' : 'admin-btn-danger'} admin-toggle-btn">${t.disabled ? 'تفعيل' : 'إيقاف'}</button>
+        </div>
+      `;
+      card.querySelector('.admin-toggle-btn').addEventListener('click', async ()=>{
+        try{
+          await callToggleDynamicTool()({ toolId: t.id, disabled: !t.disabled });
+          renderAdminTools();
+        }catch(e){ console.error(e); alert('حصل خطأ - جرب تاني'); }
+      });
+      adminBody.appendChild(card);
+    });
+  }catch(e){ console.error(e); adminBody.innerHTML = '<div class="admin-empty">⚠️ تعذر تحميل الأدوات</div>'; }
+}
+
+async function renderAdminPending(){
+  adminBody.innerHTML = '<div class="admin-empty">بيحمّل الأسئلة المعلّقة...</div>';
+  try{
+    const res = await callListPendingKnowledge()();
+    const items = res.data.items || [];
+    if(items.length===0){ adminBody.innerHTML = '<div class="admin-empty">مفيش أسئلة معلّقة دلوقتي.</div>'; return; }
+    adminBody.innerHTML = '';
+    items.forEach(p=>{
+      const card = document.createElement('div');
+      card.className = 'admin-card';
+      card.innerHTML = `
+        <div class="admin-pending-q">${escapeHtml(p.question)}</div>
+        <div class="admin-pending-a">${escapeHtml(p.proposedAnswer || '')}</div>
+        <div class="admin-card-row">
+          <button class="admin-btn-ok admin-approve-btn">👍 اعتماد</button>
+          <button class="admin-btn-danger admin-reject-btn">👎 رفض</button>
+        </div>
+      `;
+      card.querySelector('.admin-approve-btn').addEventListener('click', async ()=>{
+        try{ await callConfirmPendingKnowledge()({ pendingId: p.id }); renderAdminPending(); }
+        catch(e){ console.error(e); alert('حصل خطأ - جرب تاني'); }
+      });
+      card.querySelector('.admin-reject-btn').addEventListener('click', async ()=>{
+        const corrected = prompt('اكتب الإجابة الصح بدل المسودة دي:');
+        if(!corrected || !corrected.trim()) return;
+        try{ await callRejectPendingKnowledge()({ pendingId: p.id, correctedAnswer: corrected.trim() }); renderAdminPending(); }
+        catch(e){ console.error(e); alert('حصل خطأ - جرب تاني'); }
+      });
+      adminBody.appendChild(card);
+    });
+  }catch(e){ console.error(e); adminBody.innerHTML = '<div class="admin-empty">⚠️ تعذر تحميل الأسئلة المعلّقة</div>'; }
+}
+
+function renderAdminTab(tab){
+  activeAdminTab = tab;
+  document.querySelectorAll('.admin-tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  if(tab==='tools') renderAdminTools(); else renderAdminPending();
+}
+document.querySelectorAll('.admin-tab').forEach(b=>b.addEventListener('click', ()=>renderAdminTab(b.dataset.tab)));
+document.getElementById('admin-btn').addEventListener('click', ()=>{ adminPanel.classList.add('open'); renderAdminTab(activeAdminTab); });
+document.getElementById('admin-close').addEventListener('click', ()=>{ adminPanel.classList.remove('open'); });
+
+/* =========================================================
+   بصمة صوت البوت: تسجيل أول مرة عبر MediaRecorder
+   ========================================================= */
+const voiceModal = document.getElementById('voice-setup-modal');
+const voiceRecordBtn = document.getElementById('voice-record-btn');
+const voiceSkipBtn = document.getElementById('voice-skip-btn');
+const voiceTimerEl = document.getElementById('voice-timer');
+
+async function checkVoiceSetup(){
+  if(!navigator.mediaDevices || !window.MediaRecorder) return; // متصفح مش داعم - بنسيبها كده من غير ما نضايق حد
+  try{
+    const res = await callGetVoiceStatus()();
+    if(!res.data.hasVoice){ voiceModal.classList.add('open'); }
+  }catch(e){ console.error('تعذر التأكد من حالة بصمة الصوت', e); }
+}
+
+let mediaRecorder = null, recordedChunks = [], recordTimerInterval = null, recordSeconds = 0;
+function blobToBase64(blob){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onloadend = ()=>resolve(String(reader.result).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+voiceRecordBtn.addEventListener('click', async ()=>{
+  if(mediaRecorder && mediaRecorder.state === 'recording'){ mediaRecorder.stop(); return; }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e=>{ if(e.data.size>0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = async ()=>{
+      clearInterval(recordTimerInterval);
+      stream.getTracks().forEach(t=>t.stop());
+      voiceRecordBtn.textContent = '⏳ بيبعت الصوت للسيرفر...';
+      voiceRecordBtn.disabled = true;
+      try{
+        const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+        const base64 = await blobToBase64(blob);
+        await callCreateVoiceProfile()({ audioBase64: base64, mimeType: 'audio/webm' });
+        voiceModal.classList.remove('open');
+        addSystem('اتسجّلت بصمة صوت العقل الصغير بنجاح 🎙️ - كل الردود دلوقتي هتتقري بنفس الصوت ده.');
+      }catch(e){
+        console.error(e);
+        voiceRecordBtn.textContent = '⚠️ حصل خطأ - اضغط لإعادة المحاولة';
+        voiceRecordBtn.disabled = false;
+      }
+    };
+    mediaRecorder.start();
+    recordSeconds = 0;
+    voiceTimerEl.textContent = '00:00';
+    voiceRecordBtn.textContent = '⏹️ إيقاف التسجيل';
+    voiceRecordBtn.classList.add('recording');
+    recordTimerInterval = setInterval(()=>{
+      recordSeconds++;
+      const mm = String(Math.floor(recordSeconds/60)).padStart(2,'0');
+      const ss = String(recordSeconds%60).padStart(2,'0');
+      voiceTimerEl.textContent = mm + ':' + ss;
+      if(recordSeconds >= 15) mediaRecorder.stop(); // حد أقصى 15 ثانية زي المطلوب بالظبط
+    }, 1000);
+  }catch(e){
+    console.error('تعذر الوصول للميكروفون', e);
+    alert('محتاجين إذن الوصول للميكروفون عشان نسجّل بصمة الصوت.');
+  }
+});
+voiceSkipBtn.addEventListener('click', ()=>{ voiceModal.classList.remove('open'); });
 
 async function boot(){
   addSystem('جاري الاتصال بالسيرفر...');
@@ -675,6 +1132,7 @@ async function boot(){
   startRealtimeSync();
   chatEl.innerHTML='';
   updateStats();
+  checkVoiceSetup();
 
   if(labels.length===0){
     addSystem('العقل ده فاضي دلوقتي - كل رد فيه إنت اللي هتعلّمه ليه بنفسك، والتدريب هيحصل على السيرفر مش على جهازك.');
