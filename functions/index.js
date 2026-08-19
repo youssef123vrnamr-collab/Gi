@@ -31,6 +31,15 @@ const MODEL_REF  = () => db.collection('miniBrain').doc('trainedModel');
 const TOOLS_COL  = () => db.collection('dynamic_tools');
 const TOOL_ERRORS_COL = () => db.collection('tool_errors');
 
+/* ================= طبقة التعلم المستمر من الويب =================
+   pending_knowledge : "غرفة التصفية" - مسودات إجابات جاية من البحث
+   على النت، لسه مستنية تأكيد أو تصحيح من المستخدم.
+   learned_knowledge : القاعدة "المعمّدة" - إجابات اتأكدت (يدوي أو
+   من المستخدم) وبقى الموديل يقرا منها مباشرة من غير ما يبحث تاني. */
+const PENDING_COL = () => db.collection('pending_knowledge');
+const LEARNED_COL = () => db.collection('learned_knowledge');
+const UNRESOLVED_COL = () => db.collection('unresolved_queries');
+
 /* ================= إعدادات الشبكة =================
    بما إن التدريب بقى على السيرفر مش على الموبايل، مفيش داعي
    نقلل الحجم عشان نراعي بطارية أو رام الهاتف - كبّرناها شوية
@@ -46,6 +55,14 @@ const TOOL_SIM_THRESHOLD = 0.5;   // الحد الأدنى للتشابه عشا
 const TOOL_TIMEOUT_MS = 1000;     // أقصى وقت تنفيذ لأي دالة ديناميكية جوه الـ VM
 const TOOL_ERROR_LIMIT = 3;       // عدد الأخطاء المتتالية قبل ما نوقف الأداة تلقائياً
 const TOOL_SEARCH_LIMIT = 300;    // أقصى عدد أدوات نجيبها من Firestore للمقارنة
+
+/* ================= إعدادات دورة التعلم من الويب ================= */
+const LEARNED_SIM_THRESHOLD = 0.55;  // الحد الأدنى للتشابه عشان نستخدم معلومة اتعلمناها قبل كده من غير بحث تاني
+const LEARNED_SEARCH_LIMIT  = 400;   // أقصى عدد وثائق learned_knowledge نجيبها للمقارنة
+const WEB_SEARCH_RESULTS    = 6;     // عدد نتائج DuckDuckGo المطلوبة
+const WEB_SNIPPET_MIN_LEN   = 20;    // أقل طول لأي مقتطف عشان نعتبره مفيد (مش حشو)
+const WEB_MAX_SNIPPETS_USED = 3;     // أقصى عدد مقتطفات نركّب منها الرد المقترح
+const WEB_ANSWER_MAX_CHARS  = 900;   // أقصى طول للرد المقترح المركّب
 
 /* ================= معالجة النص (نفس منطق المتصفح القديم) ================= */
 const STOPWORDS = new Set([
@@ -487,6 +504,214 @@ async function findBestTool(vec){
 }
 
 /* =========================================================
+   ========= Continuous Web Learning & Verification Pipeline =========
+   -----------------------------------------------------------
+   الفكرة: لو الموديل (الأمثلة + الشبكة العصبية + الأدوات الديناميكية)
+   مالقاش رد واثق، ممنوع يرجّع اعتذار زي "معرفش" - بدل كده:
+     1) يدوّر في learned_knowledge (حاجات اتأكدت قبل كده) - لو لقى
+        حاجة قريبة كفاية، يردّ بيها فوراً من غير ما يبحث في النت تاني.
+     2) لو مفيش، يبحث فعلياً في DuckDuckGo (من غير API Key).
+     3) نتائج البحث الخام بتتصفّى من الحشو/الإعلانات، ويتركّب منها
+        رد مقترح، ويتخزن مؤقتاً في "غرفة التصفية" pending_knowledge،
+        ويترجع للمستخدم مع علامة استفهام (needsConfirmation:true).
+     4) لما المستخدم يرد (👍/صح/تمام أو 👎 + تصحيح)، الفرونت إند
+        بيبعت نفس الرسالة الجاية مع pendingId، فبنرقّي المعلومة أو
+        نستبدلها بتصحيح المستخدم جوه learned_knowledge المعمّدة.
+   ========================================================= */
+
+/* -------- أ) البحث عن معلومة "معمّدة" اتعلمناها قبل كده -------- */
+async function findBestLearned(vec){
+  const snap = await LEARNED_COL().limit(LEARNED_SEARCH_LIMIT).get();
+  let best=null, bestSim=-1;
+  snap.forEach(doc=>{
+    const d = doc.data();
+    if(!Array.isArray(d.vector) || d.vector.length!==vec.length) return;
+    const sim = cosineSim(vec, d.vector);
+    if(sim>bestSim){ bestSim=sim; best = { id: doc.id, ...d }; }
+  });
+  return { learned:best, sim:bestSim };
+}
+
+/* -------- ب) البحث الحي في DuckDuckGo (بدون مفتاح API) --------
+   بنستخدم واجهة duckduckgo.com/html اللي بترجع HTML بسيط (مفيش
+   JS)، وبنستخرج منها العنوان + المقتطف + الرابط بـ regex خفيف
+   من غير أي مكتبة تحليل HTML خارجية. */
+function stripHtmlTags(s){
+  return String(s || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&nbsp;/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+function decodeDuckDuckGoUrl(href){
+  try{
+    const m = String(href||'').match(/uddg=([^&]+)/);
+    if(m) return decodeURIComponent(m[1]);
+    if(/^https?:\/\//i.test(href)) return href;
+    if(href && href.startsWith('//')) return 'https:' + href;
+    return href;
+  }catch(e){ return href; }
+}
+function parseDuckDuckGoHtml(html){
+  const results = [];
+  const blockRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  let m;
+  while((m = blockRegex.exec(html)) !== null){
+    const url = decodeDuckDuckGoUrl(m[1]);
+    const title = stripHtmlTags(m[2]);
+    const snippet = stripHtmlTags(m[3]);
+    if(title || snippet) results.push({ url, title, snippet });
+  }
+  return results;
+}
+async function searchDuckDuckGo(query, maxResults = WEB_SEARCH_RESULTS){
+  try{
+    const url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query) + '&kl=xa-ar';
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; MiniBrainLearner/1.0; +server-side)',
+        'Accept-Language': 'ar,en;q=0.7'
+      }
+    });
+    if(!res.ok) return [];
+    const html = await res.text();
+    return parseDuckDuckGoHtml(html).slice(0, maxResults);
+  }catch(e){
+    console.error('DuckDuckGo search failed:', e);
+    return [];
+  }
+}
+
+/* -------- ج) غرفة التصفية: تنظيف النتائج الخام وتركيب رد مقترح --------
+   بنشيل: المقتطفات القصيرة جداً (حشو)، التكرار، وأي حاجة شكلها
+   إعلان صريح. وبنركّب رد واحد مقروء من أفضل المقتطفات المتبقية. */
+function cleanAndComposeAnswer(results){
+  const seen = new Set();
+  const cleaned = [];
+  for(const r of (results || [])){
+    const snippet = (r.snippet || '').trim();
+    if(!snippet || snippet.length < WEB_SNIPPET_MIN_LEN) continue;
+    if(/(^|\s)(اعلان|إعلان|ads?|sponsored|promoted)(\s|$)/i.test(snippet)) continue;
+    const key = snippet.slice(0, 60);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push({ title: r.title || '', snippet, url: r.url || '' });
+    if(cleaned.length >= WEB_MAX_SNIPPETS_USED) break;
+  }
+  if(cleaned.length === 0) return null;
+  const composedAnswer = cleaned.map(c => c.snippet).join(' ').replace(/\s+/g,' ').trim().slice(0, WEB_ANSWER_MAX_CHARS);
+  return { composedAnswer, sources: cleaned.map(c => ({ title: c.title, url: c.url })) };
+}
+
+/* -------- د) مسار "عدم الاستسلام أبداً": يتفعّل كخطوة أخيرة قبل الرد -------- */
+async function runWebLearningFallback(text, vecRaw){
+  const results = await searchDuckDuckGo(text);
+  const cleaned = cleanAndComposeAnswer(results);
+
+  if(!cleaned){
+    // حتى البحث في النت ملقاش حاجة مفيدة - برضو ممنوع نرجّع اعتذار
+    // جاهز زي "معرفش". بدل كده بنسجّل السؤال في unresolved_queries
+    // للمراجعة لاحقاً، وبنرد بطلب صريح إن المستخدم يعلّمنا هو بنفسه.
+    try{
+      await UNRESOLVED_COL().add({ question:text, createdAt: Date.now() });
+    }catch(logErr){ console.error('unresolved log failed:', logErr); }
+    return {
+      confident: true,
+      viaWebSearch: true,
+      searchFoundNothing: true,
+      needsTeaching: true,
+      proposedAnswer: null
+    };
+  }
+
+  const pendingDoc = {
+    question: text,
+    normalizedQuestion: normalizeArabic(text),
+    vector: vecRaw,
+    proposedAnswer: cleaned.composedAnswer,
+    sources: cleaned.sources,
+    status: 'pending',
+    createdAt: Date.now()
+  };
+  const ref = await PENDING_COL().add(pendingDoc);
+  return {
+    confident: true,
+    viaWebSearch: true,
+    needsConfirmation: true,
+    pendingId: ref.id,
+    proposedAnswer: cleaned.composedAnswer,
+    sources: cleaned.sources
+  };
+}
+
+/* -------- ه) ترقية/تصحيح معلومة معلّقة إلى القاعدة المعمّدة -------- */
+async function promotePendingToLearned(pendRef, pend, finalAnswer, origin){
+  const vector = Array.isArray(pend.vector) && pend.vector.length === VECTOR_DIM
+    ? pend.vector
+    : textToVector(pend.question);
+  const learnedDoc = {
+    question: pend.question,
+    normalizedQuestion: pend.normalizedQuestion || normalizeArabic(pend.question),
+    answer: finalAnswer,
+    vector,
+    sources: origin === 'web_confirmed' ? (pend.sources || []) : [],
+    trust: 1,
+    origin,
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  const batch = db.batch();
+  const learnedRef = LEARNED_COL().doc();
+  batch.set(learnedRef, learnedDoc);
+  batch.delete(pendRef);
+  await batch.commit();
+  return learnedRef.id;
+}
+
+/* -------- و) اكتشاف تأكيد/اعتراض بسيط (👍/صح/تمام مقابل 👎/غلط) -------- */
+const AFFIRM_WORDS = ['صح','صحيح','تمام','مظبوط','ايوه','ايوة','اه','نعم','اكيد','كده تمام','اوك','اوكي','ok','okay','yes'];
+const NEGATE_WORDS = ['غلط','خطا','خطأ','لا','لأ','مش صح','مش مظبوط','no','wrong'];
+function isAffirmative(text){
+  if(/👍|✅/.test(text)) return true;
+  const norm = normalizeArabic(text).trim();
+  return AFFIRM_WORDS.some(w => norm === normalizeArabic(w) || norm.startsWith(normalizeArabic(w) + ' '));
+}
+function isNegativeOnly(text){
+  if(/👎|❌/.test(text)) return true;
+  const norm = normalizeArabic(text).trim();
+  return NEGATE_WORDS.some(w => norm === normalizeArabic(w));
+}
+
+/* -------- ز) حلقة التأكيد: بتتفعّل لو المستخدم بيرد على سؤال معلّق -------- */
+async function resolvePendingFeedback(pendingId, text, feeling){
+  const pendRef = PENDING_COL().doc(pendingId);
+  const pendSnap = await pendRef.get();
+  if(!pendSnap.exists) return null; // مفيش سؤال معلّق بالـ id ده - نكمّل بالتصنيف العادي
+  const pend = pendSnap.data();
+
+  if(isAffirmative(text)){
+    const learnedId = await promotePendingToLearned(pendRef, pend, pend.proposedAnswer, 'web_confirmed');
+    return { confident:true, confirmed:true, learnedId, answer: pend.proposedAnswer, feeling };
+  }
+
+  if(isNegativeOnly(text)){
+    // 👎 لوحدها من غير تصحيح - بنسيب المسودة معلّقة ونطلب التصحيح صراحة
+    return {
+      confident: true,
+      needsCorrection: true,
+      pendingId,
+      message: 'تمام، قولّي الإجابة الصح وأنا هتعلمها فوراً 🙏',
+      feeling
+    };
+  }
+
+  // أي رسالة تانية بعد سؤال معلّق = المستخدم بيبعت التصحيح/الإجابة الصح نفسها
+  const learnedId = await promotePendingToLearned(pendRef, pend, text.trim(), 'user_corrected');
+  return { confident:true, corrected:true, learnedId, answer: text.trim(), feeling };
+}
+
+/* =========================================================
    التدريب: بيتنادى تلقائي (Firestore trigger) أي وقت حد يضيف
    مثال أو يستورد ملف أو يصحّح بإيموجي - يعني مفيش زرار "درّب"
    يدوي، السيرفر بيحس بالتغيير ويدرّب نفسه لوحده وبيحفظ النتيجة
@@ -537,6 +762,18 @@ exports.classify = onCall(async (request) => {
   if(!text.trim()) throw new HttpsError('invalid-argument', 'الرسالة فاضية');
 
   const feeling = sentimentScore(tokenize(text)); // نبرة الجملة -1..1، بترجع للواجهة لو حابب تعرضها
+
+  /* ============ حلقة التأكيد (Human-in-the-Loop) ============
+     لو الفرونت إند بعت pendingId (معناه إن الرسالة دي رد المستخدم
+     على سؤال كنا مستنيين تأكيد/تصحيح ليه)، بنعالجها هنا مباشرة
+     وما بنكملش مسار التصنيف العادي خالص. */
+  const pendingId = request.data && request.data.pendingId;
+  if(pendingId){
+    const decision = await resolvePendingFeedback(String(pendingId), text, feeling);
+    if(decision) return decision;
+    // decision === null: الـ pendingId ده مش موجود (اتقفل قبل كده أو
+    // غلط) - نكمّل بمسار التصنيف العادي زي أي رسالة جديدة.
+  }
 
   /* ============ أ) فلترة الحشو وتنظيف النص ============
      tokenize() جوه textToVector بيشيل كلمات الحشو والترحيب
@@ -603,6 +840,29 @@ exports.classify = onCall(async (request) => {
     result = { confident:false, confidence:Math.max(bestSim,0), feeling };
   }
 
+  /* ============ د-١) البحث في المعرفة "المعمّدة" (learned_knowledge) ============
+     لو الطبقتين الأصليتين (الأمثلة + الشبكة العصبية) مالقوش رد واثق،
+     قبل ما نروح نبحث في النت، بنشوف الأول لو إحنا اتعلمنا إجابة
+     لسؤال شبيه قبل كده واتأكدت من المستخدم - لو لقينا، بنردّ بيها
+     فوراً من غير أي بحث جديد. */
+  if(!result.confident){
+    try{
+      const { learned, sim } = await findBestLearned(vecRaw);
+      if(learned && sim >= LEARNED_SIM_THRESHOLD){
+        result = {
+          confident: true,
+          viaLearnedKnowledge: true,
+          learnedId: learned.id,
+          answer: learned.answer,
+          confidence: sim,
+          feeling
+        };
+      }
+    }catch(learnedErr){
+      console.error('learned_knowledge lookup error:', learnedErr);
+    }
+  }
+
   /* ============ د) محرك الـ N-Gram التوليدي ============
      لو الفئة اللي اتطابقت معاها عندها أكتر من رد واحد مخزّن،
      يبقى محتاجة "صياغة جديدة" بدل ما نختار رد ثابت عشوائي - بنولّد
@@ -647,7 +907,55 @@ exports.classify = onCall(async (request) => {
     }
   }
 
+  /* ============ و) مسار "عدم الاستسلام أبداً" (Zero-Failure Fallback) ============
+     دي آخر محطة قبل الرد. لو كل الطبقات فوق (أمثلة + شبكة عصبية +
+     معرفة معمّدة + أدوات ديناميكية) فشلت تلاقي رد واثق، ممنوع نرجّع
+     confident:false زي الأول - بدل كده بندخل دورة البحث والتصفية
+     والتعلم من النت مباشرة. */
+  if(!result.confident){
+    try{
+      result = await runWebLearningFallback(text, vecRaw);
+    }catch(webErr){
+      // حتى لو دورة البحث نفسها فشلت (مشكلة شبكة مثلاً)، برضو ممنوع
+      // نرجّع اعتذار جاهز - بنسجّل السؤال للمراجعة ونطلب من المستخدم
+      // يعلّمنا هو بنفسه بدل ما نتوقف.
+      console.error('web learning fallback error:', webErr);
+      try{ await UNRESOLVED_COL().add({ question:text, error:String(webErr && webErr.message||webErr), createdAt: Date.now() }); }catch(_){}
+      result = { confident:true, viaWebSearch:true, searchFoundNothing:true, needsTeaching:true, proposedAnswer:null, feeling };
+    }
+  }
+
   return result;
+});
+
+/* =========================================================
+   confirmPendingKnowledge / rejectPendingKnowledge:
+   نفس منطق resolvePendingFeedback بالظبط، لكن كـ API صريحة لو
+   الفرونت إند بيفضّل زرار 👍/👎 بدل ما يستنى رسالة نصية جديدة.
+   ========================================================= */
+exports.confirmPendingKnowledge = onCall(async (request) => {
+  const { pendingId } = request.data || {};
+  if(!pendingId) throw new HttpsError('invalid-argument', 'ناقص pendingId');
+  const pendRef = PENDING_COL().doc(String(pendingId));
+  const pendSnap = await pendRef.get();
+  if(!pendSnap.exists) throw new HttpsError('not-found', 'مفيش سؤال معلّق بالـ id ده (يمكن اتقفل قبل كده)');
+  const pend = pendSnap.data();
+  const learnedId = await promotePendingToLearned(pendRef, pend, pend.proposedAnswer, 'web_confirmed');
+  return { ok:true, learnedId, answer: pend.proposedAnswer };
+});
+
+exports.rejectPendingKnowledge = onCall(async (request) => {
+  const { pendingId, correctedAnswer } = request.data || {};
+  if(!pendingId) throw new HttpsError('invalid-argument', 'ناقص pendingId');
+  if(!correctedAnswer || !String(correctedAnswer).trim()){
+    throw new HttpsError('invalid-argument', 'لازم تبعت الإجابة الصح بدل المسودة المرفوضة');
+  }
+  const pendRef = PENDING_COL().doc(String(pendingId));
+  const pendSnap = await pendRef.get();
+  if(!pendSnap.exists) throw new HttpsError('not-found', 'مفيش سؤال معلّق بالـ id ده (يمكن اتقفل قبل كده)');
+  const pend = pendSnap.data();
+  const learnedId = await promotePendingToLearned(pendRef, pend, String(correctedAnswer).trim(), 'user_corrected');
+  return { ok:true, learnedId, answer: String(correctedAnswer).trim() };
 });
 
 /* =========================================================
