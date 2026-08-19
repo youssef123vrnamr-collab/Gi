@@ -197,6 +197,7 @@ const callResetBrain    = ()=>functions.httpsCallable('resetBrain');
 let labels = [];
 let examples = [];
 let learnedEmojis = {};
+let pendingFeedbackId = null; // لو السيرفر مستني تأكيد/تصحيح على رد جاي من البحث في النت
 
 function applyRemoteData(data){
   labels = data.labels || [];
@@ -369,9 +370,11 @@ function showTeachCard(originalText){
       setTimeout(async ()=>{
         try{
           const r = await callClassify()({ text: originalText });
-          if(r.data.confident){
+          if(r.data.confident && r.data.label){
             const target = { exampleId: r.data.matchedExampleId, label: r.data.label, userText: originalText };
             addMessage(r.data.label.responses[Math.floor(Math.random()*r.data.label.responses.length)], 'bot', r.data.confidence, target);
+          } else if(r.data.confident && r.data.answer){
+            addMessage(r.data.answer, 'bot', r.data.confidence);
           }
         }catch(e){ console.error(e); }
       }, 1500);
@@ -583,8 +586,13 @@ async function handleSend(){
   addMessage(text, 'user');
   const thinking = addMessage('...بيفكر', 'bot system');
   try{
-    const res = await callClassify()({ text });
+    // لو فيه رد معلّق مستني تأكيد/تصحيح من قبل، لازم نبعت pendingId مع
+    // الرسالة الجاية عشان السيرفر يعرف يربطها بيه (resolvePendingFeedback)
+    const payload = pendingFeedbackId ? { text, pendingId: pendingFeedbackId } : { text };
+    const res = await callClassify()(payload);
     thinking.remove();
+    const wasAnsweringPending = !!pendingFeedbackId;
+    pendingFeedbackId = null; // بنصفّرها افتراضيًا، وهنعيد ضبطها لو لسه في انتظار تأكيد
 
     if(res.data.isMath){
       // محرك المعادلات الرياضية جاوب مباشرة من غير ما يدوّر في الأمثلة
@@ -595,6 +603,30 @@ async function handleSend(){
         ? JSON.stringify(res.data.toolResult)
         : String(res.data.toolResult);
       addMessage(toolText, 'bot', res.data.confidence);
+    } else if(res.data.needsCorrection){
+      // المستخدم رد بـ 👎 لوحده على مسودة معلّقة - السيرفر مستني منه يكتب الرد الصح
+      pendingFeedbackId = res.data.pendingId;
+      addMessage(res.data.message || 'قولّي الإجابة الصح وأنا هتعلمها فوراً 🙏', 'bot system');
+    } else if(res.data.confirmed || res.data.corrected){
+      // المستخدم أكّد أو صحّح مسودة كانت جايه من البحث في النت - اتحفظت في learned_knowledge
+      addSystem((res.data.corrected ? 'اتصحّحت وحُفظت ✓' : 'اتأكّدت وحُفظت ✓') + ' - هترد بيها تاني أي وقت حد يسأل سؤال شبيه.');
+      if(res.data.answer) addMessage(res.data.answer, 'bot', 1);
+      pulseStats();
+    } else if(res.data.viaLearnedKnowledge){
+      // رد جاي من "المعرفة المعمّدة" - إجابة اتعلمناها واتأكدنا منها قبل كده
+      addMessage(res.data.answer, 'bot', res.data.confidence);
+    } else if(res.data.viaWebSearch){
+      if(res.data.searchFoundNothing){
+        // حتى البحث في النت ملقاش حاجة - بنطلب من المستخدم يعلّمنا هو
+        addMessage('دورت في النت وملقيتش حاجة أعتمد عليها 🤔 تقدر تعلّمني الرد الصح؟', 'bot uncertain', res.data.confidence);
+        showTeachCard(text);
+      } else if(res.data.needsConfirmation){
+        // لقينا إجابة من النت بس لسه مش متأكدين منها - مستنيين تأكيد المستخدم
+        pendingFeedbackId = res.data.pendingId;
+        addMessage(res.data.proposedAnswer + '\n\n(ده اللي لقيته في النت - صح كده؟ 👍/👎)', 'bot uncertain', res.data.confidence);
+      } else {
+        addMessage(res.data.proposedAnswer || res.data.answer, 'bot', res.data.confidence);
+      }
     } else if(res.data.confident){
       // لو محرك الـ N-Gram ولّد صياغة جديدة من الردود المتعلّمة، بنستخدمها،
       // وإلا بنختار رد جاهز عشوائي من فئة الرد المطابقة زي الأول بالظبط
