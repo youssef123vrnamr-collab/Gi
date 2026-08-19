@@ -21,6 +21,8 @@
    ========================================================= */
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
+const { defineSecret } = require('firebase-functions/params');
 const admin = require('firebase-admin');
 const vm = require('node:vm');
 admin.initializeApp();
@@ -30,6 +32,15 @@ const STATE_REF  = () => db.collection('miniBrain').doc('sharedState');
 const MODEL_REF  = () => db.collection('miniBrain').doc('trainedModel');
 const TOOLS_COL  = () => db.collection('dynamic_tools');
 const TOOL_ERRORS_COL = () => db.collection('tool_errors');
+
+/* ================= إعدادات بصمة الصوت (Voice Cloning) =================
+   مفتاح ElevenLabs بيتخزن كـ Secret على مستوى Firebase (مش هارد كودد
+   في الملف ولا في المتصفح) - تتحطه مرة واحدة بالأمر:
+   firebase functions:secrets:set ELEVENLABS_API_KEY */
+const ELEVENLABS_API_KEY = defineSecret('ELEVENLABS_API_KEY');
+const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1';
+const SETTINGS_COL = () => db.collection('system_settings');
+const VOICE_DOC = () => SETTINGS_COL().doc('voice');
 
 /* ================= طبقة التعلم المستمر من الويب =================
    pending_knowledge : "غرفة التصفية" - مسودات إجابات جاية من البحث
@@ -663,6 +674,57 @@ async function searchDuckDuckGo(query, maxResults = WEB_SEARCH_RESULTS){
   }
 }
 
+/* -------- ب-١) Fallback على Bing (لو DuckDuckGo محظور على IP السيرفر) --------
+   نفس فكرة الـ regex الخفيف من غير مكتبة تحليل HTML - هيكل صفحة نتايج
+   Bing مختلف عن DuckDuckGo فبنفسره بـ pattern منفصل. */
+function parseBingHtml(html){
+  const results = [];
+  const blockRegex = /<li class="b_algo"[\s\S]*?<h2>[\s\S]*?<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>[\s\S]*?<p>([\s\S]*?)<\/p>/g;
+  let m;
+  while((m = blockRegex.exec(html)) !== null){
+    const url = stripHtmlTags(m[1]);
+    const title = stripHtmlTags(m[2]);
+    const snippet = stripHtmlTags(m[3]);
+    if(title || snippet) results.push({ url, title, snippet });
+  }
+  return results;
+}
+async function searchBing(query, maxResults = WEB_SEARCH_RESULTS){
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
+  try{
+    const url = 'https://www.bing.com/search?q=' + encodeURIComponent(query) + '&setlang=ar&cc=EG';
+    const res = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept-Language': 'ar,en;q=0.7'
+      }
+    });
+    if(!res.ok) return [];
+    const html = await res.text();
+    return parseBingHtml(html).slice(0, maxResults);
+  }catch(e){
+    console.error('Bing fallback search failed:', e && e.message || e);
+    return [];
+  }finally{
+    clearTimeout(timeoutId);
+  }
+}
+
+/* -------- ب-٢) طبقة البحث الموحّدة: تجرّب DuckDuckGo، ولو رجّعت فاضية
+   (سواء بسبب حظر الـ IP بتاع السيرفر أو أي مشكلة تانية) بتلجأ فوراً
+   لـ Bing من غير ما المستخدم يحس بأي فرق - نفس شكل النتيجة بالظبط
+   ومفيش أي حاجة محتاجة مفتاح API. -------- */
+async function searchWebWithFallback(query, maxResults = WEB_SEARCH_RESULTS){
+  const primary = await searchDuckDuckGo(query, maxResults);
+  if(primary.length > 0) return { results: primary, provider: 'duckduckgo' };
+  const secondary = await searchBing(query, maxResults);
+  if(secondary.length > 0) return { results: secondary, provider: 'bing' };
+  return { results: [], provider: null };
+}
+
 /* -------- ج) غرفة التصفية: تنظيف النتائج الخام وتركيب رد مقترح --------
    بنشيل: المقتطفات القصيرة جداً (حشو)، التكرار، وأي حاجة شكلها
    إعلان صريح. وبنركّب رد واحد مقروء من أفضل المقتطفات المتبقية. */
@@ -689,9 +751,13 @@ function cleanAndComposeAnswer(results){
   return { composedAnswer, sources: cleaned.map(c => ({ title: c.title, url: c.url })) };
 }
 
-/* -------- د) مسار "عدم الاستسلام أبداً": يتفعّل كخطوة أخيرة قبل الرد -------- */
-async function runWebLearningFallback(text, vecRaw){
-  const results = await searchDuckDuckGo(text);
+/* -------- د) مسار "عدم الاستسلام أبداً": يتفعّل كخطوة أخيرة قبل الرد --------
+   searchQuery هنا ممكن تبقى مختلفة عن text الأصلي (مركّبة من آخر رسايل
+   المحادثة) عشان البحث نفسه يفهم السياق (مثلاً "وهو فين؟" لوحدها معناها
+   حاجة تانية غير لما نضمّها لآخر سؤال قبلها). النص المحفوظ في الوثيقة
+   المعلّقة (question) يفضل هو النص الأصلي بالظبط زي ما كتبه المستخدم. */
+async function runWebLearningFallback(text, vecRaw, searchQuery){
+  const { results, provider } = await searchWebWithFallback(searchQuery || text);
   const cleaned = cleanAndComposeAnswer(results);
 
   if(!cleaned){
@@ -848,8 +914,18 @@ exports.classify = onCall({ timeoutSeconds: 60, memory: '256MiB' }, async (reque
 
   const feeling = sentimentScore(tokenize(text)); // نبرة الجملة -1..1، بترجع للواجهة لو حابب تعرضها
 
+  /* ============ دعم سياق المحادثة (History) ============
+     الفرونت إند بيبعت آخر 3 رسايل من المحادثة (المستخدم + البوت
+     بالتبادل) عشان أسئلة المتابعة القصيرة (زي "طيب وهو فين؟" أو
+     "ليه بقى؟") تتفهم صح لما نلجأ للبحث في النت - من غير ما نلمس
+     منطق التشابه/الشبكة العصبية نفسه اللي فاضل شغال على النص الخام
+     زي ما اتدرّب بالظبط. */
+  const history = Array.isArray(request.data && request.data.history)
+    ? request.data.history.slice(-3).filter(h => h && typeof h.text === 'string' && h.text.trim())
+    : [];
+
   try{
-    return await runClassifyPipeline(text, feeling, request);
+    return await runClassifyPipeline(text, feeling, request, history);
   }catch(fatalErr){
     // آخر خط دفاع: أي خطأ غير متوقع (Firestore، شبكة، إلخ) في أي
     // مرحلة من المراحل - عمره ما يوصل للفرونت إند كـ Exception يوقّف
@@ -866,7 +942,21 @@ exports.classify = onCall({ timeoutSeconds: 60, memory: '256MiB' }, async (reque
  * exports.classify مباشرة - اتفصل بس في دالة منفصلة عشان نقدر نلفه
  * بـ try/catch شامل واحد فوق من غير ما نكرر نفس الكود جوه كل try.
  */
-async function runClassifyPipeline(text, feeling, request){
+/**
+ * buildContextualQuery: بتركّب نص بحث واحد من آخر رسالة/رسالتين
+ * حقيقيين من المستخدم في السجل + الرسالة الحالية - مفيد بس لمسار
+ * البحث في النت (مش بيأثر على متجه التصنيف/الشبكة العصبية خالص).
+ * بنحد الطول عشان محرك البحث ميرفضش استعلام طويل جداً.
+ */
+function buildContextualQuery(text, history){
+  if(!history || history.length===0) return text;
+  const priorUserTexts = history.filter(h => h.role === 'user').map(h => h.text.trim());
+  if(priorUserTexts.length===0) return text;
+  const combined = (priorUserTexts.slice(-1)[0] + ' ' + text).trim();
+  return combined.length > 200 ? text : combined; // لو الدمج طلع طويل أوي منرجعش نص غريب لمحرك البحث
+}
+
+async function runClassifyPipeline(text, feeling, request, history){
   /* ============ حلقة التأكيد (Human-in-the-Loop) ============
      لو الفرونت إند بعت pendingId (معناه إن الرسالة دي رد المستخدم
      على سؤال كنا مستنيين تأكيد/تصحيح ليه)، بنعالجها هنا مباشرة
@@ -1027,7 +1117,8 @@ async function runClassifyPipeline(text, feeling, request){
      والتعلم من النت مباشرة. */
   if(!result.confident){
     try{
-      result = await runWebLearningFallback(text, vecRaw);
+      const searchQuery = buildContextualQuery(text, history);
+      result = await runWebLearningFallback(text, vecRaw, searchQuery);
     }catch(webErr){
       // حتى لو دورة البحث نفسها فشلت (مشكلة شبكة مثلاً)، برضو ممنوع
       // نرجّع اعتذار جاهز - بنسجّل السؤال للمراجعة ونطلب من المستخدم
@@ -1278,4 +1369,200 @@ exports.toggleDynamicTool = onCall(async (request) => {
   if(disabled === false) update.errorCount = 0; // بنديها فرصة جديدة نظيفة
   await ref.update(update);
   return { ok:true };
+});
+
+/* =========================================================
+   ============  لوحة الإدارة: الأسئلة المعلّقة  ==========
+   ========================================================= */
+
+/**
+ * listPendingKnowledge: عرض مسودات الإجابات الجاية من البحث في
+ * النت واللي لسه مستنية تأكيد/رفض - بتتستخدم في تاب "الأسئلة
+ * المعلّقة" في لوحة الإدارة بالفرونت إند.
+ */
+exports.listPendingKnowledge = onCall(async () => {
+  const snap = await PENDING_COL().orderBy('createdAt', 'desc').limit(200).get();
+  const items = [];
+  snap.forEach(doc => {
+    const d = doc.data();
+    items.push({
+      id: doc.id,
+      question: d.question,
+      proposedAnswer: d.proposedAnswer,
+      sources: d.sources || [],
+      createdAt: d.createdAt
+    });
+  });
+  return { items };
+});
+
+/* =========================================================
+   ============  Scheduled Cleanup (صيانة دورية يومية)  ==========
+   -----------------------------------------------------------
+   شغالة تلقائياً مرة كل يوم (٣ الفجر بتوقيت القاهرة) - بتنضّف:
+   - tool_errors الأقدم من ٣٠ يوم (سجلات مراجعة قديمة خلاص).
+   - unresolved_queries الأقدم من ٣٠ يوم (أسئلة اتسجلت للمراجعة
+     ومحدش راجعها خلال شهر كامل - بنسيبها تروح عشان القاعدة متتضخمش).
+   الحذف على دفعات (batch) بحد أقصى ٤٠٠ وثيقة في كل commit عشان
+   نفضل تحت حد الـ 500 اللي Firestore بيسمح بيه لكل batch.
+   ========================================================= */
+const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 يوم
+const CLEANUP_BATCH_SIZE = 400;
+
+async function deleteOldDocs(colRef, cutoff){
+  let totalDeleted = 0;
+  while(true){
+    const snap = await colRef.where('createdAt', '<', cutoff).limit(CLEANUP_BATCH_SIZE).get();
+    if(snap.empty) break;
+    const batch = db.batch();
+    snap.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+    totalDeleted += snap.size;
+    if(snap.size < CLEANUP_BATCH_SIZE) break; // مفيش أكتر من كده حالياً
+  }
+  return totalDeleted;
+}
+
+exports.dailyCleanup = onSchedule({
+  schedule: 'every day 03:00',
+  timeZone: 'Africa/Cairo',
+  region: 'us-central1'
+}, async () => {
+  const cutoff = Date.now() - CLEANUP_MAX_AGE_MS;
+  try{
+    const [deletedErrors, deletedUnresolved] = await Promise.all([
+      deleteOldDocs(TOOL_ERRORS_COL(), cutoff),
+      deleteOldDocs(UNRESOLVED_COL(), cutoff)
+    ]);
+    console.log(`dailyCleanup: حُذف ${deletedErrors} من tool_errors و ${deletedUnresolved} من unresolved_queries (أقدم من 30 يوم).`);
+  }catch(e){
+    console.error('dailyCleanup فشلت:', e);
+  }
+});
+
+/* =========================================================
+   ============  بصمة صوت البوت (Voice Cloning & TTS)  ==========
+   -----------------------------------------------------------
+   الفكرة: أول مستخدم يسجّل مقطع صوتي قصير (10-15 ثانية) مرة واحدة
+   بس، بيتبعت للسيرفر، والسيرفر (مش المتصفح) هو اللي بيكلّم ElevenLabs
+   بمفتاح الـ API المخزّن كـ Secret، وبيحفظ الـ voice_id الناتج في
+   system_settings/voice. بعد كده أي رد بيطلع صوت، بيتحوّل نص→صوت
+   بنفس الـ voice_id ده لكل المستخدمين - يعني صوت البوت موحّد وهو
+   صوت أول شخص سجّل، مهما كان بيكلمه مين.
+   ========================================================= */
+
+/**
+ * getVoiceStatus: بيرجّع بس هل فيه صوت متسجّل قبل كده ولا لأ - من
+ * غير ما نكشف أي تفاصيل حساسة (زي الـ voice_id الخام نفسه للمتصفح
+ * لو مش لازم). الفرونت إند بيستخدمها عشان يقرر يعرض نافذة التسجيل
+ * الأول مرة ولا لأ.
+ */
+exports.getVoiceStatus = onCall(async () => {
+  const snap = await VOICE_DOC().get();
+  const data = snap.exists ? snap.data() : null;
+  return { hasVoice: !!(data && data.owner_voice_id), createdAt: data ? data.createdAt : null };
+});
+
+/**
+ * createVoiceProfile: بتستقبل مقطع صوتي (base64) من أول مستخدم،
+ * بتبعته لـ ElevenLabs عشان يبني "بصمة صوت" (Voice Clone)، وبتحفظ
+ * الـ voice_id الناتج في system_settings/voice. لو فيه صوت متسجّل
+ * قبل كده أصلاً، بترفض تسجّل تاني فوقه (عشان يفضل صوت واحد موحّد) -
+   إلا لو overwrite:true اتبعتت صراحة (لإعادة التسجيل عمداً).
+ */
+exports.createVoiceProfile = onCall({ secrets: [ELEVENLABS_API_KEY], timeoutSeconds: 60 }, async (request) => {
+  const { audioBase64, mimeType, overwrite } = request.data || {};
+  if(!audioBase64) throw new HttpsError('invalid-argument', 'مفيش مقطع صوتي متبعوت');
+
+  const existing = await VOICE_DOC().get();
+  if(existing.exists && existing.data().owner_voice_id && !overwrite){
+    throw new HttpsError('already-exists', 'فيه صوت متسجّل قبل كده - ابعت overwrite:true لو عايز تستبدله');
+  }
+
+  const apiKey = ELEVENLABS_API_KEY.value();
+  if(!apiKey) throw new HttpsError('failed-precondition', 'مفتاح ElevenLabs مش متسجّل على السيرفر');
+
+  let audioBuffer;
+  try{
+    audioBuffer = Buffer.from(String(audioBase64), 'base64');
+  }catch(e){
+    throw new HttpsError('invalid-argument', 'صيغة الصوت (base64) غلط');
+  }
+  if(audioBuffer.length < 1000) throw new HttpsError('invalid-argument', 'المقطع الصوتي قصير جداً أو فاضي');
+  if(audioBuffer.length > 10 * 1024 * 1024) throw new HttpsError('invalid-argument', 'المقطع الصوتي أكبر من اللازم (حد أقصى 10 ميجا)');
+
+  try{
+    const form = new FormData();
+    form.append('name', 'MiniBrain_Owner_Voice_' + Date.now());
+    form.append('files', new Blob([audioBuffer], { type: mimeType || 'audio/webm' }), 'sample.webm');
+    form.append('description', 'صوت موحّد لكل ردود العقل الصغير');
+
+    const res = await fetch(ELEVENLABS_BASE + '/voices/add', {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey },
+      body: form
+    });
+    const data = await res.json();
+    if(!res.ok || !data.voice_id){
+      console.error('ElevenLabs add voice failed:', data);
+      throw new HttpsError('internal', 'فشل إنشاء بصمة الصوت عند ElevenLabs: ' + (data.detail && data.detail.message || JSON.stringify(data)));
+    }
+    await VOICE_DOC().set({
+      owner_voice_id: data.voice_id,
+      provider: 'elevenlabs',
+      createdAt: Date.now()
+    });
+    return { ok:true, voiceId: data.voice_id };
+  }catch(e){
+    if(e instanceof HttpsError) throw e;
+    console.error('createVoiceProfile error:', e);
+    throw new HttpsError('internal', 'حصل خطأ غير متوقع أثناء إنشاء بصمة الصوت');
+  }
+});
+
+/**
+ * synthesizeSpeech: بتحوّل أي نص لصوت بصوت الـ owner_voice_id
+ * المحفوظ (لو موجود) - وترجّع الصوت كـ base64 عشان المتصفح يشغّله
+ * مباشرة. لو مفيش voice_id متسجّل أصلاً، بترجّع hasVoice:false
+ * والفرونت إند وقتها بيرجع لـ Web Speech API العادي (SpeechSynthesis)
+ * كـ fallback بدل ما يوقف.
+ */
+exports.synthesizeSpeech = onCall({ secrets: [ELEVENLABS_API_KEY], timeoutSeconds: 30 }, async (request) => {
+  const { text } = request.data || {};
+  if(!text || !String(text).trim()) throw new HttpsError('invalid-argument', 'مفيش نص للتحويل لصوت');
+
+  const voiceSnap = await VOICE_DOC().get();
+  const ownerVoiceId = voiceSnap.exists ? voiceSnap.data().owner_voice_id : null;
+  if(!ownerVoiceId) return { ok:true, hasVoice:false };
+
+  const apiKey = ELEVENLABS_API_KEY.value();
+  if(!apiKey) return { ok:true, hasVoice:false };
+
+  try{
+    const cleanText = String(text).replace(/[*_`#>]/g, '').slice(0, 2000); // شيل رموز الماركداون قبل التحويل لصوت
+    const res = await fetch(ELEVENLABS_BASE + '/text-to-speech/' + ownerVoiceId, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg'
+      },
+      body: JSON.stringify({
+        text: cleanText,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.8 }
+      })
+    });
+    if(!res.ok){
+      const errText = await res.text();
+      console.error('ElevenLabs TTS failed:', errText);
+      return { ok:true, hasVoice:true, error:'فشل توليد الصوت' };
+    }
+    const arrayBuf = await res.arrayBuffer();
+    const audioBase64 = Buffer.from(arrayBuf).toString('base64');
+    return { ok:true, hasVoice:true, audioBase64, mimeType:'audio/mpeg' };
+  }catch(e){
+    console.error('synthesizeSpeech error:', e);
+    return { ok:true, hasVoice:true, error:'حصل خطأ غير متوقع أثناء توليد الصوت' };
+  }
 });
