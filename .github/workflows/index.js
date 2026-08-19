@@ -467,16 +467,10 @@ exports.onChunkWritten = onDocumentWritten('brain_examples/{chunkId}', async (ev
     updatedAt: Date.now()
   });
 
-  await STATE_REF().set({
-    totalExamples: FieldValue.increment(newExamples.length)
-  }, { merge:true });
-
-  // نفس الرقم بيتحدّث في وثيقة الإحصائيات الخفيفة عشان الواجهة تستقبله
-  // فورًا من غير ما تسمع لتغييرات sharedState الكاملة (اللي فيها labels/responses)
-  await STATS_REF().set({
-    examples: FieldValue.increment(newExamples.length),
-    updatedAt: Date.now()
-  }, { merge:true });
+  // ملحوظة: عداد الأمثلة (STATS_REF/totalExamples) بقى بيتحدّث مباشرة
+  // ومضمون في addExample و bulkImport وقت الكتابة نفسها - مش هنا، عشان
+  // newExamples هنا هو *كل* محتوى الـ Chunk بعد الفلترة (مش بس الجديد
+  // المُضاف في الكتابة دي)، فلو حسبناه هنا تاني هيتضاعف العدّ غلط.
 });
 
 /* =========================================================
@@ -663,12 +657,15 @@ exports.addExample = onCall(async (request) => {
     }, { merge:true });
 
     tx.set(stateRef, {
-      labels, currentChunkId: chunkId, currentChunkCount: chunkCount+1, updatedAt: Date.now()
+      labels, currentChunkId: chunkId, currentChunkCount: chunkCount+1,
+      totalExamples: FieldValue.increment(1), updatedAt: Date.now()
     }, { merge:true });
 
     // عدد الفئات الحالي دايمًا معروف هنا (طول labels بعد الإضافة) - نكتبه
-    // كرقم مطلق في وثيقة الإحصائيات الخفيفة عشان الواجهة تعرضه فورًا
-    tx.set(STATS_REF(), { categories: labels.length, updatedAt: Date.now() }, { merge:true });
+    // كرقم مطلق في وثيقة الإحصائيات الخفيفة عشان الواجهة تعرضه فورًا.
+    // عدد الأمثلة بقى بيتزوّد هنا كمان مباشرة (مش بس من خلال onChunkWritten)
+    // عشان العداد يتحدّث فورًا وميفضلش واقف على صفر لو الـ Trigger اتأخر.
+    tx.set(STATS_REF(), { categories: labels.length, examples: FieldValue.increment(1), updatedAt: Date.now() }, { merge:true });
 
     return { ok:true, labelName: name, labelIndex: label.index, chunkId };
   });
@@ -710,7 +707,7 @@ exports.bulkImport = onCall(async (request) => {
       added++;
     }
 
-    tx.set(STATE_REF(), { labels, updatedAt: Date.now() }, { merge:true });
+    tx.set(STATE_REF(), { labels, totalExamples: FieldValue.increment(added), updatedAt: Date.now() }, { merge:true });
     tx.set(STATS_REF(), { categories: labels.length, updatedAt: Date.now() }, { merge:true });
     return { labels, parsedExamples, added, skipped };
   });
@@ -744,6 +741,9 @@ exports.bulkImport = onCall(async (request) => {
     chunksWritten++;
   }
   batch.set(STATE_REF(), { currentChunkId: chunkId, currentChunkCount: chunkCount, updatedAt: Date.now() }, { merge:true });
+  // نفس المنطق: نزوّد عداد الأمثلة مباشرة هنا بعدد اللي اتضاف فعليًا،
+  // بدل ما نعتمد بس على onChunkWritten (اللي ممكن يتأخر أو ميشتغلش).
+  batch.set(STATS_REF(), { examples: FieldValue.increment(added), updatedAt: Date.now() }, { merge:true });
   await batch.commit();
 
   return { added, skipped, chunksWritten };
