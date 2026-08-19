@@ -854,7 +854,7 @@ exports.getStats = onCall(async () => {
       اتصفّر). العملية دي آمنة 100% - بتصحّح رقم بس، مش بتمسح
       ولا تعدّل أي بيانات فعلية.
    ========================================================= */
-exports.diagnoseAndRepairStats = onCall(async () => {
+exports.diagnoseAndRepairStats = onCall({ timeoutSeconds: 300, memory: '512MiB' }, async () => {
   const report = { checkedLocations: [], legacyDataFound: [] };
 
   // 1) الوضع الحالي في sharedState - بنشوف هل فيه حقل "examples" قديم
@@ -874,9 +874,53 @@ exports.diagnoseAndRepairStats = onCall(async () => {
       location: 'miniBrain/sharedState.examples (حقل قديم جوه نفس الوثيقة)',
       count: stateData.examples.length
     });
+
+    // 1.5) الترحيل الفعلي: كانت المشكلة إن الحقل القديم ده بيتكشف
+    // وبس، من غير أي خطوة فعلية تنقل بياناته لـ brain_examples (مصدر
+    // الحقيقة اللي كل باقي النظام - classify/rebuild/stats - بيقرا منه).
+    // هنا بننقلها فعليًا: نوزّعها على Chunks بحجم CHUNK_SIZE ونكتبها
+    // بالضبط زي bulkImport، وبعدين نمسح الحقل القديم عشان ميترحلش تاني.
+    const legacyExamples = stateData.examples;
+    const validLegacy = legacyExamples.filter(e => e && e.text && (e.labelIndex===0 || e.labelIndex));
+    let cursor = 0, chunksWritten = 0;
+    let chunkId = stateData.currentChunkId || null;
+    let chunkCount = stateData.currentChunkCount || 0;
+    while(cursor < validLegacy.length){
+      if(!chunkId || chunkCount >= CHUNK_SIZE){
+        chunkId = 'chunk_migrated_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,6) + '_' + chunksWritten;
+        chunkCount = 0;
+      }
+      const spaceLeft = CHUNK_SIZE - chunkCount;
+      const slice = validLegacy.slice(cursor, cursor + spaceLeft).map((e,i) => ({
+        id: e.id || ('ex_migrated_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8) + '_' + (cursor+i)),
+        text: e.text,
+        labelIndex: e.labelIndex,
+        trust: (e.trust===0 || e.trust) ? e.trust : 0.75,
+        chunkId
+      }));
+      await EXAMPLES_COL().doc(chunkId).set({
+        examples: FieldValue.arrayUnion(...slice),
+        updatedAt: Date.now()
+      }, { merge:true });
+      chunkCount += slice.length;
+      cursor += slice.length;
+      chunksWritten++;
+    }
+    await STATE_REF().set({
+      examples: FieldValue.delete(),
+      currentChunkId: chunkId,
+      currentChunkCount: chunkCount,
+      updatedAt: Date.now()
+    }, { merge:true });
+    report.migration = {
+      migrated: validLegacy.length,
+      skipped: legacyExamples.length - validLegacy.length,
+      chunksWritten
+    };
   }
 
-  // 2) العدّ الحقيقي من brain_examples (مصدر الحقيقة الفعلي حاليًا)
+  // 2) العدّ الحقيقي من brain_examples (مصدر الحقيقة الفعلي حاليًا، وبعد
+  //    أي ترحيل تم تنفيذه فوق لو كان فيه بيانات قديمة)
   const chunksSnap = await EXAMPLES_COL().get();
   let realExampleCount = 0;
   chunksSnap.forEach(doc=>{
