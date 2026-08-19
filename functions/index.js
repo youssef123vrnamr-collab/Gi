@@ -6,15 +6,30 @@
    فيه ولا سطر تدريب - هو بس بيبعت "علّمني كذا" أو "صنّف كذا"
    ويستنى الرد. لو حد فتح 10 أجهزة مع بعض، كلهم بيكلموا نفس
    السيرفر ونفس الشبكة - مفيش نسخة محلية منفصلة تتكرر ولا تهنج.
+
+   =========================================================
+   طبقة جديدة: AI Agent + تنفيذ ديناميكي للأكواد (VM Sandbox)
+   -----------------------------------------------------------
+   لو نظام التشابه والشبكة العصبية مالقوش رد واثق للسؤال، السيرفر
+   بيدوّر في مجموعة "dynamic_tools" على دالة JS اتخزنت قبل كده
+   وشبيهة بالسؤال (بنفس منطق التشابه اللي بيستخدمه الرد العادي).
+   لو لقى واحدة، بيشغلها جوه بيئة معزولة (vm.createContext) بحد
+   أقصى ثانية واحدة، وممنوع فيها الوصول لـ process/require/global.
+   أي خطأ أو Timeout بيتلقط وبيترجع كرد نصي عادي - عمره ما بيوقّف
+   أو يهنج السيرفر. تفاصيل الأخطاء بتتسجل في مجموعة "tool_errors"
+   للمراجعة، والأداة اللي بتفشل كتير بتتوقف تلقائياً (self-healing).
    ========================================================= */
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
+const vm = require('node:vm');
 admin.initializeApp();
 const db = admin.firestore();
 
 const STATE_REF  = () => db.collection('miniBrain').doc('sharedState');
 const MODEL_REF  = () => db.collection('miniBrain').doc('trainedModel');
+const TOOLS_COL  = () => db.collection('dynamic_tools');
+const TOOL_ERRORS_COL = () => db.collection('tool_errors');
 
 /* ================= إعدادات الشبكة =================
    بما إن التدريب بقى على السيرفر مش على الموبايل، مفيش داعي
@@ -25,6 +40,12 @@ const HIDDEN_DIM = 96;
 const EPOCHS = 220;
 const LR = 0.3;
 const CONFIDENCE_THRESHOLD = 0.42;
+
+/* ================= إعدادات طبقة الـ Agent ================= */
+const TOOL_SIM_THRESHOLD = 0.5;   // الحد الأدنى للتشابه عشان نثق في أداة ونشغّلها
+const TOOL_TIMEOUT_MS = 1000;     // أقصى وقت تنفيذ لأي دالة ديناميكية جوه الـ VM
+const TOOL_ERROR_LIMIT = 3;       // عدد الأخطاء المتتالية قبل ما نوقف الأداة تلقائياً
+const TOOL_SEARCH_LIMIT = 300;    // أقصى عدد أدوات نجيبها من Firestore للمقارنة
 
 /* ================= معالجة النص (نفس منطق المتصفح القديم) ================= */
 const STOPWORDS = new Set([
@@ -131,6 +152,157 @@ class NeuralNetwork{
 function oneHot(index, size){ const v=new Array(size).fill(0); v[index]=1; return [v]; }
 
 /* =========================================================
+   طبقة الـ VM Sandbox - قلب نظام الـ Agent
+   -----------------------------------------------------------
+   الهدف: تنفيذ دالة JS بيولّدها/بيخزّنها الموديول من غير ما نديها
+   أي وصول لحاجة برّه نفسها. بنستخدم موديول vm الأساسي في Node
+   (مفيش أي حزمة خارجية زي vm2 أو isolated-vm).
+
+   طبقات الحماية:
+   1) فحص نصي مبدئي يرفض أي كود فيه كلمات خطيرة زي process/require/
+      global قبل حتى ما نوصله للـ VM.
+   2) vm.createContext بخيار codeGeneration:{strings:false} - ده
+      بيقفل eval() و new Function("...") تماماً جوه الكود، حتى لو
+      حاول يلتف على الفحص النصي.
+   3) الـ context نفسه مفيهوش غير أدوات JS الأساسية الآمنة
+      (Math, JSON, Array, Object, String, Number, Boolean, Date)
+      وكونسول وهمي بيسجل بس من غير ما يوصل لـ stdout الحقيقي.
+   4) Timeout صارم (1000ms افتراضياً) - أي loop لا نهائي أو حساب
+      تقيل بيتقفل بالقوة برمي Error، مش بيعلّق السيرفر.
+
+   ملحوظة أمان مهمة: موديول vm الأساسي في Node مش "جدار ناري"
+   كامل 100% ضد كل تقنيات الهروب المتقدمة (زي استغلال بعض سلاسل
+   الـ prototype)، فهو مناسب جداً لتنفيذ دوال صغيرة الموديول نفسه
+   بيولّدها لحل مسائل منطقية/حسابية بسيطة - مش مكان لتشغيل كود من
+   مصدر غير موثوق فيه بالكامل. لو حبينا مستوى أمان أعلى في المستقبل،
+   الخطوة التالية المنطقية هي تبديل الطبقة دي بمكتبة isolated-vm.
+   ========================================================= */
+
+// كلمات/أنماط ممنوعة تماماً - أي وجود ليها يرفض الكود فوراً من غير
+// ما نحاول حتى نشغّله
+const BLOCKED_PATTERN = /\b(process|require|global|globalThis|__dirname|__filename|module|exports|Buffer|import)\b|Function\s*\(|constructor\s*\.\s*constructor/;
+
+function buildSandbox(input){
+  const logs = [];
+  const safeConsole = {
+    log: (...args) => {
+      if(logs.length < 20){
+        logs.push(args.map(a => {
+          try{ return typeof a === 'string' ? a : JSON.stringify(a); }
+          catch{ return String(a); }
+        }).join(' '));
+      }
+    }
+  };
+  return {
+    input,
+    output: undefined,
+    Math, JSON, Array, Object, String, Number, Boolean, Date,
+    console: safeConsole,
+    __logs: logs
+  };
+}
+
+/**
+ * تشغيل كود JS جوه بيئة معزولة تماماً.
+ * الكود المتوقع إما:
+ *   function run(input){ ... return النتيجة ... }
+ * أو تعبير بسيط بيحط قيمته في output.
+ * بيرجع دايماً { ok, result | error, timedOut?, logs? }
+ * وعمره ما بيرمي Exception للخارج - أي خطأ بيتلقط جوه الدالة دي.
+ */
+function runCodeInSandbox(code, input, timeoutMs = TOOL_TIMEOUT_MS){
+  if(typeof code !== 'string' || !code.trim()){
+    return { ok:false, error:'كود الأداة فاضي' };
+  }
+  if(BLOCKED_PATTERN.test(code)){
+    return { ok:false, error:'الكود مرفوض: فيه استخدام ممنوع (process/require/global/Function...)' };
+  }
+
+  const sandboxObj = buildSandbox(input);
+  let context;
+  try{
+    context = vm.createContext(sandboxObj, {
+      codeGeneration: { strings:false, wasm:false } // يقفل eval() و new Function() من جوه الكود
+    });
+  }catch(e){
+    return { ok:false, error:'فشل تجهيز البيئة المعزولة: ' + e.message };
+  }
+
+  const wrapped = `
+    "use strict";
+    ${code}
+    ;(typeof run === 'function') ? run(input) : output;
+  `;
+
+  try{
+    const script = new vm.Script(wrapped, { filename: 'dynamic-tool.js' });
+    const result = script.runInContext(context, { timeout: timeoutMs, breakOnSigint: true });
+    return { ok:true, result, logs: sandboxObj.__logs };
+  }catch(e){
+    const msg = (e && e.message) ? e.message : 'خطأ غير معروف أثناء تنفيذ الأداة';
+    return {
+      ok:false,
+      error: msg,
+      timedOut: /Script execution timed out/i.test(msg)
+    };
+  }
+}
+
+/* =========================================================
+   تسجيل نتيجة تشغيل أداة ديناميكية + التصحيح الذاتي (Self-Healing)
+   -----------------------------------------------------------
+   نجاح: بنصفّر عداد الأخطاء ونزوّد عداد الاستخدام.
+   فشل: بنسجّل الخطأ في tool_errors للمراجعة، ونزوّد عداد الأخطاء
+   المتتالية، ولو عدّى الحد (TOOL_ERROR_LIMIT) بنوقف الأداة تلقائياً
+   (disabled:true) عشان متتسببش في فشل متكرر لمستخدمين تانيين.
+   ========================================================= */
+async function handleToolOutcome(toolRef, toolData, outcome, input){
+  try{
+    if(outcome.ok){
+      await toolRef.update({
+        usageCount: admin.firestore.FieldValue.increment(1),
+        errorCount: 0,
+        lastUsedAt: Date.now()
+      });
+    } else {
+      await TOOL_ERRORS_COL().add({
+        toolId: toolRef.id,
+        toolName: toolData.name || null,
+        error: outcome.error,
+        timedOut: !!outcome.timedOut,
+        input: typeof input === 'string' ? input.slice(0,500) : JSON.stringify(input).slice(0,500),
+        createdAt: Date.now()
+      });
+      const newErrCount = (toolData.errorCount || 0) + 1;
+      const update = { errorCount: newErrCount, lastError: outcome.error, lastErrorAt: Date.now() };
+      if(newErrCount >= TOOL_ERROR_LIMIT){ update.disabled = true; }
+      await toolRef.update(update);
+    }
+  }catch(logErr){
+    // حتى لو فشل تسجيل النتيجة نفسه، ميوقفش الرد للمستخدم
+    console.error('handleToolOutcome logging failed:', logErr);
+  }
+}
+
+/**
+ * الدوران على مجموعة dynamic_tools (غير الموقوفة) ولقاء أقرب أداة
+ * لمتجه السؤال الحالي، بنفس منطق cosineSim المستخدم في التشابه
+ * العادي بين الأمثلة.
+ */
+async function findBestTool(vec){
+  const snap = await TOOLS_COL().where('disabled','==', false).limit(TOOL_SEARCH_LIMIT).get();
+  let best = null, bestSim = -1;
+  snap.forEach(doc => {
+    const t = doc.data();
+    if(!Array.isArray(t.vector) || t.vector.length !== vec.length) return;
+    const sim = cosineSim(vec, t.vector);
+    if(sim > bestSim){ bestSim = sim; best = { id: doc.id, ...t }; }
+  });
+  return { tool: best, sim: bestSim };
+}
+
+/* =========================================================
    التدريب: بيتنادى تلقائي (Firestore trigger) أي وقت حد يضيف
    مثال أو يستورد ملف أو يصحّح بإيموجي - يعني مفيش زرار "درّب"
    يدوي، السيرفر بيحس بالتغيير ويدرّب نفسه لوحده وبيحفظ النتيجة
@@ -169,6 +341,12 @@ exports.onBrainStateChange = onDocumentWritten('miniBrain/sharedState', async (e
 /* =========================================================
    classify: المتصفح بينادي عليها بس ويبعت النص، والسيرفر يرجّع
    الرد. المتصفح مش شايل ولا سطر شبكة عصبية خالص.
+
+   لو نظام التشابه والشبكة العصبية (الطبقتين الأصليتين) مالقوش رد
+   واثق، بتتفعّل طبقة الـ Agent تلقائياً كخطوة أخيرة: بتدوّر على
+   أقرب "أداة" ديناميكية مخزّنة في dynamic_tools وتشغّلها جوه الـ
+   Sandbox. لو الأداة فشلت أو مفيش أداة قريبة كفاية، الرد بيرجع
+   عادي (confident:false) زي ما كان بالظبط قبل الإضافة دي.
    ========================================================= */
 exports.classify = onCall(async (request) => {
   const text = (request.data && request.data.text || '').toString();
@@ -204,14 +382,53 @@ exports.classify = onCall(async (request) => {
 
   const feeling = sentimentScore(tokenize(text)); // نبرة الجملة -1..1، بترجع للواجهة لو حابب تعرضها
 
+  // نفس منطق القرار الأصلي بالظبط، بس بدل ما نعمل return فوري
+  // بنحفظه في result عشان نقدر نكمّل بطبقة الـ Agent لو لسه مش واثقين
+  let result;
   if(simLabel && nnLabel && simLabel.index===nnLabel.index){
     const combined = Math.min(1, bestSim*0.7 + nnConf*0.3 + 0.08);
-    if(combined < CONFIDENCE_THRESHOLD) return { confident:false, confidence:combined, feeling };
-    return { confident:true, confidence:combined, label:simLabel, matchedExampleId: bestExample.id, feeling };
+    result = combined < CONFIDENCE_THRESHOLD
+      ? { confident:false, confidence:combined, feeling }
+      : { confident:true, confidence:combined, label:simLabel, matchedExampleId: bestExample.id, feeling };
+  } else if(bestSim >= CONFIDENCE_THRESHOLD){
+    result = { confident:true, confidence:bestSim, label:simLabel, matchedExampleId: bestExample.id, feeling };
+  } else if(nnConf >= CONFIDENCE_THRESHOLD+0.15){
+    result = { confident:true, confidence:nnConf, label:nnLabel, matchedExampleId:null, feeling };
+  } else {
+    result = { confident:false, confidence:Math.max(bestSim,0), feeling };
   }
-  if(bestSim >= CONFIDENCE_THRESHOLD) return { confident:true, confidence:bestSim, label:simLabel, matchedExampleId: bestExample.id, feeling };
-  if(nnConf >= CONFIDENCE_THRESHOLD+0.15) return { confident:true, confidence:nnConf, label:nnLabel, matchedExampleId:null, feeling };
-  return { confident:false, confidence:Math.max(bestSim,0), feeling };
+
+  // 3) طبقة الـ Agent: تتفعّل بس لو الطبقتين فوق مالقوش رد واثق
+  if(!result.confident){
+    try{
+      const { tool, sim } = await findBestTool(vec);
+      if(tool && sim >= TOOL_SIM_THRESHOLD){
+        const toolRef = TOOLS_COL().doc(tool.id);
+        const outcome = runCodeInSandbox(tool.code, text);
+        await handleToolOutcome(toolRef, tool, outcome, text);
+        if(outcome.ok){
+          result = {
+            confident: true,
+            viaTool: true,
+            toolId: tool.id,
+            toolName: tool.name,
+            toolResult: outcome.result,
+            confidence: sim,
+            feeling
+          };
+        }
+        // لو outcome.ok كانت false: الخطأ اتسجل في tool_errors والأداة
+        // اتصحّحت ذاتياً (عداد أخطاء/إيقاف)، ونسيب result زي ما هي
+        // (confident:false) عشان الرد يرجع نص عادي من غير ما يهنج حد.
+      }
+    }catch(toolErr){
+      // أي خطأ غير متوقع في طبقة الأدوات نفسها (زي مشكلة اتصال
+      // بـ Firestore) لازم منقفلش السيرفر - بنسجّله ونكمّل برد عادي
+      console.error('agent tool layer error:', toolErr);
+    }
+  }
+
+  return result;
 });
 
 /* =========================================================
@@ -318,5 +535,107 @@ exports.learnEmoji = onCall(async (request) => {
 exports.resetBrain = onCall(async () => {
   await STATE_REF().set({ labels: [], examples: [], emojiMeanings: {}, updatedAt: Date.now() });
   await MODEL_REF().set({ ready:false, updatedAt: Date.now() });
+  return { ok:true };
+});
+
+/* =========================================================
+   ============  Dynamic Tools API (طبقة الـ Agent)  ==========
+   ========================================================= */
+
+/**
+ * saveDynamicTool: حفظ "مهارة" جديدة (دالة JS) اتعلمها الموديول.
+ * قبل الحفظ بنجرّب الكود فعلياً جوه الـ Sandbox عشان نتأكد إنه
+ * شغال ومش هيكسر حاجة وقت الاستخدام الحقيقي.
+ *
+ * البيانات المتوقعة: { name, keywords, description, code, testInput? }
+ */
+exports.saveDynamicTool = onCall(async (request) => {
+  const { name, keywords, description, code, testInput } = request.data || {};
+  if(!name || !code) throw new HttpsError('invalid-argument', 'ناقص اسم الأداة أو الكود');
+  if(typeof code !== 'string' || code.length > 20000){
+    throw new HttpsError('invalid-argument', 'الكود لازم يكون نص وأقل من 20000 حرف');
+  }
+
+  const test = runCodeInSandbox(code, testInput !== undefined ? testInput : '');
+  if(!test.ok){
+    throw new HttpsError('invalid-argument', 'الكود فشل في اختبار ما قبل الحفظ: ' + test.error);
+  }
+
+  const vecText = [name, keywords, description].filter(Boolean).join(' ');
+  const vector = textToVector(vecText);
+
+  const doc = {
+    name: String(name).slice(0,120),
+    keywords: keywords ? String(keywords).slice(0,300) : '',
+    description: description ? String(description).slice(0,500) : '',
+    code,
+    vector,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    usageCount: 0,
+    errorCount: 0,
+    disabled: false,
+    lastError: null
+  };
+  const ref = await TOOLS_COL().add(doc);
+  return { ok:true, toolId: ref.id, testResult: test.result };
+});
+
+/**
+ * runDynamicTool: تشغيل يدوي/مباشر لأداة معروف الـ id بتاعها -
+ * مفيد للاختبار من لوحة تحكم، أو لو حابب تشغّل أداة معينة بنفسك
+ * من غير المرور بمنطق التشابه في classify.
+ */
+exports.runDynamicTool = onCall(async (request) => {
+  const { toolId, input } = request.data || {};
+  if(!toolId) throw new HttpsError('invalid-argument', 'ناقص toolId');
+
+  const ref = TOOLS_COL().doc(toolId);
+  const snap = await ref.get();
+  if(!snap.exists) throw new HttpsError('not-found', 'الأداة دي مش موجودة');
+  const tool = snap.data();
+  if(tool.disabled){
+    return { ok:false, disabled:true, error:'الأداة دي متوقفة تلقائياً بسبب أخطاء متكررة' };
+  }
+
+  const outcome = runCodeInSandbox(tool.code, input);
+  await handleToolOutcome(ref, tool, outcome, input);
+
+  if(!outcome.ok) return { ok:false, error: outcome.error, timedOut: !!outcome.timedOut };
+  return { ok:true, result: outcome.result, logs: outcome.logs || [] };
+});
+
+/**
+ * listDynamicTools: عرض الأدوات المخزّنة (للوحة تحكم/مراجعة) -
+ * من غير حقل الكود الكامل عشان الحمولة تفضل خفيفة.
+ */
+exports.listDynamicTools = onCall(async () => {
+  const snap = await TOOLS_COL().orderBy('createdAt','desc').limit(200).get();
+  const tools = [];
+  snap.forEach(doc => {
+    const t = doc.data();
+    tools.push({
+      id: doc.id, name: t.name, keywords: t.keywords, description: t.description,
+      usageCount: t.usageCount || 0, errorCount: t.errorCount || 0,
+      disabled: !!t.disabled, lastError: t.lastError || null,
+      createdAt: t.createdAt, updatedAt: t.updatedAt
+    });
+  });
+  return { tools };
+});
+
+/**
+ * toggleDynamicTool: تفعيل/تعطيل يدوي لأداة (مثلاً بعد ما تتصحّح
+ * يدوياً بعد ما اتوقفت تلقائياً بسبب أخطاء متكررة).
+ */
+exports.toggleDynamicTool = onCall(async (request) => {
+  const { toolId, disabled } = request.data || {};
+  if(!toolId || typeof disabled !== 'boolean') throw new HttpsError('invalid-argument', 'بيانات ناقصة');
+  const ref = TOOLS_COL().doc(toolId);
+  const snap = await ref.get();
+  if(!snap.exists) throw new HttpsError('not-found', 'الأداة دي مش موجودة');
+  const update = { disabled, updatedAt: Date.now() };
+  if(disabled === false) update.errorCount = 0; // بنديها فرصة جديدة نظيفة
+  await ref.update(update);
   return { ok:true };
 });
