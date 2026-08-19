@@ -63,6 +63,7 @@ const WEB_SEARCH_RESULTS    = 6;     // عدد نتائج DuckDuckGo المطل�
 const WEB_SNIPPET_MIN_LEN   = 20;    // أقل طول لأي مقتطف عشان نعتبره مفيد (مش حشو)
 const WEB_MAX_SNIPPETS_USED = 3;     // أقصى عدد مقتطفات نركّب منها الرد المقترح
 const WEB_ANSWER_MAX_CHARS  = 900;   // أقصى طول للرد المقترح المركّب
+const WEB_SEARCH_TIMEOUT_MS = 8000;  // أقصى وقت ننتظره لرد DuckDuckGo قبل ما نعتبره فشل ونكمّل عادي (منع التعليق/الـ hang)
 
 /* ================= معالجة النص (نفس منطق المتصفح القديم) ================= */
 const STOPWORDS = new Set([
@@ -565,10 +566,13 @@ function parseDuckDuckGoHtml(html){
   return results;
 }
 async function searchDuckDuckGo(query, maxResults = WEB_SEARCH_RESULTS){
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
   try{
     const url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query) + '&kl=xa-ar';
     const res = await fetch(url, {
       method: 'GET',
+      signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; MiniBrainLearner/1.0; +server-side)',
         'Accept-Language': 'ar,en;q=0.7'
@@ -578,8 +582,12 @@ async function searchDuckDuckGo(query, maxResults = WEB_SEARCH_RESULTS){
     const html = await res.text();
     return parseDuckDuckGoHtml(html).slice(0, maxResults);
   }catch(e){
-    console.error('DuckDuckGo search failed:', e);
+    // بما فيها AbortError لو البحث أخد وقت أطول من WEB_SEARCH_TIMEOUT_MS -
+    // مفيش داعي نفرّق نوع الخطأ، المهم السيرفر يكمّل ومايتعلقش أبداً
+    console.error('DuckDuckGo search failed:', e && e.message || e);
     return [];
+  }finally{
+    clearTimeout(timeoutId);
   }
 }
 
@@ -757,12 +765,31 @@ exports.onBrainStateChange = onDocumentWritten('miniBrain/sharedState', async (e
    Sandbox. لو الأداة فشلت أو مفيش أداة قريبة كفاية، الرد بيرجع
    عادي (confident:false) زي ما كان بالظبط قبل الإضافة دي.
    ========================================================= */
-exports.classify = onCall(async (request) => {
+exports.classify = onCall({ timeoutSeconds: 60, memory: '256MiB' }, async (request) => {
   const text = (request.data && request.data.text || '').toString();
   if(!text.trim()) throw new HttpsError('invalid-argument', 'الرسالة فاضية');
 
   const feeling = sentimentScore(tokenize(text)); // نبرة الجملة -1..1، بترجع للواجهة لو حابب تعرضها
 
+  try{
+    return await runClassifyPipeline(text, feeling, request);
+  }catch(fatalErr){
+    // آخر خط دفاع: أي خطأ غير متوقع (Firestore، شبكة، إلخ) في أي
+    // مرحلة من المراحل - عمره ما يوصل للفرونت إند كـ Exception يوقّف
+    // الرد بالكامل. بدل كده بنسجّله ونرجّع رد آمن يطلب من المستخدم
+    // يعلّمنا هو بنفسه، بنفس روح "عدم الاستسلام أبداً".
+    console.error('classify fatal error:', fatalErr);
+    try{ await UNRESOLVED_COL().add({ question:text, error:String(fatalErr && fatalErr.message||fatalErr), createdAt: Date.now() }); }catch(_){}
+    return { confident:true, viaWebSearch:true, searchFoundNothing:true, needsTeaching:true, proposedAnswer:null, feeling };
+  }
+});
+
+/**
+ * runClassifyPipeline: نفس منطق التصنيف بالظبط كان قبل كده جوه
+ * exports.classify مباشرة - اتفصل بس في دالة منفصلة عشان نقدر نلفه
+ * بـ try/catch شامل واحد فوق من غير ما نكرر نفس الكود جوه كل try.
+ */
+async function runClassifyPipeline(text, feeling, request){
   /* ============ حلقة التأكيد (Human-in-the-Loop) ============
      لو الفرونت إند بعت pendingId (معناه إن الرسالة دي رد المستخدم
      على سؤال كنا مستنيين تأكيد/تصحيح ليه)، بنعالجها هنا مباشرة
@@ -926,7 +953,7 @@ exports.classify = onCall(async (request) => {
   }
 
   return result;
-});
+}
 
 /* =========================================================
    confirmPendingKnowledge / rejectPendingKnowledge:
