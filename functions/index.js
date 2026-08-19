@@ -87,6 +87,56 @@ const WEB_METADATA_PATTERNS = [
   /\bproduction\b.*(dailymotion|youtube)/i
 ];
 
+/* ================= طبقة الكلام الدارج (Small Talk) =================
+   تحيات وعبارات محادثة عادية (سلام، ازيك، صباح الخير...) مش أسئلة
+   معرفية، وميتفعّلش لها بحث في النت أبداً - بيتفحص الأول قبل أي حاجة
+   تانية (حتى قبل قاعدة البيانات) عشان يشتغل حتى لو العقل صفر فئات. */
+const SMALL_TALK_RULES = [
+  {
+    // تحية إسلامية - لازم رد شرعي محدد، مش أي كلام عام
+    pattern: /السلام\s*عليكم/i,
+    responses: ['وعليكم السلام ورحمة الله وبركاته 🌸']
+  },
+  {
+    pattern: /^(هاي|هالو|hello|hi|hey)\b/i,
+    responses: ['هاي! 👋 عامل إيه؟', 'أهلاً بيك 👋']
+  },
+  {
+    pattern: /(صباح\s*الخير|صباح\s*النور)/i,
+    responses: ['صباح النور والسرور ☀️', 'صباح الخير عليك 🌤️']
+  },
+  {
+    pattern: /(مساء\s*الخير|مساء\s*النور)/i,
+    responses: ['مساء النور والسرور 🌙', 'مساء الخير عليك ✨']
+  },
+  {
+    pattern: /(ازيك|إزيك|عامل\s*ايه|عاملة\s*ايه|عامل\s*إيه|كيفك|شلونك|إزيكم|ازيكم)/i,
+    responses: ['تمام الحمد لله، وانت عامل إيه؟ 😄', 'الحمد لله بخير، إنت عامل إيه؟']
+  },
+  {
+    pattern: /^(مرحبا|أهلا|اهلا|أهلين|اهلين)\b/i,
+    responses: ['أهلاً بيك 👋', 'أهلين، اتفضل']
+  },
+  {
+    pattern: /^(شكرا|شكراً|متشكر|تسلم|تسلم ايدك)\b/i,
+    responses: ['العفو 🙏', 'تحت أمرك في أي وقت']
+  },
+  {
+    pattern: /^(باي|مع السلامة|تصبح على خير)\b/i,
+    responses: ['مع السلامة 👋', 'تصبح على خير 🌙']
+  }
+];
+function detectSmallTalk(text){
+  const trimmed = (text || '').trim();
+  for(const rule of SMALL_TALK_RULES){
+    if(rule.pattern.test(trimmed)){
+      const options = rule.responses;
+      return options[Math.floor(Math.random() * options.length)];
+    }
+  }
+  return null;
+}
+
 /* ================= معالجة النص (نفس منطق المتصفح القديم) ================= */
 const STOPWORDS = new Set([
   'في','من','على','عن','الى','إلى','يا','او','أو','ثم','هل','لا','لم','لن',
@@ -841,6 +891,15 @@ async function runClassifyPipeline(text, feeling, request){
   const mathAnswer = tryEvalMathExpression(text);
   if(mathAnswer !== null){
     return { confident:true, isMath:true, mathAnswer, confidence:1, feeling };
+  }
+
+  /* ============ ب-١) فحص لو الرسالة كلام دارج/تحية ============
+     بيتفحص قبل أي بحث في قاعدة البيانات أو النت - عشان تحية زي
+     "السلام عليكم" أو "عامل ايه" ترجع رد محادثة طبيعي فورًا، وميحصلش
+     بحث في النت يجيب نتايج مش مناسبة (فتاوى، كلمات أغاني...). */
+  const smallTalkAnswer = detectSmallTalk(text);
+  if(smallTalkAnswer !== null){
+    return { confident:true, viaSmallTalk:true, answer: smallTalkAnswer, confidence:1, feeling };
   }
 
   const [stateSnap, modelSnap] = await Promise.all([STATE_REF().get(), MODEL_REF().get()]);
