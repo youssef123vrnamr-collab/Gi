@@ -25,7 +25,9 @@ jobs:
         run: npm install -g firebase-tools
 
       - name: مسح الفانكشن القديمة اللي مبقتش موجودة في الكود (لو موجودة)
-        run: firebase functions:delete onBrainStateChange --region asia-northeast1 --project ai-prime-f9017 --force --token "$FIREBASE_TOKEN" || true
+        run: |
+          firebase functions:delete onBrainStateChange --region asia-northeast1 --project ai-prime-f9017 --force --token "$FIREBASE_TOKEN" || true
+          firebase functions:delete synthesizeSpeech --project ai-prime-f9017 --force --token "$FIREBASE_TOKEN" || true
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
 
@@ -62,7 +64,7 @@ jobs:
         run: sleep 60
 
       - name: النشر - الدفعة 4 (الصيانة الدورية + لوحة الإدارة + بصمة الصوت)
-        run: firebase deploy --project ai-prime-f9017 --only functions:dailyCleanup,functions:listPendingKnowledge,functions:getVoiceStatus,functions:createVoiceProfile,functions:synthesizeSpeech --force --non-interactive --token "$FIREBASE_TOKEN"
+        run: firebase deploy --project ai-prime-f9017 --only functions:dailyCleanup,functions:listPendingKnowledge,functions:getVoiceStatus,functions:createVoiceProfile --force --non-interactive --token "$FIREBASE_TOKEN"
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
 
