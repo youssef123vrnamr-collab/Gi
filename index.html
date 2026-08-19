@@ -612,6 +612,9 @@ async function handleSend(){
       addSystem((res.data.corrected ? 'اتصحّحت وحُفظت ✓' : 'اتأكّدت وحُفظت ✓') + ' - هترد بيها تاني أي وقت حد يسأل سؤال شبيه.');
       if(res.data.answer) addMessage(res.data.answer, 'bot', 1);
       pulseStats();
+    } else if(res.data.viaSmallTalk){
+      // رد سريع على كلام دارج/تحية عادية - مفيش بحث ولا تعلّم هنا خالص
+      addMessage(res.data.answer, 'bot', res.data.confidence);
     } else if(res.data.viaLearnedKnowledge){
       // رد جاي من "المعرفة المعمّدة" - إجابة اتعلمناها واتأكدنا منها قبل كده
       addMessage(res.data.answer, 'bot', res.data.confidence);
