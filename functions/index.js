@@ -255,6 +255,110 @@ function buildIdfTable(examples){
   return df.map(d => Math.log((N + 1) / (d + 1)) + 1);
 }
 
+/* =========================================================
+   محرك "التركيب الذكي" (Extractive Composition) - بدون أي API
+   -----------------------------------------------------------
+   ده مش "فهم" حقيقي (ده محتاج نموذج لغوي ضخم مش متاح هنا) - لكنه
+   بديل محلي ومجاني بيمنع نسخ الفقرة المخزّنة كلها حرفياً للمستخدم:
+   بدل ما نرجّع رد مثال واحد كامل زي ما هو، بناخد أفضل عدة أمثلة
+   قريبة من سؤال المستخدم، ومن كل واحد فيهم بنقتطف بس الجملة/الجزء
+   الأكتر ارتباطًا بكلمات السؤال الفعلي (مش النص كله)، ونركّب من
+   الأجزاء دي رد واحد مدموج من غير تكرار. الثقة (confidence) بعد
+   كده بتتحسب من "تغطية" كلمات السؤال في الرد المركّب + قوة التشابه
+   الموزون بالـ IDF - مش تطابق حروف مباشر زي الأول.
+   ========================================================= */
+
+/**
+ * splitIntoSentences: تقسيم نص لجمل مفردة على علامات الترقيم
+ * الشائعة (نقطة/تعجب/استفهام/نقطتين) أو سطر جديد - بسيط ومحلي
+ * تماماً، من غير أي مكتبة NLP خارجية.
+ */
+function splitIntoSentences(text){
+  return String(text || '')
+    .split(/(?<=[.!؟?:])\s+|\n+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * scoreSentence: بتحسب مدى ارتباط جملة معينة بكلمات سؤال المستخدم -
+ * كل كلمة مشتركة بين الجملة والسؤال بتضيف وزنها الـ IDF (كلمة
+ * مميزة زي "حنفية" وزنها أعلى من كلمة عابرة)، ومقسومة على جذر طول
+ * الجملة عشان الجمل الطويلة جداً متكسبش نقط بس لأنها طويلة.
+ */
+function scoreSentence(sentenceTokens, queryTokenSet, idf){
+  if(!sentenceTokens.length) return 0;
+  let score = 0;
+  for(const t of sentenceTokens){
+    if(queryTokenSet.has(t)) score += (idf ? (idf[hashWord(t)] || 1) : 1);
+  }
+  return score / Math.sqrt(sentenceTokens.length);
+}
+
+/**
+ * extractRelevantExcerpt: من نص طويل (رد مخزّن/إجابة معمّدة)، بتطلّع
+ * بس أهم maxSentences جملة الأكتر ارتباطًا بسؤال المستخدم (بترتيبها
+ * الأصلي في النص، مش بترتيب الأهمية، عشان يفضل منطقي). لو مفيش أي
+ * تداخل مع كلمات السؤال خالص، بترجع أول جملة بس (مش النص كله) -
+ * أهون من تفريغ فقرة كاملة حرفياً.
+ */
+function extractRelevantExcerpt(fullText, queryTokens, idf, maxSentences){
+  const trimmed = String(fullText || '').trim();
+  const sentences = splitIntoSentences(trimmed);
+  if(sentences.length <= 1) return trimmed;
+
+  const queryTokenSet = new Set(queryTokens);
+  const scored = sentences.map((s, idx) => ({
+    s, idx, score: scoreSentence(tokenize(s), queryTokenSet, idf)
+  }));
+  const ranked = [...scored].sort((a,b) => b.score - a.score);
+  const top = ranked.slice(0, maxSentences).filter(x => x.score > 0);
+  const chosen = (top.length ? top : scored.slice(0,1))
+    .sort((a,b) => a.idx - b.idx); // نرجّعهم بترتيبهم الأصلي في النص عشان الكلام يفضل متماسك
+  return chosen.map(x => x.s).join(' ').trim();
+}
+
+/**
+ * composeAnswerFromMatches: بتاخد أفضل عدة أمثلة قريبة (topMatches)،
+ * ومن كل واحد فيهم بتقتطف أفضل جملة واحدة بس بالنسبة لسؤال المستخدم،
+ * وبتدمجهم في رد واحد - مع تجاهل أي جزء مكرر (نفس المعنى تقريباً)
+ * ظهر من مثال تاني. أقصى حد جزء واحد من كل مصدر، وأقصى 3 مصادر.
+ */
+function composeAnswerFromMatches(topMatches, queryTokens, idf){
+  const picked = [];
+  const seen = new Set();
+  for(const m of topMatches){
+    const responses = (m && m.label && Array.isArray(m.label.responses)) ? m.label.responses : [];
+    for(const resp of responses){
+      const excerpt = extractRelevantExcerpt(resp, queryTokens, idf, 1);
+      if(!excerpt) continue;
+      const norm = normalizeArabic(excerpt).replace(/\s+/g,' ').trim();
+      if(!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      picked.push(excerpt);
+      break; // جزء واحد بس من كل مصدر عشان الرد يفضل مختصر ومباشر
+    }
+    if(picked.length >= 3) break; // أقصى 3 مصادر مدموجة
+  }
+  return picked.join(' ').replace(/\s+/g,' ').trim();
+}
+
+/**
+ * computeUnderstandingConfidence: إعادة حساب الثقة بحيث تعكس "تغطية"
+ * كلمات سؤال المستخدم فعلياً جوه الرد المركّب - مش مجرد تطابق حروف/
+ * تشابه متجهات كان بيحصل قبل كده. لو الرد المركّب مش بيغطي كلمات
+ * السؤال الأساسية، الثقة بتنزل حتى لو التشابه الأصلي كان عالي.
+ */
+function computeUnderstandingConfidence(queryTokens, composedAnswer, weightedSim){
+  const base = Math.max(0, Math.min(1, weightedSim));
+  if(!queryTokens.length) return base;
+  const answerTokenSet = new Set(tokenize(composedAnswer));
+  let covered = 0;
+  for(const t of queryTokens){ if(answerTokenSet.has(t)) covered++; }
+  const coverage = covered / queryTokens.length;
+  return Math.max(0, Math.min(1, base*0.5 + coverage*0.5));
+}
+
 /* ================= الشبكة العصبية (backprop حقيقي) ================= */
 function zeros(rows, cols){ const m=[]; for(let i=0;i<rows;i++) m.push(new Array(cols).fill(0)); return m; }
 function randomMatrix(rows, cols, scale){ const m=[]; for(let i=0;i<rows;i++){ const row=[]; for(let j=0;j<cols;j++) row.push((Math.random()*2-1)*scale); m.push(row);} return m; }
@@ -398,44 +502,6 @@ function tryEvalMathExpression(rawText){
     if(typeof result !== 'number' || !isFinite(result)) return null;
     return Math.round(result * 1e8) / 1e8; // تقريب بسيط لتفادي أخطاء الفاصلة العشرية
   }catch(e){ return null; }
-}
-
-/* =========================================================
-   محرك N-Gram توليدي محلي (بدون أي API خارجي)
-   -----------------------------------------------------------
-   لو الفئة اللي اتطابقت معاها الرسالة عندها أكتر من رد واحد
-   مخزّن (يعني الموديول اتعلم أكتر من صياغة لنفس المعنى)، بدل
-   ما نختار رد واحد عشوائي بس، بنبني نموذج Bigram بسيط من كل
-   الردود دي ونولّد جملة جديدة ممزوجة منها - صياغة "طازة" مبنية
-   على نفس الأسلوب اللي اتعلمه، مش نسخة طبق الأصل من رد واحد.
-   ========================================================= */
-function buildBigramModel(sentences){
-  const starts = [];
-  const nextMap = new Map();
-  for(const sent of sentences){
-    const words = String(sent).trim().split(/\s+/).filter(Boolean);
-    if(words.length===0) continue;
-    starts.push(words[0]);
-    for(let i=0;i<words.length-1;i++){
-      const key = words[i];
-      if(!nextMap.has(key)) nextMap.set(key, []);
-      nextMap.get(key).push(words[i+1]);
-    }
-  }
-  return { starts, nextMap };
-}
-function generateFromBigram(model, maxWords=22){
-  if(!model.starts.length) return null;
-  let word = model.starts[Math.floor(Math.random()*model.starts.length)];
-  const out = [word];
-  for(let i=0;i<maxWords-1;i++){
-    const nexts = model.nextMap.get(word);
-    if(!nexts || !nexts.length) break;
-    word = nexts[Math.floor(Math.random()*nexts.length)];
-    out.push(word);
-    if(out.length>=6 && Math.random()<0.3) break; // وقفة طبيعية بعد ما الجملة تاخد شكل معقول
-  }
-  return out.join(' ');
 }
 
 /* =========================================================
@@ -1010,14 +1076,26 @@ async function runClassifyPipeline(text, feeling, request, history){
   const idf = buildIdfTable(usable);
   const vec = textToVector(text, idf);       // للتشابه (موزون بالنية)
   const vecRaw = textToVector(text);         // للشبكة العصبية (خام، زي التدريب بالظبط)
+  const queryTokens = tokenize(text);        // كلمات السؤال الفعلية - هنستخدمها بعدين في التركيب وحساب الثقة
 
-  let bestSim=-1, bestExample=null;
+  /* بدل ما ناخد أفضل مثال واحد بس، بنحسب التشابه مع كل الأمثلة
+     ونرتّبهم، عشان نقدر بعدين نركّب رد من أفضل TOP_K مصادر مش من
+     مصدر واحد (وده اللي بيمنع نسخ فقرة واحدة كاملة حرفياً). */
+  const TOP_K_EXAMPLES = 3;
+  const scoredExamples = [];
   for(const ex of usable){
     const exVec = textToVector(ex.text, idf);
     const sim = cosineSim(vec, exVec) * (0.6 + 0.4*ex.trust);
-    if(sim>bestSim){ bestSim=sim; bestExample=ex; }
+    scoredExamples.push({ ex, sim });
   }
+  scoredExamples.sort((a,b) => b.sim - a.sim);
+  const bestSim = scoredExamples.length ? scoredExamples[0].sim : -1;
+  const bestExample = scoredExamples.length ? scoredExamples[0].ex : null;
   const simLabel = bestExample ? labels.find(l=>l.index===bestExample.labelIndex) : null;
+  const topMatches = scoredExamples.slice(0, TOP_K_EXAMPLES)
+    .filter(s => s.sim > 0)
+    .map(s => ({ sim: s.sim, example: s.ex, label: labels.find(l => l.index === s.ex.labelIndex) }))
+    .filter(m => m.label);
 
   // الشبكة العصبية المدرّبة (محفوظة من الـ trigger فوق) - بالمتجه الخام
   let nnLabel=null, nnConf=0;
@@ -1054,12 +1132,16 @@ async function runClassifyPipeline(text, feeling, request, history){
     try{
       const { learned, sim } = await findBestLearned(vecRaw);
       if(learned && sim >= LEARNED_SIM_THRESHOLD){
+        // بدل ما نرجّع learned.answer كامل زي ما هو، بنقتطف بس أهم
+        // جملة/جملتين الأكتر ارتباطًا بسؤال المستخدم الحالي، وبنعيد
+        // حساب الثقة على أساس تغطية كلمات السؤال في المقتطف ده.
+        const excerpt = extractRelevantExcerpt(learned.answer, queryTokens, idf, 2) || learned.answer;
         result = {
           confident: true,
           viaLearnedKnowledge: true,
           learnedId: learned.id,
-          answer: learned.answer,
-          confidence: sim,
+          answer: excerpt,
+          confidence: computeUnderstandingConfidence(queryTokens, excerpt, sim),
           feeling
         };
       }
@@ -1068,17 +1150,35 @@ async function runClassifyPipeline(text, feeling, request, history){
     }
   }
 
-  /* ============ د) محرك الـ N-Gram التوليدي ============
-     لو الفئة اللي اتطابقت معاها عندها أكتر من رد واحد مخزّن،
-     يبقى محتاجة "صياغة جديدة" بدل ما نختار رد ثابت عشوائي - بنولّد
-     جملة ممزوجة من كل الصياغات المتعلّمة بنموذج Bigram محلي. لو
-     التوليد طلع قصير جداً أو فاشل، بنسيب الفرونت إند يختار من
-     الردود الجاهزة زي ما كان (fallback آمن). */
-  if(result.confident && result.label && Array.isArray(result.label.responses) && result.label.responses.length>1){
-    const bigram = buildBigramModel(result.label.responses);
-    const generated = generateFromBigram(bigram);
-    if(generated && generated.trim().split(/\s+/).length>=3){
-      result.generatedResponse = generated;
+  /* ============ د) التركيب الذكي من أفضل الأمثلة (Extractive Composition) ============
+     دي بديل محرك الـ Bigram القديم اللي كان بيخبط كلمات عشوائي من
+     غير معنى حقيقي. دلوقتي: لو فيه تطابق واثق مع فئة معينة، مبنرجعش
+     رد المثال المخزّن زي ما هو خالص - بدل كده بنركّب رد من أفضل عدة
+     أمثلة قريبة (topMatches)، كل واحد بياخد بس الجزء (جملة) الأكتر
+     ارتباطًا بكلمات سؤال المستخدم الفعلي. الثقة بعد كده بتتحسب من
+     تغطية كلمات السؤال في الرد المركّب - مش تشابه متجهات مجرد. لو
+     بعد التركيب الثقة طلعت ضعيفة أو معندناش أي جزء قريب كفاية،
+     بنعترف إننا مش عارفين بدل ما نرجّع حاجة مش مرتبطة فعلياً. */
+  if(result.confident && result.label){
+    const sourcesForComposition = topMatches.length
+      ? topMatches
+      : [{ sim: bestSim, example: bestExample, label: simLabel }];
+    const composed = composeAnswerFromMatches(sourcesForComposition, queryTokens, idf);
+    if(composed && composed.trim().split(/\s+/).length >= 2){
+      const recomputedConfidence = computeUnderstandingConfidence(queryTokens, composed, result.confidence);
+      if(recomputedConfidence < CONFIDENCE_THRESHOLD){
+        // بعد ما شفنا فعلاً هل الرد المركّب بيغطي كلمات السؤال ولا لأ،
+        // الثقة الحقيقية طلعت تحت الحد - أشرف نعترف إننا مش متأكدين
+        // بدل ما نرجّع رد ضعيف الصلة بثقة عالية وهمية.
+        result = { confident:false, confidence: recomputedConfidence, feeling };
+      } else {
+        result.composedAnswer = composed;
+        result.confidence = recomputedConfidence;
+      }
+    } else {
+      // مفيش ولا جزء واحد من أي مصدر بيتقاطع مع كلمات السؤال - يبقى
+      // التشابه كان سطحي (تطابق حروف بس)، مش ارتباط حقيقي بالمعنى.
+      result = { confident:false, confidence:0, feeling };
     }
   }
 
