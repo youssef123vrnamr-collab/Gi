@@ -467,16 +467,10 @@ exports.onChunkWritten = onDocumentWritten('brain_examples/{chunkId}', async (ev
     updatedAt: Date.now()
   });
 
-  await STATE_REF().set({
-    totalExamples: FieldValue.increment(newExamples.length)
-  }, { merge:true });
-
-  // نفس الرقم بيتحدّث في وثيقة الإحصائيات الخفيفة عشان الواجهة تستقبله
-  // فورًا من غير ما تسمع لتغييرات sharedState الكاملة (اللي فيها labels/responses)
-  await STATS_REF().set({
-    examples: FieldValue.increment(newExamples.length),
-    updatedAt: Date.now()
-  }, { merge:true });
+  // ملحوظة: عداد الأمثلة (STATS_REF/totalExamples) بقى بيتحدّث مباشرة
+  // ومضمون في addExample و bulkImport وقت الكتابة نفسها - مش هنا، عشان
+  // newExamples هنا هو *كل* محتوى الـ Chunk بعد الفلترة (مش بس الجديد
+  // المُضاف في الكتابة دي)، فلو حسبناه هنا تاني هيتضاعف العدّ غلط.
 });
 
 /* =========================================================
@@ -663,12 +657,15 @@ exports.addExample = onCall(async (request) => {
     }, { merge:true });
 
     tx.set(stateRef, {
-      labels, currentChunkId: chunkId, currentChunkCount: chunkCount+1, updatedAt: Date.now()
+      labels, currentChunkId: chunkId, currentChunkCount: chunkCount+1,
+      totalExamples: FieldValue.increment(1), updatedAt: Date.now()
     }, { merge:true });
 
     // عدد الفئات الحالي دايمًا معروف هنا (طول labels بعد الإضافة) - نكتبه
-    // كرقم مطلق في وثيقة الإحصائيات الخفيفة عشان الواجهة تعرضه فورًا
-    tx.set(STATS_REF(), { categories: labels.length, updatedAt: Date.now() }, { merge:true });
+    // كرقم مطلق في وثيقة الإحصائيات الخفيفة عشان الواجهة تعرضه فورًا.
+    // عدد الأمثلة بقى بيتزوّد هنا كمان مباشرة (مش بس من خلال onChunkWritten)
+    // عشان العداد يتحدّث فورًا وميفضلش واقف على صفر لو الـ Trigger اتأخر.
+    tx.set(STATS_REF(), { categories: labels.length, examples: FieldValue.increment(1), updatedAt: Date.now() }, { merge:true });
 
     return { ok:true, labelName: name, labelIndex: label.index, chunkId };
   });
@@ -710,7 +707,7 @@ exports.bulkImport = onCall(async (request) => {
       added++;
     }
 
-    tx.set(STATE_REF(), { labels, updatedAt: Date.now() }, { merge:true });
+    tx.set(STATE_REF(), { labels, totalExamples: FieldValue.increment(added), updatedAt: Date.now() }, { merge:true });
     tx.set(STATS_REF(), { categories: labels.length, updatedAt: Date.now() }, { merge:true });
     return { labels, parsedExamples, added, skipped };
   });
@@ -744,6 +741,9 @@ exports.bulkImport = onCall(async (request) => {
     chunksWritten++;
   }
   batch.set(STATE_REF(), { currentChunkId: chunkId, currentChunkCount: chunkCount, updatedAt: Date.now() }, { merge:true });
+  // نفس المنطق: نزوّد عداد الأمثلة مباشرة هنا بعدد اللي اتضاف فعليًا،
+  // بدل ما نعتمد بس على onChunkWritten (اللي ممكن يتأخر أو ميشتغلش).
+  batch.set(STATS_REF(), { examples: FieldValue.increment(added), updatedAt: Date.now() }, { merge:true });
   await batch.commit();
 
   return { added, skipped, chunksWritten };
@@ -854,7 +854,7 @@ exports.getStats = onCall(async () => {
       اتصفّر). العملية دي آمنة 100% - بتصحّح رقم بس، مش بتمسح
       ولا تعدّل أي بيانات فعلية.
    ========================================================= */
-exports.diagnoseAndRepairStats = onCall(async () => {
+exports.diagnoseAndRepairStats = onCall({ timeoutSeconds: 300, memory: '512MiB' }, async () => {
   const report = { checkedLocations: [], legacyDataFound: [] };
 
   // 1) الوضع الحالي في sharedState - بنشوف هل فيه حقل "examples" قديم
@@ -874,9 +874,53 @@ exports.diagnoseAndRepairStats = onCall(async () => {
       location: 'miniBrain/sharedState.examples (حقل قديم جوه نفس الوثيقة)',
       count: stateData.examples.length
     });
+
+    // 1.5) الترحيل الفعلي: كانت المشكلة إن الحقل القديم ده بيتكشف
+    // وبس، من غير أي خطوة فعلية تنقل بياناته لـ brain_examples (مصدر
+    // الحقيقة اللي كل باقي النظام - classify/rebuild/stats - بيقرا منه).
+    // هنا بننقلها فعليًا: نوزّعها على Chunks بحجم CHUNK_SIZE ونكتبها
+    // بالضبط زي bulkImport، وبعدين نمسح الحقل القديم عشان ميترحلش تاني.
+    const legacyExamples = stateData.examples;
+    const validLegacy = legacyExamples.filter(e => e && e.text && (e.labelIndex===0 || e.labelIndex));
+    let cursor = 0, chunksWritten = 0;
+    let chunkId = stateData.currentChunkId || null;
+    let chunkCount = stateData.currentChunkCount || 0;
+    while(cursor < validLegacy.length){
+      if(!chunkId || chunkCount >= CHUNK_SIZE){
+        chunkId = 'chunk_migrated_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,6) + '_' + chunksWritten;
+        chunkCount = 0;
+      }
+      const spaceLeft = CHUNK_SIZE - chunkCount;
+      const slice = validLegacy.slice(cursor, cursor + spaceLeft).map((e,i) => ({
+        id: e.id || ('ex_migrated_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8) + '_' + (cursor+i)),
+        text: e.text,
+        labelIndex: e.labelIndex,
+        trust: (e.trust===0 || e.trust) ? e.trust : 0.75,
+        chunkId
+      }));
+      await EXAMPLES_COL().doc(chunkId).set({
+        examples: FieldValue.arrayUnion(...slice),
+        updatedAt: Date.now()
+      }, { merge:true });
+      chunkCount += slice.length;
+      cursor += slice.length;
+      chunksWritten++;
+    }
+    await STATE_REF().set({
+      examples: FieldValue.delete(),
+      currentChunkId: chunkId,
+      currentChunkCount: chunkCount,
+      updatedAt: Date.now()
+    }, { merge:true });
+    report.migration = {
+      migrated: validLegacy.length,
+      skipped: legacyExamples.length - validLegacy.length,
+      chunksWritten
+    };
   }
 
-  // 2) العدّ الحقيقي من brain_examples (مصدر الحقيقة الفعلي حاليًا)
+  // 2) العدّ الحقيقي من brain_examples (مصدر الحقيقة الفعلي حاليًا، وبعد
+  //    أي ترحيل تم تنفيذه فوق لو كان فيه بيانات قديمة)
   const chunksSnap = await EXAMPLES_COL().get();
   let realExampleCount = 0;
   chunksSnap.forEach(doc=>{
