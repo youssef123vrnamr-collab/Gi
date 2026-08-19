@@ -58,6 +58,14 @@ jobs:
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
 
+      - name: استراحة قبل الدفعة الجاية (تفريغ حصة CPU)
+        run: sleep 60
+
+      - name: النشر - الدفعة 4 (الصيانة الدورية + لوحة الإدارة + بصمة الصوت)
+        run: firebase deploy --project ai-prime-f9017 --only functions:dailyCleanup,functions:listPendingKnowledge,functions:getVoiceStatus,functions:createVoiceProfile,functions:synthesizeSpeech --force --non-interactive --token "$FIREBASE_TOKEN"
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+
       - name: استراحة قبل نشر الاستضافة وقواعد Firestore
         run: sleep 30
 
