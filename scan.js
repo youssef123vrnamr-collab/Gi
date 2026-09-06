@@ -1,26 +1,27 @@
 // /api/scan.js
 // Serverless function (Vercel auto-detects this as an API route).
-// Takes a table/text image from the browser and asks Claude to read it accurately,
+// Takes a table/text image from the browser and asks Gemini to read it accurately,
 // including Arabic text/handwriting, and return clean structured JSON.
 //
 // Setup required in the Vercel project (one-time):
-//   Project Settings -> Environment Variables -> add ANTHROPIC_API_KEY
-//   (get a key from the Claude Platform console: https://platform.claude.com)
-
-// Cost note: Haiku 4.5 is the cheapest current Claude model and is plenty accurate for this job -
-// a typical single-table scan costs a small fraction of a cent. If a document is unusually messy
-// (heavy handwriting, low light) and Haiku struggles, switch MODEL to 'claude-sonnet-5' for a
-// noticeably more careful (and slightly pricier) read.
-const MODEL = 'claude-haiku-4-5-20251001';
+//   1) Project Settings -> Environment Variables -> add GEMINI_API_KEY
+//      (get a key from Google AI Studio: https://aistudio.google.com/apikey)
+//
+// Model note: 'gemini-flash-latest' is Google's rolling alias for their current
+// fast Flash model, so it keeps working automatically as Google retires older
+// versions (e.g. gemini-2.5-flash is scheduled to shut down in Oct 2026).
+// If a document is unusually messy (heavy handwriting, low light) and Flash
+// struggles, you can switch MODEL to 'gemini-pro-latest' for a more careful read.
+const MODEL = 'gemini-flash-latest';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY غير مضبوط في إعدادات Vercel' });
+    return res.status(500).json({ error: 'GEMINI_API_KEY غير مضبوط في إعدادات Vercel' });
   }
 
   const { mode, image, mediaType, rows, cols, count } = req.body || {};
@@ -70,25 +71,28 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 4096,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: image } },
-            { type: 'text', text: prompt }
-          ]
-        }]
-      })
-    });
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { inline_data: { mime_type: mediaType || 'image/jpeg', data: image } },
+              { text: prompt }
+            ]
+          }],
+          generationConfig: {
+            responseMimeType: 'application/json'
+          }
+        })
+      }
+    );
 
     const data = await response.json();
 
@@ -97,7 +101,14 @@ export default async function handler(req, res) {
       return res.status(response.status).json({ error: msg });
     }
 
-    const text = (data.content || []).map(b => b.text || '').join('').trim();
+    const candidate = (data.candidates || [])[0];
+    const parts = (candidate && candidate.content && candidate.content.parts) || [];
+    const text = parts.map(p => p.text || '').join('').trim();
+
+    if (!text) {
+      return res.status(502).json({ error: 'الموديل رجّع رد فارغ', raw: data });
+    }
+
     const cleaned = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
 
     let parsed;
