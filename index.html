@@ -1578,7 +1578,36 @@
   const rowsVal = document.getElementById('rows-val');
   const colsVal = document.getElementById('cols-val');
 
-  let pendingStructure = null; // { dataUrl, rowsCount, colsCount, natW, natH }
+  let pendingStructure = null; // { dataUrl, rows:[{top,bottom}], cols:[{left,right}], w, h } — boundaries are the REAL detected pixel positions, not an even split
+
+  // Splits the single largest row/column band in half — used when the person taps "+" to add a row/col.
+  // Keeps every other band exactly as detected instead of re-flattening everything into equal slices.
+  function splitLargestBand(bands){
+    if(!bands.length) return bands;
+    let idx = 0, maxLen = -1;
+    bands.forEach((b,i)=>{
+      const len = (b.top !== undefined) ? (b.bottom - b.top) : (b.right - b.left);
+      if(len > maxLen){ maxLen = len; idx = i; }
+    });
+    const b = bands[idx];
+    const isRow = b.top !== undefined;
+    const a0 = isRow ? b.top : b.left, a1 = isRow ? b.bottom : b.right;
+    const mid = Math.round((a0+a1)/2);
+    const first = isRow ? { top:a0, bottom:mid } : { left:a0, right:mid };
+    const second = isRow ? { top:mid, bottom:a1 } : { left:mid, right:a1 };
+    const out = bands.slice();
+    out.splice(idx, 1, first, second);
+    return out;
+  }
+
+  // Merges the last two bands into one — used when the person taps "−" to remove a row/col.
+  function mergeLastTwoBands(bands){
+    if(bands.length < 2) return bands;
+    const a = bands[bands.length-2], b = bands[bands.length-1];
+    const isRow = a.top !== undefined;
+    const merged = isRow ? { top:a.top, bottom:b.bottom } : { left:a.left, right:b.right };
+    return bands.slice(0, bands.length-2).concat([merged]);
+  }
 
   function drawStructureOverlay(){
     const stage = document.getElementById('structure-stage');
@@ -1588,20 +1617,22 @@
     ctx.clearRect(0,0,rectW,rectH);
     ctx.strokeStyle = 'rgba(46,125,87,.9)';
     ctx.lineWidth = 2;
-    const { rowsCount, colsCount } = pendingStructure;
-    for(let i=1; i<rowsCount; i++){
-      const y = Math.round(rectH * i / rowsCount);
+    const { rows, cols, w, h } = pendingStructure;
+    // draw at the ACTUAL detected boundary of each row/col, so a big first box and small ones after
+    // show up exactly as big/small in the preview too — never an even split
+    for(let i=1; i<rows.length; i++){
+      const y = Math.round(rows[i].top / h * rectH);
       ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(rectW,y); ctx.stroke();
     }
-    for(let i=1; i<colsCount; i++){
-      const x = Math.round(rectW * i / colsCount);
+    for(let i=1; i<cols.length; i++){
+      const x = Math.round(cols[i].left / w * rectW);
       ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,rectH); ctx.stroke();
     }
     ctx.strokeStyle = 'rgba(35,50,64,.9)';
     ctx.lineWidth = 3;
     ctx.strokeRect(1,1,rectW-2,rectH-2);
-    rowsVal.textContent = rowsCount;
-    colsVal.textContent = colsCount;
+    rowsVal.textContent = rows.length;
+    colsVal.textContent = cols.length;
   }
 
   async function openStructureReview(dataUrl){
@@ -1613,8 +1644,10 @@
 
     pendingStructure = {
       dataUrl,
-      rowsCount: Math.max(1, structure.rows.length),
-      colsCount: Math.max(1, structure.cols.length),
+      rows: structure.rows.length ? structure.rows : [{ top:0, bottom:canvasData.h }],
+      cols: structure.cols.length ? structure.cols : [{ left:0, right:canvasData.w }],
+      w: canvasData.w,
+      h: canvasData.h,
       typeLabel: structure.type === 'grid' ? '📐 اتكشفت شبكة مرسومة في الورقة' : '📝 اتكشفت أسطر نص (من غير خطوط)'
     };
     structureImg.src = dataUrl;
@@ -1623,10 +1656,26 @@
     requestAnimationFrame(drawStructureOverlay);
   }
 
-  document.getElementById('rows-plus').addEventListener('click', ()=>{ pendingStructure.rowsCount = Math.min(60, pendingStructure.rowsCount+1); drawStructureOverlay(); });
-  document.getElementById('rows-minus').addEventListener('click', ()=>{ pendingStructure.rowsCount = Math.max(1, pendingStructure.rowsCount-1); drawStructureOverlay(); });
-  document.getElementById('cols-plus').addEventListener('click', ()=>{ pendingStructure.colsCount = Math.min(30, pendingStructure.colsCount+1); drawStructureOverlay(); });
-  document.getElementById('cols-minus').addEventListener('click', ()=>{ pendingStructure.colsCount = Math.max(1, pendingStructure.colsCount-1); drawStructureOverlay(); });
+  document.getElementById('rows-plus').addEventListener('click', ()=>{
+    if(pendingStructure.rows.length >= 60) return;
+    pendingStructure.rows = splitLargestBand(pendingStructure.rows);
+    drawStructureOverlay();
+  });
+  document.getElementById('rows-minus').addEventListener('click', ()=>{
+    if(pendingStructure.rows.length <= 1) return;
+    pendingStructure.rows = mergeLastTwoBands(pendingStructure.rows);
+    drawStructureOverlay();
+  });
+  document.getElementById('cols-plus').addEventListener('click', ()=>{
+    if(pendingStructure.cols.length >= 30) return;
+    pendingStructure.cols = splitLargestBand(pendingStructure.cols);
+    drawStructureOverlay();
+  });
+  document.getElementById('cols-minus').addEventListener('click', ()=>{
+    if(pendingStructure.cols.length <= 1) return;
+    pendingStructure.cols = mergeLastTwoBands(pendingStructure.cols);
+    drawStructureOverlay();
+  });
 
   document.getElementById('structure-cancel').addEventListener('click', ()=>{
     structureOverlay.classList.remove('show');
@@ -1637,9 +1686,10 @@
   document.getElementById('structure-apply').addEventListener('click', ()=> applyPendingStructure(true));
 
   async function applyPendingStructure(withOcr){
-    const { dataUrl, rowsCount, colsCount } = pendingStructure;
+    const { dataUrl, rows, cols, w, h } = pendingStructure;
     structureOverlay.classList.remove('show');
 
+    const rowsCount = rows.length, colsCount = cols.length;
     sheetCounter++;
     const newSheet = makeSheet('ورقة ' + sheetCounter);
     newSheet.rows = rowsCount;
@@ -1654,14 +1704,18 @@
       const full = document.createElement('canvas');
       full.width = img.naturalWidth; full.height = img.naturalHeight;
       full.getContext('2d').drawImage(img, 0, 0);
-      const cellW = img.naturalWidth / colsCount;
-      const cellH = img.naturalHeight / rowsCount;
+      // map each row/col's REAL (possibly irregular) detected boundary to full-resolution pixels —
+      // a huge first box and tiny boxes after get cropped at their true sizes, not sliced evenly
+      const scaleX = img.naturalWidth / w, scaleY = img.naturalHeight / h;
       let done = 0;
       const total = rowsCount * colsCount;
       for(let r=0; r<rowsCount; r++){
+        const ry = Math.round(rows[r].top*scaleY);
+        const rh = Math.max(1, Math.round((rows[r].bottom - rows[r].top)*scaleY));
         for(let c=0; c<colsCount; c++){
-          const x = Math.round(c*cellW), y = Math.round(r*cellH);
-          const text = await ocrRegion(full, x, y, Math.round(cellW), Math.round(cellH));
+          const cx = Math.round(cols[c].left*scaleX);
+          const cw = Math.max(1, Math.round((cols[c].right - cols[c].left)*scaleX));
+          const text = await ocrRegion(full, cx, ry, cw, rh);
           if(text) newSheet.data[r+'_'+c] = text;
           done++;
           updateOcrBusy(done + ' / ' + total);
