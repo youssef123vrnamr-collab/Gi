@@ -7,7 +7,11 @@
 //   Project Settings -> Environment Variables -> add ANTHROPIC_API_KEY
 //   (get a key from the Claude Platform console: https://platform.claude.com)
 
-const MODEL = 'claude-sonnet-5'; // good balance of accuracy/cost for reading tables
+// Cost note: Haiku 4.5 is the cheapest current Claude model and is plenty accurate for this job -
+// a typical single-table scan costs a small fraction of a cent. If a document is unusually messy
+// (heavy handwriting, low light) and Haiku struggles, switch MODEL to 'claude-sonnet-5' for a
+// noticeably more careful (and slightly pricier) read.
+const MODEL = 'claude-haiku-4-5-20251001';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {

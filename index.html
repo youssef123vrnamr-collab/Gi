@@ -505,6 +505,14 @@
       </div>
     </div>
     <p class="section-hint" style="text-align:center;">لو العدد مش مظبوط، عدّله بالـ + والـ − قبل ما تكمل. هيتعمل جدول جديد بنفس التقسيم ده.</p>
+
+    <div class="editor-section">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <span style="font-size:13px; font-weight:800;">القراءة الذكية (Claude)</span>
+        <button class="btn ghost" id="cloud-ocr-toggle">🟢 مفعّلة</button>
+      </div>
+      <p class="section-hint" style="margin-top:6px;">أدق بكتير، بتكلفة صغيرة جدًا لكل قراءة (أقل من سنت في الغالب). دوس عشان توقفها وتستخدم القراءة المحلية المجانية بدل منها (أقل دقة، من غير إنترنت).</p>
+    </div>
   </div>
   <div class="editor-footer">
     <button class="btn ghost" id="structure-skip-ocr">تقسيم بس (بدون قراءة نص)</button>
@@ -1546,6 +1554,22 @@
     return { type:'text', rows, cols, w, h };
   }
 
+  // ---- Cost-control toggle: lets the person switch off cloud AI reading entirely (free, local-only) ----
+  const cloudToggleBtn = document.getElementById('cloud-ocr-toggle');
+  let cloudOcrEnabled = localStorage.getItem('cloudOcrEnabled') !== '0';
+  function renderCloudToggle(){
+    if(!cloudToggleBtn) return;
+    cloudToggleBtn.textContent = cloudOcrEnabled ? '🟢 مفعّلة' : '⚪ متوقفة (قراءة محلية مجانية)';
+  }
+  renderCloudToggle();
+  if(cloudToggleBtn){
+    cloudToggleBtn.addEventListener('click', ()=>{
+      cloudOcrEnabled = !cloudOcrEnabled;
+      localStorage.setItem('cloudOcrEnabled', cloudOcrEnabled ? '1' : '0');
+      renderCloudToggle();
+    });
+  }
+
   /* ================= Cloud OCR (Claude vision, via /api/scan) - main path ================= */
   // Reads the WHOLE table (or the whole replacement region) in one call so the model has full
   // context - this is what actually fixes accuracy on Arabic text, vs. guessing at isolated cells.
@@ -1703,14 +1727,21 @@
     const canvasData = toAnalysisCanvas(img, 700);
 
     let rows, cols, typeLabel;
-    try{
-      const base64 = canvasRegionToBase64(cvCanvas, 0, 0, canvasData.w, canvasData.h, 0.85);
-      const { rows: rCount, cols: cCount } = await cloudDetectStructure(base64);
-      rows = evenRowBands(rCount, canvasData.h);
-      cols = evenColBands(cCount, canvasData.w);
-      typeLabel = '🤖 الذكاء الاصطناعي حدد ' + rCount + ' صف و ' + cCount + ' عمود — عدّل لو محتاج بالأزرار تحت';
-    }catch(err){
-      console.warn('Cloud structure detection failed, falling back to local pixel heuristic:', err);
+    if(cloudOcrEnabled){
+      try{
+        const base64 = canvasRegionToBase64(cvCanvas, 0, 0, canvasData.w, canvasData.h, 0.85);
+        const { rows: rCount, cols: cCount } = await cloudDetectStructure(base64);
+        rows = evenRowBands(rCount, canvasData.h);
+        cols = evenColBands(cCount, canvasData.w);
+        typeLabel = '🤖 الذكاء الاصطناعي حدد ' + rCount + ' صف و ' + cCount + ' عمود — عدّل لو محتاج بالأزرار تحت';
+      }catch(err){
+        console.warn('Cloud structure detection failed, falling back to local pixel heuristic:', err);
+        const structure = detectStructure(canvasData);
+        rows = structure.rows.length ? structure.rows : [{ top:0, bottom:canvasData.h }];
+        cols = structure.cols.length ? structure.cols : [{ left:0, right:canvasData.w }];
+        typeLabel = (structure.type === 'grid' ? '📐 اتكشفت شبكة مرسومة في الورقة' : '📝 اتكشفت أسطر نص (من غير خطوط)') + ' (محليًا، عدّل لو مش مظبوط)';
+      }
+    }else{
       const structure = detectStructure(canvasData);
       rows = structure.rows.length ? structure.rows : [{ top:0, bottom:canvasData.h }];
       cols = structure.cols.length ? structure.cols : [{ left:0, right:canvasData.w }];
@@ -1782,6 +1813,7 @@
       const cropW = Math.max(1, right-left), cropH = Math.max(1, bottom-top);
 
       try{
+        if(!cloudOcrEnabled) throw new Error('cloud OCR disabled by user');
         const base64 = canvasRegionToBase64(full, left, top, cropW, cropH, 0.92);
         const cells = await cloudOcrGrid(base64, rowsCount, colsCount);
         for(let r=0; r<rowsCount; r++){
@@ -1791,8 +1823,8 @@
           }
         }
       }catch(err){
-        console.warn('Cloud OCR failed, falling back to local per-cell OCR:', err);
-        updateOcrBusy('تعذر الوصول لخدمة القراءة السحابية، جاري القراءة محليًا (أقل دقة)…');
+        console.warn('Cloud OCR unavailable, falling back to local per-cell OCR:', err);
+        updateOcrBusy(cloudOcrEnabled ? 'تعذر الوصول لخدمة القراءة السحابية، جاري القراءة محليًا (أقل دقة)…' : 'جاري القراءة محليًا (القراءة الذكية موقوفة)…');
         let done = 0;
         const total = rowsCount * colsCount;
         for(let r=0; r<rowsCount; r++){
@@ -1846,6 +1878,7 @@
     const bottomPx = Math.round((useBands[useBands.length-1][1]+1)*scaleY);
 
     try{
+      if(!cloudOcrEnabled) throw new Error('cloud OCR disabled by user');
       const base64 = canvasRegionToBase64(full, 0, Math.max(0,topPx-2), img.naturalWidth, Math.max(4, bottomPx-topPx+4), 0.92);
       const lines = await cloudOcrLines(base64, useBands.length);
       items = lines.map((rawText, idx)=>{
@@ -1853,8 +1886,8 @@
         return { text: numInfo ? numInfo.rest : (rawText || ''), num: numInfo ? numInfo.num : null, top: idx };
       });
     }catch(err){
-      console.warn('Cloud OCR failed, falling back to local per-line OCR:', err);
-      updateOcrBusy('تعذر الوصول لخدمة القراءة السحابية، جاري القراءة محليًا (أقل دقة)…');
+      console.warn('Cloud OCR unavailable, falling back to local per-line OCR:', err);
+      updateOcrBusy(cloudOcrEnabled ? 'تعذر الوصول لخدمة القراءة السحابية، جاري القراءة محليًا (أقل دقة)…' : 'جاري القراءة محليًا (القراءة الذكية موقوفة)…');
       for(let i=0; i<useBands.length; i++){
         const [top, bottom] = useBands[i];
         const y = Math.round(top*scaleY), h = Math.round((bottom-top+1)*scaleY);
