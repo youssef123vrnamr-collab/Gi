@@ -1526,7 +1526,49 @@
     return { type:'text', rows, cols, w, h };
   }
 
-  /* ================= Local OCR (Tesseract.js - runs fully in-browser) ================= */
+  /* ================= Cloud OCR (Claude vision, via /api/scan) - main path ================= */
+  // Reads the WHOLE table (or the whole replacement region) in one call so the model has full
+  // context - this is what actually fixes accuracy on Arabic text, vs. guessing at isolated cells.
+  function canvasRegionToBase64(sourceCanvasEl, x, y, w, h, quality){
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w));
+    c.height = Math.max(1, Math.round(h));
+    c.getContext('2d').drawImage(sourceCanvasEl, x, y, w, h, 0, 0, c.width, c.height);
+    const dataUrl = c.toDataURL('image/jpeg', quality || 0.92);
+    return dataUrl.split(',')[1];
+  }
+
+  async function callScanApi(payload){
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    let data = null;
+    try{ data = await res.json(); }catch(e){ /* non-JSON error page */ }
+    if(!res.ok){
+      throw new Error((data && data.error) ? data.error : ('HTTP ' + res.status));
+    }
+    return data;
+  }
+
+  // Reads an entire rows x cols grid from one image in one API call.
+  async function cloudOcrGrid(base64Image, rows, cols){
+    const data = await callScanApi({ mode:'grid', image: base64Image, mediaType:'image/jpeg', rows, cols });
+    if(!data || !Array.isArray(data.cells)) throw new Error('رد غير متوقع من خدمة القراءة');
+    return data.cells;
+  }
+
+  // Reads `count` lines of text, top-to-bottom, from one image in one API call.
+  async function cloudOcrLines(base64Image, count){
+    const data = await callScanApi({ mode:'lines', image: base64Image, mediaType:'image/jpeg', count });
+    if(!data || !Array.isArray(data.lines)) throw new Error('رد غير متوقع من خدمة القراءة');
+    return data.lines;
+  }
+
+  /* ================= Local OCR (Tesseract.js) - offline fallback only ================= */
+  // Used only if the cloud endpoint above is unreachable (no internet / API key not configured yet).
+  // Kept as a safety net, but it is NOT accurate enough for Arabic on its own - don't rely on it.
   let ocrWorkerPromise = null;
   function getOcrWorker(){
     if(!ocrWorkerPromise){
@@ -1699,26 +1741,44 @@
     newSheet.data = {}; newSheet.flags = {};
 
     if(withOcr){
-      showOcrBusy('جاري قراءة النص وتعبئة الجدول…', '0 / ' + (rowsCount*colsCount));
+      showOcrBusy('جاري قراءة الجدول بالكامل…', 'بيتقرأ الجدول كله مرة واحدة عشان الدقة تبقى أعلى');
       const img = await loadImageEl(dataUrl);
       const full = document.createElement('canvas');
       full.width = img.naturalWidth; full.height = img.naturalHeight;
       full.getContext('2d').drawImage(img, 0, 0);
-      // map each row/col's REAL (possibly irregular) detected boundary to full-resolution pixels —
-      // a huge first box and tiny boxes after get cropped at their true sizes, not sliced evenly
+      // map the detected row/col boundaries to full-resolution pixels
       const scaleX = img.naturalWidth / w, scaleY = img.naturalHeight / h;
-      let done = 0;
-      const total = rowsCount * colsCount;
-      for(let r=0; r<rowsCount; r++){
-        const ry = Math.round(rows[r].top*scaleY);
-        const rh = Math.max(1, Math.round((rows[r].bottom - rows[r].top)*scaleY));
-        for(let c=0; c<colsCount; c++){
-          const cx = Math.round(cols[c].left*scaleX);
-          const cw = Math.max(1, Math.round((cols[c].right - cols[c].left)*scaleX));
-          const text = await ocrRegion(full, cx, ry, cw, rh);
-          if(text) newSheet.data[r+'_'+c] = text;
-          done++;
-          updateOcrBusy(done + ' / ' + total);
+      const left = Math.round(cols[0].left*scaleX);
+      const right = Math.round(cols[colsCount-1].right*scaleX);
+      const top = Math.round(rows[0].top*scaleY);
+      const bottom = Math.round(rows[rowsCount-1].bottom*scaleY);
+      const cropW = Math.max(1, right-left), cropH = Math.max(1, bottom-top);
+
+      try{
+        const base64 = canvasRegionToBase64(full, left, top, cropW, cropH, 0.92);
+        const cells = await cloudOcrGrid(base64, rowsCount, colsCount);
+        for(let r=0; r<rowsCount; r++){
+          for(let c=0; c<colsCount; c++){
+            const val = (cells[r] && cells[r][c] != null) ? String(cells[r][c]).trim() : '';
+            if(val) newSheet.data[r+'_'+c] = val;
+          }
+        }
+      }catch(err){
+        console.warn('Cloud OCR failed, falling back to local per-cell OCR:', err);
+        updateOcrBusy('تعذر الوصول لخدمة القراءة السحابية، جاري القراءة محليًا (أقل دقة)…');
+        let done = 0;
+        const total = rowsCount * colsCount;
+        for(let r=0; r<rowsCount; r++){
+          const ry = Math.round(rows[r].top*scaleY);
+          const rh = Math.max(1, Math.round((rows[r].bottom - rows[r].top)*scaleY));
+          for(let c=0; c<colsCount; c++){
+            const cx = Math.round(cols[c].left*scaleX);
+            const cw = Math.max(1, Math.round((cols[c].right - cols[c].left)*scaleX));
+            const text = await ocrRegion(full, cx, ry, cw, rh);
+            if(text) newSheet.data[r+'_'+c] = text;
+            done++;
+            updateOcrBusy(done + ' / ' + total);
+          }
         }
       }
       hideOcrBusy();
@@ -1753,20 +1813,34 @@
     full.width = img.naturalWidth; full.height = img.naturalHeight;
     full.getContext('2d').drawImage(img, 0, 0);
 
-    const items = [];
+    let items = [];
     const useBands = bands.length ? bands : [[0, analysisData.h-1]];
-    for(let i=0; i<useBands.length; i++){
-      const [top, bottom] = useBands[i];
-      const y = Math.round(top*scaleY), h = Math.round((bottom-top+1)*scaleY);
-      updateOcrBusy((i+1) + ' / ' + useBands.length);
-      const rawText = await ocrRegion(full, 0, Math.max(0,y-2), img.naturalWidth, Math.max(4,h+4));
-      if(!rawText) continue;
-      const numInfo = extractLeadingNumber(rawText);
-      items.push({
-        text: numInfo ? numInfo.rest : rawText,
-        num: numInfo ? numInfo.num : null,
-        top: y
+    const topPx = Math.round(useBands[0][0]*scaleY);
+    const bottomPx = Math.round((useBands[useBands.length-1][1]+1)*scaleY);
+
+    try{
+      const base64 = canvasRegionToBase64(full, 0, Math.max(0,topPx-2), img.naturalWidth, Math.max(4, bottomPx-topPx+4), 0.92);
+      const lines = await cloudOcrLines(base64, useBands.length);
+      items = lines.map((rawText, idx)=>{
+        const numInfo = extractLeadingNumber(rawText || '');
+        return { text: numInfo ? numInfo.rest : (rawText || ''), num: numInfo ? numInfo.num : null, top: idx };
       });
+    }catch(err){
+      console.warn('Cloud OCR failed, falling back to local per-line OCR:', err);
+      updateOcrBusy('تعذر الوصول لخدمة القراءة السحابية، جاري القراءة محليًا (أقل دقة)…');
+      for(let i=0; i<useBands.length; i++){
+        const [top, bottom] = useBands[i];
+        const y = Math.round(top*scaleY), h = Math.round((bottom-top+1)*scaleY);
+        updateOcrBusy((i+1) + ' / ' + useBands.length);
+        const rawText = await ocrRegion(full, 0, Math.max(0,y-2), img.naturalWidth, Math.max(4,h+4));
+        if(!rawText) continue;
+        const numInfo = extractLeadingNumber(rawText);
+        items.push({
+          text: numInfo ? numInfo.rest : rawText,
+          num: numInfo ? numInfo.num : null,
+          top: y
+        });
+      }
     }
     hideOcrBusy();
 
