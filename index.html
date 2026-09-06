@@ -1834,8 +1834,50 @@
 
   // Live tracking overlay: redraws the detected paper outline every tick, smoothed across frames so it doesn't flicker.
   const quadDetectCanvas = document.createElement('canvas');
+  const liveFlatCanvas = document.createElement('canvas');
   let smoothedQuad = null; // in quadDetectCanvas pixel space
   let quadMissCount = 0;
+
+  function lerpPt(a, b, t){ return { x: a.x + (b.x-a.x)*t, y: a.y + (b.y-a.y)*t }; }
+
+  // Warps just the paper region of a small live frame into a flat rectangle, then reuses the same
+  // ruled-line detector used at capture time to find the internal row/column lines inside it.
+  function detectInternalGridLines(sourceCanvas, quad){
+    if(!cvReady) return null;
+    let src=null, srcTri=null, dstTri=null, M=null, dst=null;
+    try{
+      const [tl, tr, br, bl] = quad;
+      const widthTop = Math.hypot(tr.x-tl.x, tr.y-tl.y), widthBottom = Math.hypot(br.x-bl.x, br.y-bl.y);
+      const heightLeft = Math.hypot(bl.x-tl.x, bl.y-tl.y), heightRight = Math.hypot(br.x-tr.x, br.y-tr.y);
+      let outW = Math.max(widthTop, widthBottom), outH = Math.max(heightLeft, heightRight);
+      const s = Math.min(1, 300 / Math.max(outW, outH, 1));
+      outW = Math.max(20, Math.round(outW*s)); outH = Math.max(20, Math.round(outH*s));
+
+      src = cv.imread(sourceCanvas);
+      srcTri = cv.matFromArray(4,1,cv.CV_32FC2, [tl.x,tl.y, tr.x,tr.y, br.x,br.y, bl.x,bl.y]);
+      dstTri = cv.matFromArray(4,1,cv.CV_32FC2, [0,0, outW,0, outW,outH, 0,outH]);
+      M = cv.getPerspectiveTransform(srcTri, dstTri);
+      dst = new cv.Mat();
+      cv.warpPerspective(src, dst, M, new cv.Size(outW, outH), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+      liveFlatCanvas.width = outW; liveFlatCanvas.height = outH;
+      cv.imshow(liveFlatCanvas, dst);
+      const flatData = liveFlatCanvas.getContext('2d', { willReadFrequently:true }).getImageData(0,0,outW,outH).data;
+
+      const hLines = findRuledLines(rowStats(flatData, outW, outH), outH);
+      const vLines = findRuledLines(colStats(flatData, outW, outH), outW);
+      if(hLines.length < 2 || vLines.length < 2) return null;
+      return { hLines, vLines, outW, outH };
+    }catch(e){
+      return null;
+    }finally{
+      if(src) src.delete();
+      if(srcTri) srcTri.delete();
+      if(dstTri) dstTri.delete();
+      if(M) M.delete();
+      if(dst) dst.delete();
+    }
+  }
 
   function updateLiveOverlay(){
     if(!video.videoWidth) return;
@@ -1871,6 +1913,7 @@
     }
 
     if(smoothedQuad){
+      // outer border of the sheet
       gctx.strokeStyle = 'rgba(46,125,87,.9)';
       gctx.lineWidth = 2.5;
       gctx.beginPath();
@@ -1885,6 +1928,31 @@
         const x = p.x/qw*rectW, y = p.y/qh*rectH;
         gctx.beginPath(); gctx.arc(x,y,5,0,Math.PI*2); gctx.fill();
       });
+
+      // internal rows/columns, mapped back onto the sheet's own perspective (not straight screen lines)
+      const gridInfo = detectInternalGridLines(quadDetectCanvas, smoothedQuad);
+      if(gridInfo){
+        const { hLines, vLines, outW, outH } = gridInfo;
+        const [tl, tr, br, bl] = smoothedQuad;
+        gctx.strokeStyle = 'rgba(46,125,87,.55)';
+        gctx.lineWidth = 1.3;
+        hLines.forEach(y=>{
+          const t = y/outH;
+          const left = lerpPt(tl, bl, t), right = lerpPt(tr, br, t);
+          gctx.beginPath();
+          gctx.moveTo(left.x/qw*rectW, left.y/qh*rectH);
+          gctx.lineTo(right.x/qw*rectW, right.y/qh*rectH);
+          gctx.stroke();
+        });
+        vLines.forEach(x=>{
+          const t = x/outW;
+          const top = lerpPt(tl, tr, t), bottom = lerpPt(bl, br, t);
+          gctx.beginPath();
+          gctx.moveTo(top.x/qw*rectW, top.y/qh*rectH);
+          gctx.lineTo(bottom.x/qw*rectW, bottom.y/qh*rectH);
+          gctx.stroke();
+        });
+      }
     }
   }
 
