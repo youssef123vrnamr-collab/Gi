@@ -1374,6 +1374,26 @@
     img.src = shot.original;
   }
 
+  // Reads a suggested row/col count from one image in one API call (robust to shadows, skew,
+  // and repeating symbols/arrows that fool the local pixel-line detector below).
+  async function cloudDetectStructure(base64Image){
+    const data = await callScanApi({ mode:'structure', image: base64Image, mediaType:'image/jpeg' });
+    const rows = Math.max(1, Math.min(60, parseInt(data && data.rows, 10) || 0));
+    const cols = Math.max(1, Math.min(30, parseInt(data && data.cols, 10) || 0));
+    if(!rows || !cols) throw new Error('رد غير متوقع من خدمة تحليل التقسيم');
+    return { rows, cols };
+  }
+  function evenRowBands(count, height){
+    const out = [];
+    for(let i=0;i<count;i++) out.push({ top: Math.round(i*height/count), bottom: Math.round((i+1)*height/count) });
+    return out;
+  }
+  function evenColBands(count, width){
+    const out = [];
+    for(let i=0;i<count;i++) out.push({ left: Math.round(i*width/count), right: Math.round((i+1)*width/count) });
+    return out;
+  }
+
   /* ================= Local computer-vision helpers (no cloud AI) ================= */
   // These work purely with pixel analysis (grayscale, edge/ink density projections).
   // No network calls, no external AI service - everything runs in this browser tab.
@@ -1681,17 +1701,24 @@
     showOcrBusy('جاري تحليل تقسيم الورقة…');
     const img = await loadImageEl(dataUrl);
     const canvasData = toAnalysisCanvas(img, 700);
-    const structure = detectStructure(canvasData);
+
+    let rows, cols, typeLabel;
+    try{
+      const base64 = canvasRegionToBase64(cvCanvas, 0, 0, canvasData.w, canvasData.h, 0.85);
+      const { rows: rCount, cols: cCount } = await cloudDetectStructure(base64);
+      rows = evenRowBands(rCount, canvasData.h);
+      cols = evenColBands(cCount, canvasData.w);
+      typeLabel = '🤖 الذكاء الاصطناعي حدد ' + rCount + ' صف و ' + cCount + ' عمود — عدّل لو محتاج بالأزرار تحت';
+    }catch(err){
+      console.warn('Cloud structure detection failed, falling back to local pixel heuristic:', err);
+      const structure = detectStructure(canvasData);
+      rows = structure.rows.length ? structure.rows : [{ top:0, bottom:canvasData.h }];
+      cols = structure.cols.length ? structure.cols : [{ left:0, right:canvasData.w }];
+      typeLabel = (structure.type === 'grid' ? '📐 اتكشفت شبكة مرسومة في الورقة' : '📝 اتكشفت أسطر نص (من غير خطوط)') + ' (محليًا، عدّل لو مش مظبوط)';
+    }
     hideOcrBusy();
 
-    pendingStructure = {
-      dataUrl,
-      rows: structure.rows.length ? structure.rows : [{ top:0, bottom:canvasData.h }],
-      cols: structure.cols.length ? structure.cols : [{ left:0, right:canvasData.w }],
-      w: canvasData.w,
-      h: canvasData.h,
-      typeLabel: structure.type === 'grid' ? '📐 اتكشفت شبكة مرسومة في الورقة' : '📝 اتكشفت أسطر نص (من غير خطوط)'
-    };
+    pendingStructure = { dataUrl, rows, cols, w: canvasData.w, h: canvasData.h, typeLabel };
     structureImg.src = dataUrl;
     structureTypePill.textContent = pendingStructure.typeLabel;
     structureOverlay.classList.add('show');
