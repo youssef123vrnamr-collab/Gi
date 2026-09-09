@@ -371,6 +371,21 @@
   .bw-footer .grow{ flex:1; }
   .bw-resize-group{ display:flex; align-items:center; gap:4px; }
   .bw-resize-group button{ width:30px; height:30px; border-radius:7px; border:1px solid var(--line); background:#fff; font-weight:800; cursor:pointer; }
+
+  /* ---------- Responsive: desktop / tablet layout ---------- */
+  @media (min-width: 860px){
+    body{ background:var(--paper-2); }
+    .app{ max-width:1120px; margin:0 auto; background:var(--paper); min-height:100vh; box-shadow:0 0 40px rgba(28,36,44,.06); }
+    header{ padding:26px 36px 0; }
+    .view{ padding:22px 36px 90px; }
+    .grid-wrap{ max-height:66vh; }
+    .gallery-grid{ grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); }
+    .editor-body{ max-width:640px; margin:0 auto; }
+    .ai-setup-body{ max-width:520px; }
+    .selection-bar, .fallback-toast{ max-width:600px; }
+    .scan-stage{ max-width:520px; }
+    .bw-panel{ max-width:230px; }
+  }
 </style>
 </head>
 <body>
@@ -441,6 +456,32 @@
         </div>
 
         <p class="section-hint" style="text-align:center; margin:0 0 12px;">هات صورة واضحة للورقة كلها — هيتحدد شكلها وتقسيم الجدول جواها تلقائي، وتقدر تراجع العدد قبل ما يتطبق.</p>
+
+        <div class="ai-switch-row">
+          <div>
+            <div class="lbl">استخدام الذكاء الاصطناعي</div>
+            <div class="sub">اختياري بمفتاحك الشخصي. لو موقوفة، القراءة محلية بالكامل.</div>
+          </div>
+          <button class="switch" id="cloud-ocr-toggle-main"></button>
+        </div>
+        <div class="ai-switch-row">
+          <div>
+            <div class="lbl">لغة القراءة المحلية</div>
+            <div class="sub">اختر لغة النص المكتوب في الورقة</div>
+          </div>
+          <select class="bw-select" id="ocr-lang-select">
+            <option value="ara">العربية</option>
+            <option value="eng">English</option>
+            <option value="ara+eng">عربي + إنجليزي</option>
+            <option value="fra">Français</option>
+            <option value="spa">Español</option>
+            <option value="deu">Deutsch</option>
+            <option value="rus">Русский</option>
+            <option value="hin">हिन्दी</option>
+            <option value="chi_sim">中文</option>
+            <option value="tur">Türkçe</option>
+          </select>
+        </div>
 
         <div class="camera-frame" id="camera-frame">
           <video id="video" autoplay playsinline muted></video>
@@ -1737,6 +1778,7 @@
   /* ================= Personal AI key (stored locally, never sent to any server of ours) ================= */
   const AI_KEY_STORAGE = 'geminiApiKey';
   const cloudToggleBtn = document.getElementById('cloud-ocr-toggle');
+  const cloudToggleBtnMain = document.getElementById('cloud-ocr-toggle-main');
   const aiSetupOverlay = document.getElementById('ai-setup-overlay');
   const aiKeyInput = document.getElementById('ai-key-input');
   const aiSetupError = document.getElementById('ai-setup-error');
@@ -1744,8 +1786,9 @@
 
   function hasAiKey(){ return !!localStorage.getItem(AI_KEY_STORAGE); }
   function renderCloudToggle(){
-    if(!cloudToggleBtn) return;
-    cloudToggleBtn.classList.toggle('on', cloudOcrEnabled);
+    [cloudToggleBtn, cloudToggleBtnMain].forEach(btn=>{
+      if(btn) btn.classList.toggle('on', cloudOcrEnabled);
+    });
   }
   renderCloudToggle();
 
@@ -1756,17 +1799,18 @@
   }
   function closeAiSetup(){ aiSetupOverlay.classList.remove('show'); }
 
-  if(cloudToggleBtn){
-    cloudToggleBtn.addEventListener('click', ()=>{
-      if(!cloudOcrEnabled && !hasAiKey()){
-        openAiSetup();
-        return;
-      }
-      cloudOcrEnabled = !cloudOcrEnabled;
-      localStorage.setItem('cloudOcrEnabled', cloudOcrEnabled ? '1' : '0');
-      renderCloudToggle();
-    });
+  function onAiToggleClick(){
+    if(!cloudOcrEnabled && !hasAiKey()){
+      openAiSetup();
+      return;
+    }
+    cloudOcrEnabled = !cloudOcrEnabled;
+    localStorage.setItem('cloudOcrEnabled', cloudOcrEnabled ? '1' : '0');
+    renderCloudToggle();
   }
+  [cloudToggleBtn, cloudToggleBtnMain].forEach(btn=>{
+    if(btn) btn.addEventListener('click', onAiToggleClick);
+  });
   document.getElementById('ai-setup-cancel').addEventListener('click', closeAiSetup);
   document.getElementById('ai-key-remove').addEventListener('click', ()=>{
     localStorage.removeItem(AI_KEY_STORAGE);
@@ -1885,14 +1929,29 @@
   // - preprocessing (upscale + grayscale + contrast stretch + binarize) gives it much cleaner input,
   //   especially useful since these photos usually have shadows/uneven lighting across the page
   const ARABIC_OCR_WHITELIST = 'ءآأؤإئابتثجحخدذرزسشصضطظعغفقكلمنهوىي ة٠١٢٣٤٥٦٧٨٩0123456789.,:/\\-()%×+= ';
+  const ocrLangSelect = document.getElementById('ocr-lang-select');
+  let currentOcrLang = localStorage.getItem('ocrLang') || 'ara';
+  if(ocrLangSelect){
+    ocrLangSelect.value = currentOcrLang;
+    ocrLangSelect.addEventListener('change', async ()=>{
+      currentOcrLang = ocrLangSelect.value;
+      localStorage.setItem('ocrLang', currentOcrLang);
+      // language changed -> the running worker is tied to the old language, so drop it and
+      // let getOcrWorker() lazily create a fresh one (with the new language pack) next time it's needed
+      if(ocrWorkerPromise){
+        try{ const w = await ocrWorkerPromise; await w.terminate(); }catch(e){}
+        ocrWorkerPromise = null;
+      }
+    });
+  }
   let ocrWorkerPromise = null;
   function getOcrWorker(){
     if(!ocrWorkerPromise){
-      ocrWorkerPromise = Tesseract.createWorker('ara').then(async (worker)=>{
-        await worker.setParameters({
-          tessedit_pageseg_mode: '6',
-          tessedit_char_whitelist: ARABIC_OCR_WHITELIST
-        });
+      ocrWorkerPromise = Tesseract.createWorker(currentOcrLang).then(async (worker)=>{
+        const params = { tessedit_pageseg_mode: '6' };
+        // the strict whitelist is only safe for pure-Arabic mode; other languages need their own alphabets
+        if(currentOcrLang === 'ara') params.tessedit_char_whitelist = ARABIC_OCR_WHITELIST;
+        await worker.setParameters(params);
         return worker;
       });
     }
