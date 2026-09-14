@@ -16,10 +16,13 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
+// ── Firestore بتاع مشروع محفوظات نفسه (مش فلك) — هنا هنخزّن "الذاكرة الدائمة" (غرفة 3):
+//    تقييمات الردود 👍👎 اللي بتغذي دروس مستفادة وردود عجبت الناس، خاصة بمحفوظات بس ──
+const ownDb = firebase.firestore();
 
 /* ============ SHARED AI KEYS (من نفس Firestore بتاع منصة فلك) ============
    منصة فلك (مشروع Firebase: planning-with-ai-390af) بتخزّن كل مفاتيح
-   الذكاء الاصطناعي (Groq / Gemini / OpenRouter / Vercel AI Gateway) في
+   الذكاء الاصطناعي (Groq / Gemini / OpenRouter / Vercel AI Gateway / Tavily) في
    Firestore هنا: system/ai_settings — بنفس الطريقة دي بالظبط، المنصة
    الجديدة دي بتتصل بنفس المشروع (كـ "secondary app"، من غير ما تلمس أو
    تعدل حاجة في فلك نفسها) وتقرا نفس المفاتيح لحظة بلحظة، وتستخدم نفس
@@ -73,6 +76,7 @@ const GeminiKeyPool = ApiKeyPool.create();
 const OpenRouterKeyPool = ApiKeyPool.create();
 const VercelGatewayKeyPool = ApiKeyPool.create();
 let globalAiInstructions = "";
+let tavilyApiKey = "";
 
 falakDb.collection("system").doc("ai_settings").onSnapshot(
   snap => {
@@ -80,6 +84,7 @@ falakDb.collection("system").doc("ai_settings").onSnapshot(
     const soloGroq = (d.groqApiKey && String(d.groqApiKey).trim()) || "";
     const soloGemini = (d.geminiApiKey && String(d.geminiApiKey).trim()) || "";
     globalAiInstructions = (d.globalAiInstructions && String(d.globalAiInstructions).trim()) || "";
+    tavilyApiKey = (d.tavilyApiKey && String(d.tavilyApiKey).trim()) || "";
     GroqKeyPool.setKeys(Array.isArray(d.groqApiKeys) && d.groqApiKeys.length ? d.groqApiKeys : (soloGroq ? [soloGroq] : []));
     GeminiKeyPool.setKeys(Array.isArray(d.geminiApiKeys) && d.geminiApiKeys.length ? d.geminiApiKeys : (soloGemini ? [soloGemini] : []));
     OpenRouterKeyPool.setKeys(Array.isArray(d.openrouterApiKeys) ? d.openrouterApiKeys : []);
@@ -93,6 +98,28 @@ falakDb.collection("system").doc("ai_settings").onSnapshot(
   }
 );
 
+/* ============ الذاكرة الدائمة (غرفة 3) — دروس من 👎 وردود عجبت الناس 👍 ============
+   بتتخزن في Firestore بتاع محفوظات نفسها (ownDb)، مش فلك — عشان تبقى خاصة
+   بمحفوظات وبمستخدميها بس، بنفس فكرة فلك بالظبط لكن قاعدة بيانات منفصلة. */
+let lessonsList = [];   // ردود اتقيّمت 👎 — دروس متتكررش
+let goodAnswersList = []; // ردود اتقيّمت 👍 — حافظ على نفس المستوى
+ownDb.collection("ai_feedback").where("liked","==",false).orderBy("createdAt","desc").limit(8)
+  .onSnapshot(snap => { lessonsList = snap.docs.map(d=>d.data()); }, err => console.warn("lessons feed err", err));
+ownDb.collection("ai_feedback").where("liked","==",true).orderBy("createdAt","desc").limit(8)
+  .onSnapshot(snap => { goodAnswersList = snap.docs.map(d=>d.data()); }, err => console.warn("good answers feed err", err));
+
+function submitAIFeedback(liked, question, answer){
+  try{
+    ownDb.collection("ai_feedback").add({
+      userId: (currentUser && currentUser.uid) || null,
+      question: String(question||"").slice(0,500),
+      answer: String(answer||"").slice(0,2000),
+      liked: !!liked,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(e=>console.error("feedback add err", e));
+  } catch(e){ console.error("submitAIFeedback err", e); }
+}
+
 const AI_DISPLAY_NAME = "AlalaGyGyAgha V1.6";
 const MODEL_OPTIONS = [
   { id: 'auto', label: 'الاختيار التلقائي' },
@@ -102,16 +129,114 @@ const MODEL_OPTIONS = [
   { id: 'vercel', label: 'Vercel AI Gateway' }
 ];
 let selectedModel = localStorage.getItem('mahfoozat_model') || 'auto';
-function buildSystemPrompt(){
+
+/* ============ غرفة 1: التفكير العميق — نفس تعليمات فلك بالظبط ============ */
+function buildReasoningRoomBlock(){
+  return '\n\n--- غرفة التفكير العميق (Deep Thinking Room) — تفكيرك الداخلي الحقيقي، منفصل عن الرد النهائي ---\n' +
+    'ملاحظة مهمة: النظام بيفصل تفكيرك (reasoning) عن ردك النهائي (content) تلقائيًا ويعرض تفكيرك في صندوق منفصل قابل للفتح للمستخدم — يعني اكتب تفكيرك بحرية وبالتفصيل هنا، ومتقلقش إنه هيظهر في الرد النهائي لأنه مش هيظهر فيه.\n---';
+}
+
+/* ============ غرفة 3: بناء بلوكات الدروس والردود الكويسة من الذاكرة الدائمة ============ */
+function buildLessonsBlock(){
+  if (!lessonsList.length) return '';
+  const list = lessonsList.map(l => '- سؤال: ' + (l.question||'') + '\n  رد اتقيّم سلبيًا: ' + (l.answer||'').slice(0,300)).join('\n');
+  return '\n\n--- دروس مستفادة من تقييمات سابقة (تعلّم منها ولا تكرر نفس القصور) ---\n' + list +
+    '\n---\nلو جالك سؤال شبيه بأي واحد من دول، خد بالك وحاول تجاوب بشكل أعمق وأدق ووضح من المرة اللي فاتت.';
+}
+function buildGoodAnswersBlock(){
+  if (!goodAnswersList.length) return '';
+  const list = goodAnswersList.map(g => '- سؤال: ' + (g.question||'') + '\n  رد عجب المستخدم: ' + (g.answer||'').slice(0,300)).join('\n');
+  return '\n\n--- ردود سابقة عجبت المستخدمين وقيّموها 👍 (حافظ على نفس أسلوبها ومستوى وضوحها) ---\n' + list +
+    '\n---\nخد بالك من الأسلوب والمستوى اللي عجب المستخدمين في الردود دي، وحاول تحافظ عليه أو تتخطاه.';
+}
+
+function buildSystemPrompt(searchResultsBlock){
   return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
+    + buildReasoningRoomBlock()
+    + buildLessonsBlock()
+    + buildGoodAnswersBlock()
+    + (searchResultsBlock || '')
     + (globalAiInstructions ? ('\n\nتعليمات إضافية:\n' + globalAiInstructions) : '');
 }
 
-/* ============ خط الدفاع 1: Groq ============ */
-async function callGroqChat(historyMsgs){
+/* ============ البحث الحقيقي في الإنترنت عبر Tavily (نفس فلك بالظبط) ============ */
+function getTavilyApiKey(){ return (tavilyApiKey && String(tavilyApiKey).trim()) || ""; }
+
+async function performWebSearch(query, includeDomains){
+  const key = getTavilyApiKey();
+  if (!key) return null;
+  try{
+    const body = {
+      api_key: key,
+      query: query,
+      search_depth: 'advanced',
+      max_results: 5,
+      include_answer: false,
+      include_images: true,
+      include_image_descriptions: true
+    };
+    if (includeDomains && includeDomains.length) body.include_domains = includeDomains;
+    const r = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e){ console.warn('performWebSearch failed', e); return null; }
+}
+
+// ── مرحلة أولى سريعة: كلمات صريحة بتدل على طلب بحث (رد فوري من غير انتظار) ──
+const WEB_SEARCH_TRIGGERS = [
+  'ابحث', 'دور لي', 'دور على', 'فتش', 'اخبار', 'أخبار', 'اخر اخبار', 'آخر أخبار',
+  'احدث', 'أحدث', 'صحيح ان', 'صحيح إن', 'هل صحيح', 'اتأكد', 'تأكد من',
+  'معلومات عن', 'ايه اخبار', 'إيه أخبار', 'اخر حاجة', 'جديد في',
+  'اخر ', 'آخر ', 'اخره', 'آخره', 'امتى', 'إمتى', 'متى', 'حاليا', 'حاليًا',
+  'دلوقتي', 'الان', 'الآن', 'لسه', 'لسة', 'اخر مرة', 'آخر مرة', 'اخر تحديث', 'آخر تحديث'
+];
+function shouldWebSearch(t){
+  if (!t) return false;
+  const l = String(t).toLowerCase();
+  return WEB_SEARCH_TRIGGERS.some(k => l.includes(k));
+}
+
+// ── مرحلة تانية ذكية: لو مفيش كلمة صريحة، الذكاء الاصطناعي نفسه بيقرر ──
+async function classifyNeedsSearch(userMsg){
+  try{
+    const apiKey = GroqKeyPool.next();
+    if (!apiKey || !userMsg || userMsg.trim().length < 4) return false;
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        max_tokens: 3,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: 'رد بكلمة واحدة بس: "نعم" لو الرسالة محتاجة معلومة حديثة/حقيقية أو حدث حالي أو حاجة لازم تتأكد منها من الإنترنت (زي أخبار، أسعار، تواريخ قريبة، أسماء أشخاص أو شركات أو منتجات حالية، نتائج، إحصائيات، حاجة بتتغيّر بمرور الوقت). أو رد "لا" لو مجرد كلام عادي، تحية، سؤال عن مفهوم علمي/تاريخي ثابت، طلب مساعدة عامة، أو طلب برمجة/كود. رد بكلمة واحدة بس من غير أي شرح.' },
+          { role: 'user', content: userMsg }
+        ]
+      })
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    const ans = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    return /نعم|yes/i.test(ans.trim());
+  } catch(e){ console.warn('classifyNeedsSearch failed', e); return false; }
+}
+
+function buildSearchResultsBlock(results){
+  if (!results || !results.results || !results.results.length) return '';
+  const list = results.results.slice(0,5).map((r,i) => (i+1)+'. '+(r.title||'')+'\n   '+(r.url||'')+'\n   '+(r.content||'').slice(0,300)).join('\n');
+  return '\n\n--- نتائج بحث حقيقية من الإنترنت الآن (استخدمها في ردك، وممنوع تتجاهلها أو تجاوب من معلوماتك العامة القديمة لو فيها تعارض) ---\n' + list + '\n---';
+}
+
+/* ============ خط الدفاع 1: Groq — Streaming + غرفة التفكير العميق الحية ============ */
+async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock){
   if (!GroqKeyPool.count()) return null;
   const maxAttempts = Math.min(GroqKeyPool.count(), 3);
-  const messages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
+  const sys = buildSystemPrompt(searchResultsBlock || '');
+  const messages = [{ role:'system', content: sys }].concat(historyMsgs);
   for (let i=0;i<maxAttempts;i++){
     const key = GroqKeyPool.next();
     if (!key) break;
@@ -119,14 +244,42 @@ async function callGroqChat(historyMsgs){
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "openai/gpt-oss-120b", messages, max_tokens: 1500, temperature: 0.4 })
+        body: JSON.stringify({
+          model: "openai/gpt-oss-120b", messages, max_tokens: 1500, temperature: 0.4,
+          stream: true, reasoning_effort: 'high', reasoning_format: 'parsed'
+        })
       });
-      const data = await res.json();
-      const txt = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      GroqKeyPool.report(key, res.ok || res.status !== 429);
-      if (txt) return txt;
-      if (res.status !== 429) return null; // فشل مش بسبب كوتا، مفيش فايدة نبدّل مفتاح
-    } catch(e){ console.warn("Groq call failed", e); }
+      if (!res.ok || !res.body){
+        GroqKeyPool.report(key, res.status !== 429);
+        if (res.status !== 429) return null;
+        continue;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '', full = '', fullReasoning = '';
+      while (true){
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines){
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') continue;
+          try{
+            const evt = JSON.parse(payload);
+            const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
+            if (!delta) continue;
+            if (delta.content){ full += delta.content; }
+            const reasoningPiece = delta.reasoning || delta.reasoning_content;
+            if (reasoningPiece){ fullReasoning += reasoningPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning); }
+          } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+        }
+      }
+      GroqKeyPool.report(key, true);
+      if (full) return { text: full, reasoning: fullReasoning };
+    } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); }
   }
   return null;
 }
@@ -149,7 +302,7 @@ async function callGeminiChat(historyMsgs){
       const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
         data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
       GeminiKeyPool.report(key, res.status !== 429);
-      if (txt) return txt;
+      if (txt) return { text: txt, reasoning: '' };
       if (res.status !== 429) return null;
     } catch(e){ console.warn("Gemini call failed", e); }
   }
@@ -188,7 +341,7 @@ async function callOpenRouterChat(historyMsgs){
         const d = await r.json();
         const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
         OpenRouterKeyPool.report(key, r.status !== 429);
-        if (txt) return txt;
+        if (txt) return { text: txt, reasoning: '' };
         if (r.status === 429){ keyFailed429 = true; continue; }
       } catch(e){ console.warn("OpenRouter call failed", e); }
     }
@@ -217,7 +370,7 @@ async function callVercelChat(historyMsgs){
         const d = await r.json();
         const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
         VercelGatewayKeyPool.report(key, r.status !== 429);
-        if (txt) return txt;
+        if (txt) return { text: txt, reasoning: '' };
         if (r.status === 429){ keyFailed429 = true; continue; }
       } catch(e){ console.warn("Vercel Gateway call failed", e); }
     }
@@ -226,28 +379,41 @@ async function callVercelChat(historyMsgs){
   return null;
 }
 
-/* ============ الموزّع الرئيسي: بيجرب كل خط دفاع بالترتيب (أو يبدأ من الموديل المختار يدويًا) ============ */
-async function getAIResponse(messageHistory){
+/* ============ الموزّع الرئيسي: بحث عبر الإنترنت لو محتاج، بعدين يجرب كل خط دفاع بالترتيب ============ */
+async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart){
+  const lastUserText = (messageHistory[messageHistory.length-1] && messageHistory[messageHistory.length-1].text) || '';
   const messages = messageHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
 
+  // ── قرار البحث: كلمة صريحة الأول، وإلا نسأل الموديل نفسه ──
+  let searchResultsBlock = '';
+  const tavilyReady = !!getTavilyApiKey();
+  if (tavilyReady){
+    const explicitNeed = shouldWebSearch(lastUserText);
+    const needsSearch = explicitNeed || await classifyNeedsSearch(lastUserText);
+    if (needsSearch){
+      if (onSearchStart) onSearchStart();
+      const results = await performWebSearch(lastUserText);
+      searchResultsBlock = buildSearchResultsBlock(results);
+    }
+  }
+
   const providers = [
-    { id:'groq', label:'Groq', fn: callGroqChat },
+    { id:'groq', label:'Groq', fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock) },
     { id:'gemini', label:'Gemini', fn: callGeminiChat },
     { id:'openrouter', label:'OpenRouter', fn: callOpenRouterChat },
     { id:'vercel', label:'Vercel Gateway', fn: callVercelChat }
   ];
-  // لو المستخدم مختار موديل معيّن، نبدأ بيه، وبعدين نكمل باقي السلسلة تلقائيًا لو هو فشل
   const ordered = selectedModel === 'auto'
     ? providers
     : providers.slice().sort((a,b) => (a.id===selectedModel?-1:0) - (b.id===selectedModel?-1:0));
 
   for (const p of ordered){
-    const txt = await p.fn(messages);
-    if (txt) return { text: txt, provider: p.label };
+    const result = await p.fn(messages);
+    if (result && result.text) return { text: result.text, reasoning: result.reasoning || '', provider: p.label };
   }
 
   if (!GroqKeyPool.count() && !GeminiKeyPool.count() && !OpenRouterKeyPool.count() && !VercelGatewayKeyPool.count()){
-    return { text: "لسه بجيب مفاتيح الذكاء الاصطناعي... جرب تاني بعد ثانية.", provider: null };
+    return { text: "لسه بجيب مفاتيح الذكاء الاصطناعي... جرب تاني بعد ثانية.", provider: null, reasoning: '' };
   }
   throw new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
 }
@@ -485,6 +651,63 @@ function formatTime(ts){
   return d.toLocaleTimeString('ar-EG', { hour:'2-digit', minute:'2-digit' });
 }
 
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ── نفس شريط فلك بالظبط: نسخ / 👎 / 👍 — بيغذي غرفة 3 (الذاكرة الدائمة) ──
+function buildActionBar(questionText, answerText){
+  const bar = document.createElement('div');
+  bar.className = 'cosmos-action-bar';
+
+  function mkBtn(icon, title, handler){
+    const b = document.createElement('button');
+    b.className = 'cosmos-action-btn';
+    b.type = 'button';
+    b.title = title;
+    b.innerHTML = '<i class="'+icon+'"></i>';
+    b.addEventListener('click', (e)=>{ e.stopPropagation(); handler(b); });
+    return b;
+  }
+
+  bar.appendChild(mkBtn('fas fa-copy', 'نسخ', (btn)=>{
+    navigator.clipboard && navigator.clipboard.writeText(answerText).then(()=>{
+      btn.innerHTML = '<i class="fas fa-check"></i>';
+      setTimeout(()=>{ btn.innerHTML = '<i class="fas fa-copy"></i>'; }, 1200);
+    });
+  }));
+  bar.appendChild(mkBtn('fas fa-thumbs-down', 'مش مفيد', (btn)=>{
+    const wasActive = btn.classList.contains('disliked');
+    bar.querySelectorAll('.cosmos-action-btn').forEach(x=>x.classList.remove('liked','disliked'));
+    if(!wasActive){
+      btn.classList.add('disliked');
+      submitAIFeedback(false, questionText, answerText);
+    }
+  }));
+  bar.appendChild(mkBtn('fas fa-thumbs-up', 'مفيد', (btn)=>{
+    const wasActive = btn.classList.contains('liked');
+    bar.querySelectorAll('.cosmos-action-btn').forEach(x=>x.classList.remove('liked','disliked'));
+    if(!wasActive){
+      btn.classList.add('liked');
+      submitAIFeedback(true, questionText, answerText);
+    }
+  }));
+  return bar;
+}
+
+// ── صندوق "غرفة التفكير العميق" القابل للفتح — نفس تصميم فلك ──
+function buildDeepThinkBox(reasoningText){
+  const box = document.createElement('div');
+  box.className = 'cosmos-deep-think';
+  box.innerHTML =
+    '<button type="button" class="cosmos-deep-think-toggle">'+
+    '<i class="fas fa-brain"></i><span>غرفة التفكير العميق</span><i class="fas fa-chevron-down cosmos-deep-think-chevron"></i>'+
+    '</button>'+
+    '<div class="cosmos-deep-think-body"><div class="cosmos-deep-think-inner">'+escapeHtml(reasoningText)+'</div></div>';
+  box.querySelector('.cosmos-deep-think-toggle').addEventListener('click', ()=> box.classList.toggle('open'));
+  return box;
+}
+
 function appendMessageBubble(msg){
   const wrap = document.createElement('div');
   wrap.className = 'msg-wrap ' + (msg.role==='user' ? 'user' : 'assistant');
@@ -504,11 +727,19 @@ function appendMessageBubble(msg){
     wrap.appendChild(imgEl);
   }
 
+  if(msg.role !== 'user' && msg.reasoning){
+    wrap.appendChild(buildDeepThinkBox(msg.reasoning));
+  }
+
   if(msg.text){
     const bubble = document.createElement('div');
     bubble.className = 'msg ' + (msg.role==='user' ? 'user' : 'assistant');
     bubble.textContent = msg.text;
     wrap.appendChild(bubble);
+  }
+
+  if(msg.role !== 'user' && msg.text){
+    wrap.appendChild(buildActionBar(msg.question || '', msg.text));
   }
 
   const time = document.createElement('div');
@@ -532,12 +763,31 @@ function appendThinkingIndicator(stages){
   const stageEl = wrap.querySelector('.thinking-stage');
   const list = (stages && stages.length) ? stages : ['بيفكر...'];
   let idx = 0;
+  let stageOverridden = false;
   stageEl.textContent = list[0];
   wrap._stageTimer = setInterval(()=>{
+    if (stageOverridden) return;
     idx = (idx+1) % list.length;
     if (stageEl.isConnected) stageEl.textContent = list[idx];
   }, 1400);
   wrap._clearStage = ()=> clearInterval(wrap._stageTimer);
+  // ── لما البحث يبدأ فعليًا ──
+  wrap._setSearching = ()=>{ stageOverridden = true; if(stageEl.isConnected) stageEl.textContent = 'بيبحث عبر الإنترنت 🔎...'; };
+  // ── لما غرفة التفكير العميق تبدأ تيجي حية من الموديل — بيستبدل نقط "بيفكر" بصندوق تفكير حي ──
+  wrap._startLiveReasoning = ()=>{
+    if (wrap.querySelector('.cosmos-deep-think-live')) return wrap.querySelector('.cosmos-deep-think-live-text');
+    stageOverridden = true;
+    clearInterval(wrap._stageTimer);
+    wrap.querySelector('.thinking-dots')?.remove();
+    stageEl.remove();
+    const liveBox = document.createElement('div');
+    liveBox.className = 'cosmos-deep-think-live';
+    liveBox.innerHTML = '<div class="cosmos-deep-think-live-label"><i class="fas fa-brain"></i> غرفة التفكير العميق — بيفكر دلوقتي...</div>'+
+      '<div class="cosmos-deep-think-live-text"></div>';
+    wrap.appendChild(liveBox);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return liveBox.querySelector('.cosmos-deep-think-live-text');
+  };
   return wrap;
 }
 
@@ -610,10 +860,24 @@ composer.addEventListener('submit', async (e)=>{
     } else {
       const historySnap = await convRef.child('messages').once('value');
       const history = Object.values(historySnap.val() || {}).filter(m=>m.text).map(m=>({ role:m.role, text:m.text }));
-      const reply = await getAIResponse(history);
+
+      let liveTextEl = null;
+      const onReasoningDelta = (fullReasoning)=>{
+        if (!liveTextEl) liveTextEl = thinkingEl._startLiveReasoning();
+        if (liveTextEl){
+          const shown = fullReasoning.length > 4000 ? fullReasoning.slice(-4000) : fullReasoning;
+          liveTextEl.textContent = shown;
+          liveTextEl.parentElement.scrollTop = liveTextEl.parentElement.scrollHeight;
+        }
+      };
+      const onSearchStart = ()=> thinkingEl._setSearching();
+
+      const reply = await getAIResponse(history, onReasoningDelta, onSearchStart);
       thinkingEl._clearStage(); thinkingEl.remove();
       const replyTs = Date.now();
-      await convRef.child('messages').push({ role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs });
+      const assistantMsg = { role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs, question: text };
+      if (reply.reasoning) assistantMsg.reasoning = reply.reasoning;
+      await convRef.child('messages').push(assistantMsg);
       await convRef.update({ updatedAt: replyTs });
     }
   } catch(err){
