@@ -93,7 +93,15 @@ falakDb.collection("system").doc("ai_settings").onSnapshot(
   }
 );
 
-const AI_DISPLAY_NAME = "المساعد";
+const AI_DISPLAY_NAME = "AlalaGyGyAgha V1.6";
+const MODEL_OPTIONS = [
+  { id: 'auto', label: 'الاختيار التلقائي' },
+  { id: 'groq', label: 'Groq · gpt-oss-120b' },
+  { id: 'gemini', label: 'Gemini' },
+  { id: 'openrouter', label: 'OpenRouter (مجاني)' },
+  { id: 'vercel', label: 'Vercel AI Gateway' }
+];
+let selectedModel = localStorage.getItem('mahfoozat_model') || 'auto';
 function buildSystemPrompt(){
   return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
     + (globalAiInstructions ? ('\n\nتعليمات إضافية:\n' + globalAiInstructions) : '');
@@ -218,21 +226,25 @@ async function callVercelChat(historyMsgs){
   return null;
 }
 
-/* ============ الموزّع الرئيسي: بيجرب كل خط دفاع بالترتيب ============ */
+/* ============ الموزّع الرئيسي: بيجرب كل خط دفاع بالترتيب (أو يبدأ من الموديل المختار يدويًا) ============ */
 async function getAIResponse(messageHistory){
   const messages = messageHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
 
-  let txt = await callGroqChat(messages);
-  if (txt) return { text: txt, provider: 'Groq' };
+  const providers = [
+    { id:'groq', label:'Groq', fn: callGroqChat },
+    { id:'gemini', label:'Gemini', fn: callGeminiChat },
+    { id:'openrouter', label:'OpenRouter', fn: callOpenRouterChat },
+    { id:'vercel', label:'Vercel Gateway', fn: callVercelChat }
+  ];
+  // لو المستخدم مختار موديل معيّن، نبدأ بيه، وبعدين نكمل باقي السلسلة تلقائيًا لو هو فشل
+  const ordered = selectedModel === 'auto'
+    ? providers
+    : providers.slice().sort((a,b) => (a.id===selectedModel?-1:0) - (b.id===selectedModel?-1:0));
 
-  txt = await callGeminiChat(messages);
-  if (txt) return { text: txt, provider: 'Gemini' };
-
-  txt = await callOpenRouterChat(messages);
-  if (txt) return { text: txt, provider: 'OpenRouter' };
-
-  txt = await callVercelChat(messages);
-  if (txt) return { text: txt, provider: 'Vercel Gateway' };
+  for (const p of ordered){
+    const txt = await p.fn(messages);
+    if (txt) return { text: txt, provider: p.label };
+  }
 
   if (!GroqKeyPool.count() && !GeminiKeyPool.count() && !OpenRouterKeyPool.count() && !VercelGatewayKeyPool.count()){
     return { text: "لسه بجيب مفاتيح الذكاء الاصطناعي... جرب تاني بعد ثانية.", provider: null };
@@ -323,6 +335,15 @@ const sendBtn = composer.querySelector('.send-btn');
 const attachBtn = document.getElementById('attach-btn');
 const attachInput = document.getElementById('attach-input');
 const attachPreview = document.getElementById('attach-preview');
+const modelSelect = document.getElementById('model-select');
+
+/* ============ MODEL SELECTOR ============ */
+modelSelect.innerHTML = MODEL_OPTIONS.map(o=>'<option value="'+o.id+'">'+o.label+'</option>').join('');
+modelSelect.value = selectedModel;
+modelSelect.addEventListener('change', ()=>{
+  selectedModel = modelSelect.value;
+  localStorage.setItem('mahfoozat_model', selectedModel);
+});
 
 /* ============ AUTH TABS ============ */
 tabLogin.addEventListener('click', ()=>{
@@ -471,8 +492,7 @@ function appendMessageBubble(msg){
   if(msg.role !== 'user'){
     const header = document.createElement('div');
     header.className = 'msg-header';
-    header.innerHTML = '<span class="msg-avatar">✦</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span>' +
-      (msg.provider ? '<span class="msg-provider-tag">'+msg.provider+'</span>' : '');
+    header.innerHTML = '<span class="msg-avatar">✦</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span>';
     wrap.appendChild(header);
   }
 
@@ -500,14 +520,24 @@ function appendMessageBubble(msg){
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function appendThinkingIndicator(label){
+function appendThinkingIndicator(stages){
   const wrap = document.createElement('div');
   wrap.className = 'msg-wrap assistant';
   wrap.innerHTML =
     '<div class="msg-header"><span class="msg-avatar">✦</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
-    '<div class="thinking-dots" title="'+(label||'')+'"><span></span><span></span><span></span></div>';
+    '<div class="thinking-dots"><span></span><span></span><span></span></div>'+
+    '<div class="thinking-stage"></div>';
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  const stageEl = wrap.querySelector('.thinking-stage');
+  const list = (stages && stages.length) ? stages : ['بيفكر...'];
+  let idx = 0;
+  stageEl.textContent = list[0];
+  wrap._stageTimer = setInterval(()=>{
+    idx = (idx+1) % list.length;
+    if (stageEl.isConnected) stageEl.textContent = list[idx];
+  }, 1400);
+  wrap._clearStage = ()=> clearInterval(wrap._stageTimer);
   return wrap;
 }
 
@@ -566,12 +596,14 @@ composer.addEventListener('submit', async (e)=>{
     await convRef.update({ title: (text || 'صورة').slice(0,40) });
   }
 
-  const thinkingEl = appendThinkingIndicator(image ? 'بيحلل الصورة' : 'بيفكر');
+  const thinkingEl = appendThinkingIndicator(image
+    ? ['بيفتح الصورة...', 'بيحلل التفاصيل...', 'بيصيغ الوصف...']
+    : ['بيقرا رسالتك...', 'بيفكر في الرد...', 'بيصيغ الإجابة...']);
 
   try{
     if(image){
       const replyText = await analyzeImageWithGemini(image.dataUrl, text);
-      thinkingEl.remove();
+      thinkingEl._clearStage(); thinkingEl.remove();
       const replyTs = Date.now();
       await convRef.child('messages').push({ role:'assistant', text: replyText, provider:'Gemini Vision', ts: replyTs });
       await convRef.update({ updatedAt: replyTs });
@@ -579,15 +611,17 @@ composer.addEventListener('submit', async (e)=>{
       const historySnap = await convRef.child('messages').once('value');
       const history = Object.values(historySnap.val() || {}).filter(m=>m.text).map(m=>({ role:m.role, text:m.text }));
       const reply = await getAIResponse(history);
-      thinkingEl.remove();
+      thinkingEl._clearStage(); thinkingEl.remove();
       const replyTs = Date.now();
       await convRef.child('messages').push({ role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs });
       await convRef.update({ updatedAt: replyTs });
     }
   } catch(err){
+    thinkingEl._clearStage();
     thinkingEl.querySelector('.thinking-dots')?.replaceWith(
       Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' })
     );
+    thinkingEl.querySelector('.thinking-stage')?.remove();
     console.error(err);
   } finally {
     sendBtn.disabled = false;
