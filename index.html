@@ -72,8 +72,11 @@
 
     <div id="messages" class="messages"></div>
 
+    <div id="attach-preview" class="attach-preview"></div>
     <form id="composer" class="composer">
-      <textarea id="composer-input" rows="1" placeholder="اكتب رسالتك..." required></textarea>
+      <input type="file" id="attach-input" accept="image/*" hidden>
+      <button type="button" id="attach-btn" class="icon-btn attach-btn" aria-label="إرفاق صورة">📎</button>
+      <textarea id="composer-input" rows="1" placeholder="اكتب رسالتك..."></textarea>
       <button type="submit" class="send-btn" aria-label="إرسال">↑</button>
     </form>
   </main>

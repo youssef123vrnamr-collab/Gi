@@ -33,7 +33,7 @@ body{
 }
 
 /* ============ SCREENS ============ */
-.screen{width:100%;height:100vh;}
+.screen{width:100%;height:100vh;height:100dvh;}
 
 /* ============ AUTH ============ */
 #auth-screen{
@@ -88,7 +88,7 @@ body{
 .primary-btn:disabled{opacity:.6;cursor:default;}
 
 /* ============ APP SHELL ============ */
-#app-shell{display:flex;height:100vh;}
+#app-shell{display:flex;height:100vh;height:100dvh;}
 
 #sidebar{
   width:270px;flex-shrink:0;background:var(--panel);
@@ -147,12 +147,15 @@ body{
   display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;
 }
 .msg-sender-name{font-size:12.5px;font-weight:700;color:var(--text-dim);}
+.msg-provider-tag{font-size:10.5px;color:var(--accent-dim);background:var(--panel-raised);border:1px solid var(--border);border-radius:20px;padding:1px 8px;}
 .msg-time{font-size:11px;color:var(--text-dim);margin-top:4px;padding:0 3px;}
 
 .msg{padding:11px 15px;border-radius:14px;font-size:15px;line-height:1.6;white-space:pre-wrap;}
 .msg.user{background:var(--accent);color:#1b1a17;border-bottom-left-radius:4px;}
 .msg.assistant{background:var(--panel);border:1px solid var(--border);border-bottom-right-radius:4px;}
 .msg.error-msg{color:var(--error);border-color:var(--error);}
+
+.msg-image{max-width:100%;max-height:280px;border-radius:12px;margin-bottom:6px;display:block;}
 
 .thinking-dots{
   display:flex;gap:5px;padding:14px 16px;background:var(--panel);border:1px solid var(--border);
@@ -169,10 +172,25 @@ body{
   30%{opacity:1;transform:translateY(-3px);}
 }
 
+.attach-preview{
+  display:none;align-items:center;gap:8px;padding:10px 18px 0;
+}
+.attach-preview img{width:52px;height:52px;object-fit:cover;border-radius:10px;border:1px solid var(--border);}
+.attach-preview button{
+  width:24px;height:24px;border-radius:50%;border:none;background:var(--panel-raised);
+  color:var(--text-dim);cursor:pointer;font-size:14px;line-height:1;
+}
+
 .composer{
   flex-shrink:0;display:flex;gap:10px;align-items:flex-end;
   padding:14px 18px;border-top:1px solid var(--border);
 }
+.attach-btn{
+  display:flex !important;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--border);
+  background:var(--panel);flex-shrink:0;font-size:18px;
+}
+.attach-btn:hover{background:var(--panel-raised);}
 .composer textarea{
   flex:1;resize:none;max-height:140px;padding:11px 14px;border-radius:10px;
   border:1px solid var(--border);background:var(--panel);color:var(--text);
