@@ -248,24 +248,36 @@ button:focus,button:focus-visible{outline:none;}
 .msg-files-row .attach-file-chip{max-width:220px;}
 
 /* ============ قائمة الخطوات الحقيقية أثناء الانتظار — كل خطوة بتتضاف لحظة حدوثها فعليًا ============
-   الخطوة الشغالة دلوقتي (.active) ليها نقطة نابضة بلون الـ accent، والخطوات
-   اللي خلصت (.done) بتاخد علامة ✓ خفيفة وتفضل ظاهرة كسجل لما حصل بالظبط —
-   بالظبط زي أي نظام خطوات شفاف بيوضح للمستخدم النظام شغال بيعمل إيه. */
+   كل خطوة ليها أيقونة دائرية تعبّر عن نوعها (بحث، رابط، مزوّد ذكاء اصطناعي...)
+   بدل نقطة عامة واحدة لكل الأنواع. الخطوة الشغالة دلوقتي (.active) عليها
+   حلقة نابضة بلون الـ accent، والخطوات اللي خلصت (.done) بتاخد علامة ✓
+   وتفضل ظاهرة باهتة كسجل لما حصل بالظبط. */
 .thinking-steps{
-  display:flex;flex-direction:column;gap:7px;padding:12px 16px;background:var(--panel);
+  display:flex;flex-direction:column;gap:9px;padding:13px 16px;background:var(--panel);
   border:1px solid var(--border);border-radius:14px;border-bottom-right-radius:4px;width:fit-content;max-width:100%;
 }
-.thinking-step{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-dim);}
-.thinking-step.done{opacity:.55;}
-.thinking-step.active{color:var(--text);}
-.thinking-step-dot{width:6px;height:6px;border-radius:50%;background:var(--border);flex-shrink:0;}
-.thinking-step.active .thinking-step-dot{background:var(--accent);animation:thinkPulse 1.1s infinite ease-in-out;}
-.thinking-step.done .thinking-step-dot{background:transparent;position:relative;}
-.thinking-step.done .thinking-step-dot::before{content:'✓';position:absolute;inset:-6px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--accent-dim);}
-@keyframes thinkPulse{
-  0%,60%,100%{opacity:.25;transform:translateY(0);}
-  30%{opacity:1;transform:translateY(-3px);}
+.thinking-step{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--text-dim);}
+.thinking-step.done{opacity:.6;}
+.thinking-step.active{color:var(--text);font-weight:600;}
+.thinking-step-icon{
+  width:22px;height:22px;border-radius:50%;flex-shrink:0;
+  background:var(--panel-raised);color:var(--accent-dim);font-size:10px;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .25s,color .25s;
 }
+.thinking-step.active .thinking-step-icon{
+  background:var(--accent);color:#1b1a17;
+  box-shadow:0 0 0 0 rgba(216,163,76,.5);animation:stepPulseRing 1.4s infinite;
+}
+.thinking-step.active .thinking-step-icon i{animation:stepIconSpin 1.6s linear infinite;}
+.thinking-step.active .thinking-step-icon .fa-check{animation:none;}
+.thinking-step.done .thinking-step-icon{background:transparent;color:var(--accent-dim);}
+@keyframes stepPulseRing{
+  0%{box-shadow:0 0 0 0 rgba(216,163,76,.45);}
+  70%{box-shadow:0 0 0 7px rgba(216,163,76,0);}
+  100%{box-shadow:0 0 0 0 rgba(216,163,76,0);}
+}
+@keyframes stepIconSpin{from{transform:rotate(0);}to{transform:rotate(360deg);}}
 
 /* ============ صف المرفقات: كل ملف في صندوقه الخاص، جنب بعض مش فوق بعض ============
    صف واحد ثابت الارتفاع (flex-wrap:nowrap) وممكن تتسحب يمين وشمال

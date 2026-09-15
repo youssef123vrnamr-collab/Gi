@@ -1123,6 +1123,16 @@ const userNameLabel = document.getElementById('user-name-label');
 const conversationTitle = document.getElementById('conversation-title');
 
 const messagesEl = document.getElementById('messages');
+// ── لو حد ضغط على رابط جوه رد الذكاء (.msg-link)، بنفتحه إحنا بأنفسنا عن طريق
+//    window.open بدل ما نسيب المتصفح يقرر — بعض المتصفحات/التطبيقات المغلّفة
+//    بتتجاهل target="_blank" بصمت لو الرابط كان جوه عنصر اتبنى ديناميكيًا
+//    (زي أنيميشن الكتابة التدريجي هنا)، فده بيضمن إن الضغط دايمًا هيفتح الرابط ──
+messagesEl.addEventListener('click', (e)=>{
+  const link = e.target.closest('a.msg-link');
+  if (!link) return;
+  e.preventDefault();
+  window.open(link.href, '_blank', 'noopener,noreferrer');
+});
 const composer = document.getElementById('composer');
 const composerInput = document.getElementById('composer-input');
 const sendBtn = composer.querySelector('.send-btn');
@@ -1845,6 +1855,23 @@ function appendMessageBubble(msg){
    processAttachedFile، analyzeImagesWithGemini...): الخطوة اللي قبلها بتتعلّم
    "خلصت" (✓) والخطوة الجديدة بتتحط "شغالة دلوقتي" (نقط متحركة)، بالظبط زي أي
    نظام خطوات شفاف بيوضح للمستخدم النظام بيعمل إيه لحظة بلحظة. */
+/* ============ مؤشر "بيشتغل دلوقتي" — خطوات حقيقية بتتحدّث لحظة بلحظة، مش نصوص وهمية بتلف ============
+   قبل كده كان في نصوص جاهزة بتتلف كل 1.4 ثانية من غير أي علاقة باللي بيحصل فعليًا.
+   دلوقتي كل خطوة بتتضاف هنا هي خطوة حقيقية حصلت فعلاً في المنطق (getAIResponse،
+   processAttachedFile، analyzeImagesWithGemini...): الخطوة اللي قبلها بتاخد
+   أيقونة "✓ خلصت"، والخطوة الشغالة دلوقتي بتاخد أيقونة تعبّر عن نوعها (بحث،
+   رابط، مزوّد ذكاء اصطناعي...) بحلقة نابضة حواليها، بدل نقطة بسيطة واحدة
+   لكل الأنواع — عشان الشكل يبان احترافي ومفهوم مش مجرد تحميل عام. */
+function stepIconClass(text){
+  if (/🔎|الإنترنت/.test(text)) return 'fa-magnifying-glass';
+  if (/رابط/.test(text)) return 'fa-link';
+  if (/كود/.test(text)) return 'fa-code';
+  if (/مردّش/.test(text)) return 'fa-rotate';
+  if (/عن طريق/.test(text)) return 'fa-bolt';
+  if (/صور/.test(text)) return 'fa-image';
+  if (/ملفات|ملف/.test(text)) return 'fa-file-lines';
+  return 'fa-circle-notch';
+}
 function appendThinkingIndicator(firstStepLabel){
   const wrap = document.createElement('div');
   wrap.className = 'msg-wrap assistant';
@@ -1857,10 +1884,13 @@ function appendThinkingIndicator(firstStepLabel){
 
   function renderStep(text){
     const prevActive = stepsEl.querySelector('.thinking-step.active');
-    if (prevActive) prevActive.classList.replace('active','done');
+    if (prevActive){
+      prevActive.classList.replace('active','done');
+      prevActive.querySelector('.thinking-step-icon i').className = 'fas fa-check';
+    }
     const step = document.createElement('div');
     step.className = 'thinking-step active';
-    step.innerHTML = '<span class="thinking-step-dot"></span><span class="thinking-step-text"></span>';
+    step.innerHTML = '<span class="thinking-step-icon"><i class="fas '+stepIconClass(text)+'"></i></span><span class="thinking-step-text"></span>';
     step.querySelector('.thinking-step-text').textContent = text;
     stepsEl.appendChild(step);
     if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -1871,7 +1901,10 @@ function appendThinkingIndicator(firstStepLabel){
   wrap._addStep = (text)=>{ if (stepsEl.isConnected) renderStep(text); };
   wrap._clearStage = ()=>{
     const lastActive = stepsEl.querySelector('.thinking-step.active');
-    if (lastActive) lastActive.classList.replace('active','done');
+    if (lastActive){
+      lastActive.classList.replace('active','done');
+      lastActive.querySelector('.thinking-step-icon i').className = 'fas fa-check';
+    }
   };
   return wrap;
 }
