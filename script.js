@@ -687,40 +687,58 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
 }
 
 /* ============ خط الدفاع 2: Gemini ============ */
-async function callGeminiChat(historyMsgs){
+async function callGeminiChat(historyMsgs, onReasoningDelta){
   if (!GeminiKeyPool.count()) return null;
   const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
   let contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  let fullTotal = '';
+  let fullTotal = '', fullReasoning = '';
+
+  // ── بيحاول يجيب "التفكير" (thoughts) مع الرد لو الموديل بيدعمها، ولو الموديل
+  //    رفض الإعداد ده (خطأ 400) بيعيد المحاولة فورًا بنفس المفتاح من غير
+  //    thinkingConfig، عشان الرد الأساسي مايتأثرش حتى لو التفكير مش مدعوم ──
+  async function attempt(key, withThinking){
+    const genCfg = { temperature: 0.4, maxOutputTokens: 8192 };
+    if (withThinking) genCfg.thinkingConfig = { includeThoughts: true };
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg })
+    });
+    const data = await res.json();
+    return { ok: res.ok, status: res.status, data };
+  }
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
-    let roundText = null, roundFinish = null;
+    let roundText = null, roundReasoning = '', roundFinish = null;
     for (let i=0;i<maxAttempts;i++){
       const key = GeminiKeyPool.next();
       if (!key) break;
       try{
-        const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: { temperature: 0.4, maxOutputTokens: 8192 } })
-        });
-        const data = await res.json();
+        let { ok, status, data } = await attempt(key, true);
+        if (!ok) { const retry = await attempt(key, false); ok = retry.ok; status = retry.status; data = retry.data; }
         const cand = data && data.candidates && data.candidates[0];
-        const txt = cand && cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-        GeminiKeyPool.report(key, res.status !== 429);
-        if (txt){ roundText = txt; roundFinish = cand.finishReason || null; break; }
-        if (res.status !== 429) { i = maxAttempts; break; }
+        const parts = (cand && cand.content && cand.content.parts) || [];
+        let answerText = '', thoughtText = '';
+        parts.forEach(p=>{ if (!p || !p.text) return; if (p.thought) thoughtText += p.text; else answerText += p.text; });
+        GeminiKeyPool.report(key, status !== 429);
+        if (answerText){
+          if (thoughtText && onReasoningDelta) onReasoningDelta(fullReasoning + thoughtText);
+          roundText = answerText; roundReasoning = thoughtText; roundFinish = cand.finishReason || null;
+          break;
+        }
+        if (status !== 429) { i = maxAttempts; break; }
       } catch(e){ console.warn("Gemini call failed", e); }
     }
     if (!roundText) break;
     fullTotal += roundText;
+    fullReasoning = round === 0 ? roundReasoning : (fullReasoning + '\n' + roundReasoning);
     if (roundFinish !== 'MAX_TOKENS' || round === MAX_CONTINUATIONS) break;
     contents = contents.concat([
       { role:'model', parts:[{ text: roundText }] },
       { role:'user', parts:[{ text: CONTINUE_PROMPT }] }
     ]);
   }
-  return fullTotal ? { text: fullTotal, reasoning: '' } : null;
+  return fullTotal ? { text: fullTotal, reasoning: fullReasoning } : null;
 }
 
 /* ============ خط الدفاع 3: OpenRouter (موديلات مجانية) ============ */
@@ -735,7 +753,7 @@ async function getFreeOpenRouterModels(key){
     return [];
   } catch(e){ return []; }
 }
-async function callOpenRouterChat(historyMsgs){
+async function callOpenRouterChat(historyMsgs, onReasoningDelta){
   if (!OpenRouterKeyPool.count()) return null;
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const maxAttempts = Math.min(OpenRouterKeyPool.count(), 3);
@@ -748,26 +766,55 @@ async function callOpenRouterChat(historyMsgs){
     for (const model of models){
       try{
         let messages = baseMessages.slice();
-        let fullTotal = '';
+        let fullTotal = '', fullReasoning = '';
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
           const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
-            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4 })
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' } })
           });
-          const d = await r.json();
-          const choice = d && d.choices && d.choices[0];
-          const txt = choice && choice.message && choice.message.content;
-          OpenRouterKeyPool.report(key, r.status !== 429);
-          if (!txt){ if (r.status === 429) keyFailed429 = true; break; }
+          if (!r.ok || !r.body){
+            OpenRouterKeyPool.report(key, r.status !== 429);
+            if (r.status === 429) keyFailed429 = true;
+            break;
+          }
+          const reader = r.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '', txt = '', reasoningPart = '', finishReason = null;
+          while (true){
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines){
+              if (!line.startsWith('data: ')) continue;
+              const payload = line.slice(6).trim();
+              if (payload === '[DONE]') continue;
+              try{
+                const evt = JSON.parse(payload);
+                const choice = evt.choices && evt.choices[0];
+                if (!choice) continue;
+                if (choice.finish_reason) finishReason = choice.finish_reason;
+                const delta = choice.delta;
+                if (!delta) continue;
+                if (delta.content) txt += delta.content;
+                const rPiece = delta.reasoning || delta.reasoning_content;
+                if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+              } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+            }
+          }
+          OpenRouterKeyPool.report(key, true);
+          if (!txt) break;
           fullTotal += txt;
-          if (choice.finish_reason !== 'length' || round === MAX_CONTINUATIONS) break;
+          fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
+          if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
           messages = messages.concat([
             { role:'assistant', content: txt },
             { role:'user', content: CONTINUE_PROMPT }
           ]);
         }
-        if (fullTotal) return { text: fullTotal, reasoning: '' };
+        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning };
       } catch(e){ console.warn("OpenRouter call failed", e); }
     }
     if (!keyFailed429) break;
@@ -776,7 +823,7 @@ async function callOpenRouterChat(historyMsgs){
 }
 
 /* ============ خط الدفاع 4: Vercel AI Gateway ============ */
-async function callVercelChat(historyMsgs){
+async function callVercelChat(historyMsgs, onReasoningDelta){
   if (!VercelGatewayKeyPool.count()) return null;
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const models = ['openai/gpt-4o-mini','google/gemini-2.0-flash','anthropic/claude-haiku-4-5'];
@@ -788,26 +835,55 @@ async function callVercelChat(historyMsgs){
     for (const model of models){
       try{
         let messages = baseMessages.slice();
-        let fullTotal = '';
+        let fullTotal = '', fullReasoning = '';
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
           const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: false })
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true })
           });
-          const d = await r.json();
-          const choice = d && d.choices && d.choices[0];
-          const txt = choice && choice.message && choice.message.content;
-          VercelGatewayKeyPool.report(key, r.status !== 429);
-          if (!txt){ if (r.status === 429) keyFailed429 = true; break; }
+          if (!r.ok || !r.body){
+            VercelGatewayKeyPool.report(key, r.status !== 429);
+            if (r.status === 429) keyFailed429 = true;
+            break;
+          }
+          const reader = r.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '', txt = '', reasoningPart = '', finishReason = null;
+          while (true){
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines){
+              if (!line.startsWith('data: ')) continue;
+              const payload = line.slice(6).trim();
+              if (payload === '[DONE]') continue;
+              try{
+                const evt = JSON.parse(payload);
+                const choice = evt.choices && evt.choices[0];
+                if (!choice) continue;
+                if (choice.finish_reason) finishReason = choice.finish_reason;
+                const delta = choice.delta;
+                if (!delta) continue;
+                if (delta.content) txt += delta.content;
+                const rPiece = delta.reasoning || delta.reasoning_content;
+                if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+              } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+            }
+          }
+          VercelGatewayKeyPool.report(key, true);
+          if (!txt) break;
           fullTotal += txt;
-          if (choice.finish_reason !== 'length' || round === MAX_CONTINUATIONS) break;
+          fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
+          if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
           messages = messages.concat([
             { role:'assistant', content: txt },
             { role:'user', content: CONTINUE_PROMPT }
           ]);
         }
-        if (fullTotal) return { text: fullTotal, reasoning: '' };
+        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning };
       } catch(e){ console.warn("Vercel Gateway call failed", e); }
     }
     if (!keyFailed429) break;
@@ -852,9 +928,9 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
 
   const providers = [
     { id:'groq', label:'Groq', fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock, onContentDelta) },
-    { id:'gemini', label:'Gemini', fn: callGeminiChat },
-    { id:'openrouter', label:'OpenRouter', fn: callOpenRouterChat },
-    { id:'vercel', label:'Vercel Gateway', fn: callVercelChat }
+    { id:'gemini', label:'Gemini', fn: (msgs)=>callGeminiChat(msgs, onReasoningDelta) },
+    { id:'openrouter', label:'OpenRouter', fn: (msgs)=>callOpenRouterChat(msgs, onReasoningDelta) },
+    { id:'vercel', label:'Vercel Gateway', fn: (msgs)=>callVercelChat(msgs, onReasoningDelta) }
   ];
   // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين بالترتيب
   // الافتراضي زي ما هو، وكل محاولة بتتعرض كخطوة حقيقية للمستخدم أول ما تبدأ.
