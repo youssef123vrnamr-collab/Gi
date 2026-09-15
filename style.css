@@ -260,13 +260,51 @@ body{
 }
 
 .attach-preview{
-  display:none;align-items:center;gap:8px;padding:10px 18px 0;
+  display:none;align-items:center;gap:8px;padding:10px 18px 0;flex-wrap:wrap;
 }
 .attach-preview img{width:52px;height:52px;object-fit:cover;border-radius:10px;border:1px solid var(--border);}
 .attach-preview button{
   width:24px;height:24px;border-radius:50%;border:none;background:var(--panel-raised);
   color:var(--text-dim);cursor:pointer;font-size:14px;line-height:1;
 }
+
+/* ============ بطاقة ملف مرفق (PDF/Word/Excel/صوت/ZIP/كود) في الـ composer ============ */
+.attach-file-chip{
+  display:flex;align-items:center;gap:10px;background:var(--panel);
+  border:1px solid var(--border);border-radius:14px;padding:8px 12px;max-width:100%;
+}
+.attach-file-chip .attach-file-icon{
+  width:36px;height:36px;border-radius:10px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--panel-raised);color:var(--accent);font-size:16px;
+}
+.attach-file-chip.processing .attach-file-icon{animation:attachPulse 1s infinite;}
+@keyframes attachPulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+.attach-file-chip .attach-file-meta{display:flex;flex-direction:column;min-width:0;}
+.attach-file-chip .attach-file-name{font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;}
+.attach-file-chip .attach-file-status{font-size:11px;color:var(--text-dim);}
+.attach-zip-toggle{
+  display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);
+  padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-radius:14px;cursor:pointer;user-select:none;
+}
+.attach-zip-toggle input{accent-color:var(--accent);}
+
+/* ============ روابط قابلة للضغط داخل رد الذكاء ============ */
+.msg a.msg-link{
+  color:var(--accent);text-decoration:underline;word-break:break-all;
+}
+.msg a.msg-link:active{opacity:.7;}
+
+/* ============ زرار "تحميل الكل ZIP" لما الرد فيه أكتر من ملف كود ============ */
+.cosmos-zip-all-btn{
+  display:flex;align-items:center;gap:6px;margin-top:6px;padding:8px 14px;
+  background:var(--panel);border:1px solid var(--border);border-radius:12px;
+  color:var(--text);font-size:13px;cursor:pointer;width:fit-content;
+}
+.cosmos-zip-all-btn:hover{border-color:var(--accent-dim);color:var(--accent);}
+
+/* ============ زرار القراءة الصوتية (نطق رد الذكاء) ============ */
+.cosmos-action-btn.speaking{color:var(--accent);}
 
 /* ============ COMPOSER (نفس تصميم فلك — صندوق كبسولة واحد لف حوله كل الأزرار، بألوان محفوظات) ============ */
 .composer-area{

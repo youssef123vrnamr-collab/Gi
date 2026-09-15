@@ -130,6 +130,87 @@ const MODEL_OPTIONS = [
 ];
 let selectedModel = localStorage.getItem('mahfoozat_model') || 'auto';
 
+/* ============ القراءة الصوتية (Text-to-Speech) — كانت موجودة في فلك وناقصة هنا ============
+   بتقرا رد الذكاء بصوت عربي لو متاح على الجهاز، مع زرار توقف لو المستخدم عايز يقاطع. */
+let voiceSettings = { voiceURI: null, rate: 1, pitch: 1 };
+let availableVoices = [];
+let currentUtterance = null;
+
+function loadArabicVoices(){
+  if (!('speechSynthesis' in window)) return;
+  availableVoices = window.speechSynthesis.getVoices() || [];
+  if (!voiceSettings.voiceURI){
+    const ar = availableVoices.find(v => /^ar/i.test(v.lang));
+    if (ar) voiceSettings.voiceURI = ar.voiceURI;
+  }
+}
+if ('speechSynthesis' in window){
+  loadArabicVoices();
+  window.speechSynthesis.onvoiceschanged = loadArabicVoices;
+}
+
+// ── بيشيل الماركداون/كتل الكود من النص قبل ما ينطقه، عشان الصوت يبقى مفهوم ──
+function stripForSpeech(raw){
+  return String(raw||'')
+    .replace(/```[\s\S]*?```/g, ' جزء كود، اضغط على البطاقة عشان تشوفه. ')
+    .replace(/\[\[color:[a-zA-Z]+\]\]([\s\S]*?)\[\[\/color\]\]/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/#{1,6}\s*/g, '')
+    .replace(/https?:\/\/\S+/g, ' رابط. ')
+    .replace(/[*_>~]/g, '')
+    .trim();
+}
+
+function speakText(text, btnEl){
+  if (!('speechSynthesis' in window)){
+    showToastSafe('⚠️ المتصفح ده مش بيدعم القراءة الصوتية');
+    return;
+  }
+  const wasSpeaking = window.speechSynthesis.speaking;
+  window.speechSynthesis.cancel();
+  document.querySelectorAll('.cosmos-action-btn.speaking').forEach(b=>{
+    b.classList.remove('speaking'); b.innerHTML = '<i class="fas fa-volume-high"></i>';
+  });
+  if (wasSpeaking && btnEl && btnEl.dataset.wasActive === '1'){ btnEl.dataset.wasActive = '0'; return; }
+
+  const clean = stripForSpeech(text);
+  if (!clean) return;
+  const utter = new SpeechSynthesisUtterance(clean);
+  utter.rate = voiceSettings.rate; utter.pitch = voiceSettings.pitch;
+  const voice = availableVoices.find(v => v.voiceURI === voiceSettings.voiceURI);
+  if (voice) utter.voice = voice; else utter.lang = 'ar-EG';
+  if (btnEl){
+    btnEl.classList.add('speaking'); btnEl.innerHTML = '<i class="fas fa-stop"></i>'; btnEl.dataset.wasActive = '1';
+  }
+  utter.onend = utter.onerror = ()=>{
+    if (btnEl){ btnEl.classList.remove('speaking'); btnEl.innerHTML = '<i class="fas fa-volume-high"></i>'; btnEl.dataset.wasActive = '0'; }
+    currentUtterance = null;
+  };
+  currentUtterance = utter;
+  window.speechSynthesis.speak(utter);
+}
+function showToastSafe(msg){ showToast(msg); }
+
+// ── توست بسيط لرسائل قصيرة (نجاح/تحذير) — مفيش نظام توست جاهز في محفوظات فاستخدمناه هنا ──
+let __toastTimer = null;
+function showToast(msg){
+  let el = document.getElementById('mahfoozat-toast');
+  if (!el){
+    el = document.createElement('div');
+    el.id = 'mahfoozat-toast';
+    el.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);' +
+      'background:var(--panel-raised,#222);color:var(--text,#fff);padding:10px 18px;border-radius:20px;' +
+      'font-size:13px;z-index:9999;box-shadow:0 4px 18px rgba(0,0,0,.35);border:1px solid var(--border,#333);' +
+      'max-width:85vw;text-align:center;opacity:0;transition:opacity .2s;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.opacity = '1';
+  clearTimeout(__toastTimer);
+  __toastTimer = setTimeout(()=>{ el.style.opacity = '0'; }, 2600);
+}
+
 /* ============ غرفة 1: التفكير العميق — نفس تعليمات فلك بالظبط + دفعها لتفكير احترافي حقيقي ============ */
 function buildReasoningRoomBlock(){
   return '\n\n--- غرفة التفكير العميق (Deep Thinking Room) — تفكيرك الداخلي الحقيقي، منفصل عن الرد النهائي ---\n' +
@@ -383,6 +464,34 @@ async function classifyNeedsSearch(userMsg){
   } catch(e){ console.warn('classifyNeedsSearch failed', e); return false; }
 }
 
+// ── لو المستخدم بعت رابط صريح، بندخله فعليًا عبر Tavily Extract (مش بحث، قراءة رابط بعينه) ──
+const URL_REGEX = /(https?:\/\/[^\s<>"')]+)/g;
+function extractFirstUrl(text){
+  if (!text) return null;
+  const m = String(text).match(URL_REGEX);
+  return m && m[0] ? m[0] : null;
+}
+async function performUrlExtract(url){
+  const key = getTavilyApiKey();
+  if (!key) return null;
+  try{
+    const r = await fetch('https://api.tavily.com/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key, urls: [url] })
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const item = d && d.results && d.results[0];
+    return item ? { url: item.url || url, content: item.raw_content || '' } : null;
+  } catch(e){ console.warn('performUrlExtract failed', e); return null; }
+}
+function buildUrlContentBlock(extracted){
+  if (!extracted || !extracted.content) return '';
+  return '\n\n--- محتوى الرابط اللي بعته المستخدم (' + extracted.url + ') — استخدمه في ردك ---\n' +
+    extracted.content.slice(0, 6000) + '\n---';
+}
+
 function buildSearchResultsBlock(results){
   if (!results || !results.results || !results.results.length) return '';
   const list = results.results.slice(0,5).map((r,i) => (i+1)+'. '+(r.title||'')+'\n   '+(r.url||'')+'\n   '+(r.content||'').slice(0,300)).join('\n');
@@ -599,10 +708,19 @@ async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, on
   const lastUserText = (messageHistory[messageHistory.length-1] && messageHistory[messageHistory.length-1].text) || '';
   const messages = messageHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
 
-  // ── قرار البحث: كلمة صريحة الأول، وإلا نسأل الموديل نفسه ──
   let searchResultsBlock = '';
   const tavilyReady = !!getTavilyApiKey();
-  if (tavilyReady){
+
+  // ── لو المستخدم بعت رابط صريح، ندخله ونقرا محتواه فعليًا بدل ما نعمل بحث عام ──
+  const explicitUrl = extractFirstUrl(lastUserText);
+  if (tavilyReady && explicitUrl){
+    if (onSearchStart) onSearchStart();
+    const extracted = await performUrlExtract(explicitUrl);
+    searchResultsBlock = buildUrlContentBlock(extracted);
+  }
+
+  // ── قرار البحث العام: كلمة صريحة الأول، وإلا نسأل الموديل نفسه (لو مفيش رابط اتقرا فعلاً) ──
+  if (tavilyReady && !searchResultsBlock){
     const explicitNeed = shouldWebSearch(lastUserText);
     const needsSearch = explicitNeed || await classifyNeedsSearch(lastUserText);
     if (needsSearch){
@@ -687,7 +805,155 @@ async function analyzeImageWithGemini(dataUrl, promptText){
 let currentUser = null;
 let currentConvId = null;
 let conversationsRef = null;
-let pendingImage = null; // { dataUrl (compressed) }
+let pendingImage = null;      // { dataUrl (compressed) } — للصور بس (بتتحلل بـ Gemini Vision زي ما هي)
+let pendingAttachment = null; // { name, kind, extractedText, note, zipEntries? } — لباقي أنواع الملفات
+
+/* ============ قراءة/تحليل الملفات المرفقة (PDF / Word / Excel / صوت / ZIP / نصوص) ============
+   كل دالة بترجع نص مستخرج من الملف، وده بيتحط جوه رسالة المستخدم كـ"سياق" يتقرا
+   للذكاء الاصطناعي بس (من غير ما يتكدّس جوه فقاعة الرسالة اللي بتتعرض للمستخدم). */
+const MAX_FILE_CONTEXT_CHARS = 18000;
+
+const TEXT_EXTENSIONS = /\.(txt|md|json|csv|js|ts|jsx|tsx|py|java|c|cpp|h|cs|php|rb|go|rs|sql|sh|yaml|yml|xml|html|css|log)$/i;
+
+function getFileKind(file){
+  const name = (file.name || '').toLowerCase();
+  const type = (file.type || '').toLowerCase();
+  if (type.startsWith('image/')) return 'image';
+  if (type.startsWith('audio/') || /\.(mp3|wav|m4a|ogg|webm|flac|aac)$/i.test(name)) return 'audio';
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  if (name.endsWith('.docx') || type.includes('wordprocessingml')) return 'docx';
+  if (name.endsWith('.xlsx') || name.endsWith('.xls') || type.includes('spreadsheetml')) return 'excel';
+  if (name.endsWith('.zip') || type === 'application/zip' || type === 'application/x-zip-compressed') return 'zip';
+  if (TEXT_EXTENSIONS.test(name) || type.startsWith('text/')) return 'text';
+  return 'other';
+}
+
+function readFileAsText(file){
+  return new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = reject;
+    r.readAsText(file);
+  });
+}
+function readFileAsArrayBuffer(file){
+  return new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = reject;
+    r.readAsArrayBuffer(file);
+  });
+}
+
+async function extractPdfText(file){
+  if (!window.pdfjsLib) throw new Error('مكتبة قراءة PDF مش محمّلة');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const buf = await readFileAsArrayBuffer(file);
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  let text = '';
+  const maxPages = Math.min(pdf.numPages, 40);
+  for (let p=1; p<=maxPages; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    text += content.items.map(it=>it.str).join(' ') + '\n\n';
+    if (text.length > MAX_FILE_CONTEXT_CHARS) break;
+  }
+  return text.trim();
+}
+
+async function extractDocxText(file){
+  if (!window.mammoth) throw new Error('مكتبة قراءة Word مش محمّلة');
+  const buf = await readFileAsArrayBuffer(file);
+  const result = await window.mammoth.extractRawText({ arrayBuffer: buf });
+  return (result.value || '').trim();
+}
+
+async function extractExcelText(file){
+  if (!window.XLSX) throw new Error('مكتبة قراءة Excel مش محمّلة');
+  const buf = await readFileAsArrayBuffer(file);
+  const wb = window.XLSX.read(buf, { type:'array' });
+  let out = '';
+  wb.SheetNames.forEach(sheetName=>{
+    out += '--- شيت: ' + sheetName + ' ---\n';
+    out += window.XLSX.utils.sheet_to_csv(wb.Sheets[sheetName]);
+    out += '\n\n';
+  });
+  return out.trim();
+}
+
+async function transcribeAudio(file){
+  const key = GroqKeyPool.next();
+  if (!key) throw new Error('مفيش مفتاح Groq متاح للتفريغ الصوتي دلوقتي');
+  const form = new FormData();
+  form.append('file', file);
+  form.append('model', 'whisper-large-v3');
+  form.append('language', 'ar');
+  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + key },
+    body: form
+  });
+  GroqKeyPool.report(key, res.ok);
+  if (!res.ok) throw new Error('فشل تفريغ الصوت');
+  const data = await res.json();
+  return (data.text || '').trim();
+}
+
+// ── ZIP: لو extract=true بنفك الضغط ونقرا كل ملف نصي جواه (بتخطي الملفات الثنائية/الكبيرة)،
+//    ولو extract=false بنسيبه مضغوط ونكتفي بعرض قائمة الملفات اللي جواه للذكاء ──
+async function readZipFile(file, extract){
+  if (!window.JSZip) throw new Error('مكتبة ZIP مش محمّلة');
+  const zip = await window.JSZip.loadAsync(file);
+  const entries = Object.keys(zip.files).filter(n => !zip.files[n].dir);
+  if (!extract){
+    return { note: 'ملف مضغوط (' + entries.length + ' ملف) — سايبه زي ما هو من غير فك ضغط. قائمة الملفات:\n- ' + entries.slice(0,50).join('\n- '), zipEntries: entries };
+  }
+  let out = 'محتوى الملفات داخل الأرشيف المضغوط (' + entries.length + ' ملف):\n\n';
+  let used = 0;
+  for (const name of entries){
+    if (used > MAX_FILE_CONTEXT_CHARS) { out += '\n... (باقي الملفات اتقطعت عشان المساحة)'; break; }
+    if (!TEXT_EXTENSIONS.test(name) && !/\.(pdf|docx?|xlsx?)$/i.test(name)){
+      out += '📁 ' + name + ' (ملف ثنائي، متقروش نصيًا)\n';
+      continue;
+    }
+    try{
+      const content = await zip.files[name].async('string');
+      const trimmed = content.slice(0, 3000);
+      out += '--- ' + name + ' ---\n' + trimmed + '\n\n';
+      used += trimmed.length;
+    } catch(e){ out += '⚠️ مقدرتش أقرا ' + name + '\n'; }
+  }
+  return { note: out.trim(), zipEntries: entries };
+}
+
+// ── الموزّع الرئيسي: بياخد ملف ويرجع { kind, name, extractedText, note } جاهزة للإرفاق ──
+async function processAttachedFile(file, opts){
+  const kind = getFileKind(file);
+  const result = { kind, name: file.name, extractedText: '', note: '' };
+  if (kind === 'pdf'){
+    result.extractedText = (await extractPdfText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
+    result.note = 'ملف PDF (' + Math.round(file.size/1024) + ' كيلوبايت)';
+  } else if (kind === 'docx'){
+    result.extractedText = (await extractDocxText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
+    result.note = 'ملف Word';
+  } else if (kind === 'excel'){
+    result.extractedText = (await extractExcelText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
+    result.note = 'ملف Excel';
+  } else if (kind === 'audio'){
+    result.extractedText = await transcribeAudio(file);
+    result.note = 'ملف صوتي (تم تفريغه لنص)';
+  } else if (kind === 'zip'){
+    const zr = await readZipFile(file, !!(opts && opts.extractZip));
+    result.extractedText = zr.note;
+    result.note = (opts && opts.extractZip) ? 'ملف مضغوط (اتفك وقُريت محتوياته)' : 'ملف مضغوط (سايبه زي ما هو)';
+  } else if (kind === 'text'){
+    result.extractedText = (await readFileAsText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
+    result.note = 'ملف نصي/كود';
+  } else {
+    result.note = 'ملف (' + (file.type || 'نوع غير معروف') + ') — متقروش محتواه نصيًا، بس اسمه اتبعت للذكاء';
+  }
+  return result;
+}
 
 /* ============ ELEMENTS ============ */
 const loadingScreen = document.getElementById('loading-screen');
@@ -1088,6 +1354,14 @@ function formatAnswer(raw){
     return '\u0000CB' + idx + '\u0000';
   });
 
+  // ── روابط قابلة للضغط: بتتفتح في تاب جديد بالمتصفح مباشرة ──
+  var linkBlocks = [];
+  s = s.replace(/(https?:\/\/[^\s<>"')\u0000]+?)([.,;:!?]*)(?=\s|$)/g, function(m, url, trail){
+    var idx = linkBlocks.length;
+    linkBlocks.push(url);
+    return '\u0000LK' + idx + '\u0000' + trail;
+  });
+
   s = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
   var lines = s.split('\n'), out = [];
@@ -1122,6 +1396,13 @@ function formatAnswer(raw){
     var blk = codeBlocks[bi];
     s = s.split('\u0000CB' + bi + '\u0000').join(buildCodeFileCard(blk.lang, blk.code));
   }
+
+  for (var lki=0; lki<linkBlocks.length; lki++){
+    var url = linkBlocks[lki];
+    var safeHref = url.replace(/"/g,'%22');
+    s = s.split('\u0000LK' + lki + '\u0000').join('<a class="msg-link" href="'+safeHref+'" target="_blank" rel="noopener noreferrer">'+escapeHtml(url)+'</a>');
+  }
+
   return s;
 }
 
@@ -1162,7 +1443,43 @@ function buildActionBar(questionText, answerText){
       submitAIFeedback(true, questionText, answerText);
     }
   }));
+  bar.appendChild(mkBtn('fas fa-volume-high', 'قراءة صوتية', (btn)=>{
+    speakText(answerText, btn);
+  }));
   return bar;
+}
+
+// ── لو الرد فيه ملفين كود أو أكتر، نضيف زرار "تحميل الكل ZIP" تحت آخر عنصر في الرسالة ──
+function maybeAddZipAllButton(wrap){
+  if (!window.JSZip) return;
+  const cards = wrap.querySelectorAll('.code-file-card[data-gid]');
+  if (cards.length < 2) return;
+  const gids = Array.from(cards).map(c => c.dataset.gid);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'cosmos-zip-all-btn';
+  btn.innerHTML = '<i class="fas fa-file-zipper"></i><span>تحميل كل الملفات ('+gids.length+') كـ ZIP</span>';
+  btn.addEventListener('click', async ()=>{
+    btn.disabled = true;
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>بيضغط...</span>';
+    try{
+      const zip = new JSZip();
+      gids.forEach(gid=>{
+        const code = window.__codeGroups[gid];
+        const meta = (window.__codeMeta || {})[gid];
+        if (code && meta) zip.file(meta.filename, code);
+      });
+      const blob = await zip.generateAsync({ type:'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'محفوظات-ملفات.zip';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch(e){ console.error(e); showToast('❌ مقدرتش أضغط الملفات'); }
+    finally { btn.disabled = false; btn.innerHTML = originalHtml; }
+  });
+  wrap.appendChild(btn);
 }
 
 // ── صندوق "غرفة التفكير العميق" القابل للفتح — نفس تصميم فلك ──
@@ -1257,6 +1574,7 @@ function renderFinalAssistantMessage(wrap, msg){
 
   typewriterReveal(bubble, formatAnswer(msg.text), ()=>{
     wrap.appendChild(buildActionBar(msg.question || '', msg.text));
+    maybeAddZipAllButton(wrap);
     const time = document.createElement('div');
     time.className = 'msg-time';
     time.textContent = formatTime(msg.ts);
@@ -1284,6 +1602,16 @@ function appendMessageBubble(msg){
     wrap.appendChild(imgEl);
   }
 
+  if(msg.fileName){
+    const chip = document.createElement('div');
+    chip.className = 'attach-file-chip';
+    const icon = FILE_KIND_ICON[msg.fileKind] || 'fa-file';
+    chip.innerHTML = '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
+      '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(msg.fileName)+'</div>'+
+      '<div class="attach-file-status">'+escapeHtml(msg.fileNote||'')+'</div></div>';
+    wrap.appendChild(chip);
+  }
+
   if(msg.role !== 'user' && msg.reasoning){
     wrap.appendChild(buildDeepThinkBox(msg.reasoning));
   }
@@ -1304,6 +1632,7 @@ function appendMessageBubble(msg){
 
   if(msg.role !== 'user' && msg.text){
     wrap.appendChild(buildActionBar(msg.question || '', msg.text));
+    maybeAddZipAllButton(wrap);
   }
 
   const time = document.createElement('div');
@@ -1347,27 +1676,67 @@ function appendThinkingIndicator(stages){
   return wrap;
 }
 
-/* ============ ATTACHMENT (رفع صورة) ============ */
+/* ============ ATTACHMENT (صور / PDF / Word / Excel / صوت / ZIP / أكواد) ============ */
+const FILE_KIND_ICON = { image:'fa-image', audio:'fa-microphone', pdf:'fa-file-pdf', docx:'fa-file-word', excel:'fa-file-excel', zip:'fa-file-zipper', text:'fa-file-code', other:'fa-file' };
+
+function clearAttachPreview(){
+  pendingImage = null;
+  pendingAttachment = null;
+  attachPreview.style.display = 'none';
+  attachPreview.innerHTML = '';
+}
+
 attachBtn.addEventListener('click', ()=> attachInput.click());
 attachInput.addEventListener('change', async ()=>{
   const file = attachInput.files && attachInput.files[0];
   attachInput.value = '';
   if(!file) return;
-  if(!file.type.startsWith('image/')){
-    alert('دلوقتي بس الصور مدعومة كمرفقات.');
+
+  const kind = getFileKind(file);
+
+  // ── الصور بتفضل زي ما هي بالظبط: معاينة صورة + تحليل Gemini Vision ──
+  if (kind === 'image'){
+    try{
+      const dataUrl = await compressImage(file);
+      pendingAttachment = null;
+      pendingImage = { dataUrl };
+      attachPreview.innerHTML = '<img src="'+dataUrl+'"><button type="button" id="remove-attach"><i class="fas fa-xmark"></i></button>';
+      attachPreview.style.display = 'flex';
+      document.getElementById('remove-attach').addEventListener('click', clearAttachPreview);
+    } catch(e){ console.error(e); showToast('⚠️ مقدرتش أقرا الصورة دي'); }
     return;
   }
+
+  // ── ZIP: نسأل المستخدم الأول يفك ولا يسيبه مضغوط، قبل ما نعالج الملف ──
+  let extractZip = true;
+  if (kind === 'zip'){
+    extractZip = confirm('عايز أفك الضغط وأقرا اللي جوه الملف؟\n"موافق" = هفكه وأحلل محتواه\n"إلغاء" = هسيبه مضغوط زي ما هو');
+  }
+
+  pendingImage = null;
+  const icon = FILE_KIND_ICON[kind] || 'fa-file';
+  attachPreview.innerHTML =
+    '<div class="attach-file-chip processing" id="attach-file-chip">'+
+    '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
+    '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(file.name)+'</div>'+
+    '<div class="attach-file-status">بيتقرا...</div></div></div>'+
+    '<button type="button" id="remove-attach"><i class="fas fa-xmark"></i></button>';
+  attachPreview.style.display = 'flex';
+  document.getElementById('remove-attach').addEventListener('click', clearAttachPreview);
+
   try{
-    const dataUrl = await compressImage(file);
-    pendingImage = { dataUrl };
-    attachPreview.innerHTML = '<img src="'+dataUrl+'"><button type="button" id="remove-attach"><i class="fas fa-xmark"></i></button>';
-    attachPreview.style.display = 'flex';
-    document.getElementById('remove-attach').addEventListener('click', ()=>{
-      pendingImage = null;
-      attachPreview.style.display = 'none';
-      attachPreview.innerHTML = '';
-    });
-  } catch(e){ console.error(e); alert('معلش، مقدرتش أقرا الصورة دي.'); }
+    const result = await processAttachedFile(file, { extractZip });
+    pendingAttachment = result;
+    const chip = document.getElementById('attach-file-chip');
+    if (chip){
+      chip.classList.remove('processing');
+      chip.querySelector('.attach-file-status').textContent = result.note || 'جاهز';
+    }
+  } catch(e){
+    console.error(e);
+    showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''));
+    clearAttachPreview();
+  }
 });
 
 /* ============ SEND ============ */
@@ -1380,18 +1749,23 @@ composer.addEventListener('submit', async (e)=>{
   e.preventDefault();
   const text = composerInput.value.trim();
   const image = pendingImage;
-  if((!text && !image) || !currentConvId) return;
+  const attachment = pendingAttachment;
+  if((!text && !image && !attachment) || !currentConvId) return;
   composerInput.value='';
   composerInput.style.height='auto';
-  pendingImage = null;
-  attachPreview.style.display = 'none';
-  attachPreview.innerHTML = '';
+  clearAttachPreview();
   sendBtn.disabled = true;
 
   const convRef = db.ref('users/'+currentUser.uid+'/conversations/'+currentConvId);
   const userMsg = { role:'user', ts: Date.now() };
   if(text) userMsg.text = text;
   if(image) userMsg.image = image.dataUrl;
+  if(attachment){
+    userMsg.fileName = attachment.name;
+    userMsg.fileKind = attachment.kind;
+    userMsg.fileNote = attachment.note || '';
+    if (attachment.extractedText) userMsg.fileContext = attachment.extractedText.slice(0, 8000);
+  }
   await convRef.child('messages').push(userMsg);
   await convRef.update({ updatedAt: Date.now() });
 
@@ -1399,12 +1773,13 @@ composer.addEventListener('submit', async (e)=>{
   const snap = await convRef.once('value');
   const conv = snap.val();
   if(conv && (!conv.title || conv.title==='محادثة جديدة')){
-    await convRef.update({ title: (text || 'صورة').slice(0,40) });
+    await convRef.update({ title: (text || (attachment && attachment.name) || 'صورة').slice(0,40) });
   }
 
   const thinkingEl = appendThinkingIndicator(image
     ? ['بيفتح الصورة...', 'بيحلل التفاصيل...', 'بيصيغ الوصف...']
-    : ['بيقرا رسالتك...', 'بيفكر في الرد...', 'بيصيغ الإجابة...']);
+    : (attachment ? ['بيقرا الملف المرفق...', 'بيحلل المحتوى...', 'بيصيغ الإجابة...']
+      : ['بيقرا رسالتك...', 'بيفكر في الرد...', 'بيصيغ الإجابة...']));
 
   try{
     if(image){
@@ -1419,7 +1794,18 @@ composer.addEventListener('submit', async (e)=>{
       await convRef.update({ updatedAt: replyTs });
     } else {
       const historySnap = await convRef.child('messages').once('value');
-      const history = Object.values(historySnap.val() || {}).filter(m=>m.text).map(m=>({ role:m.role, text:m.text }));
+      // ── لو فيه ملف مرفق (PDF/Word/Excel/صوت/ZIP/كود)، بنضيف محتواه المستخرج
+      //    كسياق جوه نفس رسالة المستخدم اللي بتتبعت للذكاء، من غير ما يتحط
+      //    جوه فقاعة الرسالة اللي المستخدم شايفها (اللي فضلت بس النص اللي كتبه) ──
+      const history = Object.values(historySnap.val() || {})
+        .filter(m=>m.text || m.fileContext)
+        .map(m=>{
+          let content = m.text || '';
+          if (m.fileContext){
+            content += '\n\n--- محتوى ملف مرفق (' + (m.fileName||'ملف') + (m.fileNote?' — '+m.fileNote:'') + ') ---\n' + m.fileContext + '\n---';
+          }
+          return { role: m.role, text: content };
+        });
 
       // ── التفكير وكتابة الرد بيحصلوا في الخلفية بالكامل — من غير ما نعرض أي نص خام
       //    للمستخدم وهو لسه بيتكتب. أول ما فيه كود جوه الرد، بنبدّل مؤشر "بيفكر" بـ
