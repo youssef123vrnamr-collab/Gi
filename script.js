@@ -90,6 +90,8 @@ falakDb.collection("system").doc("ai_settings").onSnapshot(
     const soloGemini = (d.geminiApiKey && String(d.geminiApiKey).trim()) || "";
     globalAiInstructions = (d.globalAiInstructions && String(d.globalAiInstructions).trim()) || "";
     tavilyApiKey = (d.tavilyApiKey && String(d.tavilyApiKey).trim()) || "";
+    globalDailyTokenBudget = (d.dailyTokenBudget && Number(d.dailyTokenBudget) > 0) ? Number(d.dailyTokenBudget) : DEFAULT_DAILY_TOKEN_BUDGET;
+    updateUsageWindowUI();
     GroqKeyPool.setKeys(Array.isArray(d.groqApiKeys) && d.groqApiKeys.length ? d.groqApiKeys : (soloGroq ? [soloGroq] : []));
     GeminiKeyPool.setKeys(Array.isArray(d.geminiApiKeys) && d.geminiApiKeys.length ? d.geminiApiKeys : (soloGemini ? [soloGemini] : []));
     OpenRouterKeyPool.setKeys(Array.isArray(d.openrouterApiKeys) ? d.openrouterApiKeys : []);
@@ -642,7 +644,8 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
   const maxAttempts = Math.min(GroqKeyPool.count(), 3);
   const sys = buildSystemPrompt(searchResultsBlock || '');
   let runningMessages = [{ role:'system', content: sys }].concat(historyMsgs);
-  let fullTotal = '', fullReasoning = '';
+  let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
+  let round0AllWere429 = true, round0TriedAny = false;
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
     let roundResult = null;
@@ -655,18 +658,19 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
           headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
-            stream: true, reasoning_effort: 'high', reasoning_format: 'parsed'
+            stream: true, reasoning_effort: 'high', reasoning_format: 'parsed', stream_options: { include_usage: true }
           }),
           signal: currentAbortController ? currentAbortController.signal : undefined
         });
         if (!res.ok || !res.body){
           GroqKeyPool.report(key, res.status !== 429);
+          if (round === 0){ round0TriedAny = true; if (res.status !== 429) round0AllWere429 = false; }
           if (res.status !== 429) { i = maxAttempts; break; }
           continue;
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = '', full = '', reasoningPart = '', finishReason = null;
+        let buffer = '', full = '', reasoningPart = '', finishReason = null, usedTokens = 0;
         while (true){
           const { done, value } = await reader.read();
           if (done) break;
@@ -679,6 +683,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
             if (payload === '[DONE]') continue;
             try{
               const evt = JSON.parse(payload);
+              if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
               const choice = evt.choices && evt.choices[0];
               if (!choice) continue;
               if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -691,20 +696,23 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
           }
         }
         GroqKeyPool.report(key, true);
-        roundResult = { text: full, reasoning: reasoningPart, finishReason };
+        if (round === 0){ round0TriedAny = true; round0AllWere429 = false; }
+        roundResult = { text: full, reasoning: reasoningPart, finishReason, usedTokens };
         break;
       } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); if (isAbortError(e)) throw e; }
     }
     if (!roundResult || !roundResult.text) break;
     fullTotal += roundResult.text;
     fullReasoning = round === 0 ? roundResult.reasoning : (fullReasoning + '\n' + roundResult.reasoning);
+    usedTokensTotal += roundResult.usedTokens || 0;
     if (roundResult.finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
     runningMessages = runningMessages.concat([
       { role:'assistant', content: roundResult.text },
       { role:'user', content: CONTINUE_PROMPT }
     ]);
   }
-  return fullTotal ? { text: fullTotal, reasoning: fullReasoning } : null;
+  if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
+  return (round0TriedAny && round0AllWere429) ? { quotaExhausted: true } : null;
 }
 
 /* ============ خط الدفاع 2: Gemini ============ */
@@ -712,7 +720,8 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
   if (!GeminiKeyPool.count()) return null;
   const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
   let contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  let fullTotal = '', fullReasoning = '';
+  let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
+  let round0AllWere429 = true, round0TriedAny = false;
 
   // ── بيحاول يجيب "التفكير" (thoughts) مع الرد لو الموديل بيدعمها، ولو الموديل
   //    رفض الإعداد ده (خطأ 400) بيعيد المحاولة فورًا بنفس المفتاح من غير
@@ -731,7 +740,7 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
   }
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
-    let roundText = null, roundReasoning = '', roundFinish = null;
+    let roundText = null, roundReasoning = '', roundFinish = null, roundUsedTokens = 0;
     for (let i=0;i<maxAttempts;i++){
       const key = GeminiKeyPool.next();
       if (!key) break;
@@ -743,9 +752,11 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
         let answerText = '', thoughtText = '';
         parts.forEach(p=>{ if (!p || !p.text) return; if (p.thought) thoughtText += p.text; else answerText += p.text; });
         GeminiKeyPool.report(key, status !== 429);
+        if (round === 0){ round0TriedAny = true; if (status !== 429) round0AllWere429 = false; }
         if (answerText){
           if (thoughtText && onReasoningDelta) onReasoningDelta(fullReasoning + thoughtText);
-          roundText = answerText; roundReasoning = thoughtText; roundFinish = cand.finishReason || null;
+          const used = data && data.usageMetadata && data.usageMetadata.totalTokenCount;
+          roundText = answerText; roundReasoning = thoughtText; roundFinish = cand.finishReason || null; roundUsedTokens = used || 0;
           break;
         }
         if (status !== 429) { i = maxAttempts; break; }
@@ -754,13 +765,15 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
     if (!roundText) break;
     fullTotal += roundText;
     fullReasoning = round === 0 ? roundReasoning : (fullReasoning + '\n' + roundReasoning);
+    usedTokensTotal += roundUsedTokens || 0;
     if (roundFinish !== 'MAX_TOKENS' || round === MAX_CONTINUATIONS) break;
     contents = contents.concat([
       { role:'model', parts:[{ text: roundText }] },
       { role:'user', parts:[{ text: CONTINUE_PROMPT }] }
     ]);
   }
-  return fullTotal ? { text: fullTotal, reasoning: fullReasoning } : null;
+  if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
+  return (round0TriedAny && round0AllWere429) ? { quotaExhausted: true } : null;
 }
 
 /* ============ خط الدفاع 3: OpenRouter (موديلات مجانية) ============ */
@@ -779,6 +792,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
   if (!OpenRouterKeyPool.count()) return null;
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const maxAttempts = Math.min(OpenRouterKeyPool.count(), 3);
+  let triedAny = false, allWere429 = true;
   for (let i=0;i<maxAttempts;i++){
     const key = OpenRouterKeyPool.next();
     if (!key) break;
@@ -788,22 +802,23 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
     for (const model of models){
       try{
         let messages = baseMessages.slice();
-        let fullTotal = '', fullReasoning = '';
+        let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
           const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
-            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' } }),
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' }, usage: { include: true } }),
             signal: currentAbortController ? currentAbortController.signal : undefined
           });
           if (!r.ok || !r.body){
             OpenRouterKeyPool.report(key, r.status !== 429);
-            if (r.status === 429) keyFailed429 = true;
+            triedAny = true;
+            if (r.status === 429) keyFailed429 = true; else allWere429 = false;
             break;
           }
           const reader = r.body.getReader();
           const decoder = new TextDecoder();
-          let buffer = '', txt = '', reasoningPart = '', finishReason = null;
+          let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
           while (true){
             const { done, value } = await reader.read();
             if (done) break;
@@ -816,6 +831,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
               if (payload === '[DONE]') continue;
               try{
                 const evt = JSON.parse(payload);
+                if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
                 const choice = evt.choices && evt.choices[0];
                 if (!choice) continue;
                 if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -828,20 +844,23 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
             }
           }
           OpenRouterKeyPool.report(key, true);
+          triedAny = true; allWere429 = false;
           if (!txt) break;
           fullTotal += txt;
           fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
+          usedTokensTotal += usedTokens;
           if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
           messages = messages.concat([
             { role:'assistant', content: txt },
             { role:'user', content: CONTINUE_PROMPT }
           ]);
         }
-        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning };
+        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
       } catch(e){ if (isAbortError(e)) throw e; console.warn("OpenRouter call failed", e); }
     }
     if (!keyFailed429) break;
   }
+  if (triedAny && allWere429) return { quotaExhausted: true };
   return null;
 }
 
@@ -851,6 +870,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const models = ['openai/gpt-4o-mini','google/gemini-2.0-flash','anthropic/claude-haiku-4-5'];
   const maxAttempts = Math.min(VercelGatewayKeyPool.count(), 3);
+  let triedAny = false, allWere429 = true;
   for (let i=0;i<maxAttempts;i++){
     const key = VercelGatewayKeyPool.next();
     if (!key) break;
@@ -858,22 +878,23 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
     for (const model of models){
       try{
         let messages = baseMessages.slice();
-        let fullTotal = '', fullReasoning = '';
+        let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
           const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true }),
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, stream_options: { include_usage: true } }),
             signal: currentAbortController ? currentAbortController.signal : undefined
           });
           if (!r.ok || !r.body){
             VercelGatewayKeyPool.report(key, r.status !== 429);
-            if (r.status === 429) keyFailed429 = true;
+            triedAny = true;
+            if (r.status === 429) keyFailed429 = true; else allWere429 = false;
             break;
           }
           const reader = r.body.getReader();
           const decoder = new TextDecoder();
-          let buffer = '', txt = '', reasoningPart = '', finishReason = null;
+          let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
           while (true){
             const { done, value } = await reader.read();
             if (done) break;
@@ -886,6 +907,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
               if (payload === '[DONE]') continue;
               try{
                 const evt = JSON.parse(payload);
+                if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
                 const choice = evt.choices && evt.choices[0];
                 if (!choice) continue;
                 if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -898,20 +920,23 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
             }
           }
           VercelGatewayKeyPool.report(key, true);
+          triedAny = true; allWere429 = false;
           if (!txt) break;
           fullTotal += txt;
           fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
+          usedTokensTotal += usedTokens;
           if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
           messages = messages.concat([
             { role:'assistant', content: txt },
             { role:'user', content: CONTINUE_PROMPT }
           ]);
         }
-        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning };
+        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
       } catch(e){ if (isAbortError(e)) throw e; console.warn("Vercel Gateway call failed", e); }
     }
     if (!keyFailed429) break;
   }
+  if (triedAny && allWere429) return { quotaExhausted: true };
   return null;
 }
 
@@ -951,22 +976,37 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   }
 
   const providers = [
-    { id:'groq', label:'Groq', fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock, onContentDelta) },
-    { id:'gemini', label:'Gemini', fn: (msgs)=>callGeminiChat(msgs, onReasoningDelta) },
-    { id:'openrouter', label:'OpenRouter', fn: (msgs)=>callOpenRouterChat(msgs, onReasoningDelta) },
-    { id:'vercel', label:'Vercel Gateway', fn: (msgs)=>callVercelChat(msgs, onReasoningDelta) }
+    { id:'groq', label:'Groq', pool: GroqKeyPool, fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock, onContentDelta) },
+    { id:'gemini', label:'Gemini', pool: GeminiKeyPool, fn: (msgs)=>callGeminiChat(msgs, onReasoningDelta) },
+    { id:'openrouter', label:'OpenRouter', pool: OpenRouterKeyPool, fn: (msgs)=>callOpenRouterChat(msgs, onReasoningDelta) },
+    { id:'vercel', label:'Vercel Gateway', pool: VercelGatewayKeyPool, fn: (msgs)=>callVercelChat(msgs, onReasoningDelta) }
   ];
   // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين بالترتيب
   // الافتراضي زي ما هو، وكل محاولة بتتعرض كخطوة حقيقية للمستخدم أول ما تبدأ.
+  // كل مزوّد هنا بديل للي قبله في نفس "خدمة الكتابة" — أي فشل بيتعدّى بصمت
+  // للمزوّد اللي بعده، من غير ما المستخدم يعرف أو يتقال له اسم مزوّد بعينه.
+  let configuredCount = 0, quotaExhaustedCount = 0;
   for (const p of providers){
+    if (p.pool.count()) configuredCount++;
     step('بيجهّز الرد...');
     const result = await p.fn(messages);
-    if (result && result.text) return { text: result.text, reasoning: result.reasoning || '', provider: p.label };
+    if (result && result.text){
+      if (result.usedTokens) addTokensUsed(result.usedTokens);
+      return { text: result.text, reasoning: result.reasoning || '', provider: p.label };
+    }
+    if (result && result.quotaExhausted) quotaExhaustedCount++;
     step('بيجرب طريقة تانية...');
   }
 
-  if (!GroqKeyPool.count() && !GeminiKeyPool.count() && !OpenRouterKeyPool.count() && !VercelGatewayKeyPool.count()){
+  if (!configuredCount){
     return { text: "لسه بجيب مفاتيح الذكاء الاصطناعي... جرب تاني بعد ثانية.", provider: null, reasoning: '' };
+  }
+  // مفيش أي بديل شغال خالص — كل المزوّدين اللي متظبطين فعليًا خلص توكنهم،
+  // فهنا بس بنقول للمستخدم صراحة إن "خدمة الكتابة" (مش اسم مزوّد بعينه) معطلة.
+  if (quotaExhaustedCount === configuredCount){
+    const err = new Error('كل مزوّدي خدمة الكتابة خلص توكنهم');
+    err.serviceDown = 'خدمة الكتابة';
+    throw err;
   }
   throw new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
 }
@@ -1009,6 +1049,7 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
     '\n\nجاوب بأسلوب احترافي منظم بنقاط عند الحاجة، من غير ماركداون خام زي ### أو --- أو جداول |.';
   const parts = [{ text: fullPrompt }].concat(imageParts);
   const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
+  let triedAny = false, allWere429 = true;
   for (let i=0;i<maxAttempts;i++){
     const key = GeminiKeyPool.next();
     if (!key) break;
@@ -1023,9 +1064,22 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
       const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
         data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
       GeminiKeyPool.report(key, res.status !== 429);
-      if (txt) return txt;
+      triedAny = true;
+      if (res.status !== 429) allWere429 = false;
+      if (txt){
+        const used = data && data.usageMetadata && data.usageMetadata.totalTokenCount;
+        if (used) addTokensUsed(used);
+        return txt;
+      }
       if (res.status !== 429) break;
     } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini vision failed", e); }
+  }
+  // خدمة تحليل الصور معندهاش بديل تاني (Gemini بس) — فلو خلص توكنها فعلاً،
+  // بنقول للمستخدم صراحة كده بدل رسالة الخطأ العامة.
+  if (triedAny && allWere429){
+    const err = new Error('توكن خدمة تحليل الصور خلص');
+    err.serviceDown = 'خدمة تحليل الصور';
+    throw err;
   }
   return "عذراً، مقدرتش أحلل الصورة دلوقتي.";
 }
@@ -1293,6 +1347,9 @@ signupForm.addEventListener('submit', async (e)=>{
       email,
       createdAt: Date.now()
     });
+    // ── بنزوّد عداد المستخدمين المشترك (meta/usersCount) بمعاملة آمنة، عشان
+    //    نصيب كل الناس من التوكن اليومي العام يتقسم تاني تلقائي على الكل ──
+    db.ref('meta/usersCount').transaction(v => (v || 0) + 1).catch(()=>{});
     currentUserGender = gender;
     // onAuthStateChanged below handles the transition into the app.
   } catch(err){
@@ -1333,16 +1390,25 @@ function describeAuthError(err){
   return map[err.code] || 'حصل خطأ، جرب تاني.';
 }
 
-/* ============ رصيد الاستخدام اليومي: ساعتين في اليوم، في أي وقت المستخدم يستخدمهم ============
-   مش مواعيد ثابتة — المستخدم بيستهلك من رصيد ساعتين طول اليوم زي ما يريحه، والعداد
-   بيمشي بس لما التبويب فاتح وشغال قدامه (مش وهو مقفول/في الخلفية). الرصيد بيتخزن في
-   Firebase تحت تاريخ اليوم عشان يفضل زي ما هو لو قفل وفتح التطبيق تاني أو غيّر جهاز،
-   وبيترجع يمتلئ لوحده مع أول رسالة في يوم جديد (يوم جديد = مفتاح تاريخ جديد). */
-const USAGE_DAILY_BUDGET_MS = 2 * 60 * 60 * 1000; // ساعتين
-let usageUsedMs = 0;
+/* ============ رصيد التوكن اليومي: توكن عام لكل التطبيق، بيتقسم بالتساوي على كل المستخدمين ============
+   مفيش "ساعتين" ولا أي حد بالوقت خالص. فيه رصيد توكن يومي عام واحد (GLOBAL_DAILY_TOKEN_BUDGET
+   كافتراضي، وقابل للتعديل من نفس مكان إعدادات فلك: system/ai_settings → dailyTokenBudget من
+   غير ما نلمس كود)، وده بيتقسم بالتساوي على عدد المستخدمين المسجّلين (meta/usersCount في
+   Realtime DB، بيتزوّد أوتوماتيك مع كل حساب جديد) — فكل مستخدم له "نصيب" ديناميكي، ولو
+   انضم حد جديد النصيب ده بيتقسم تاني على الكل تلقائي. الاستهلاك الفعلي بيتسجل بعد كل رد
+   حقيقي من الذكاء الاصطناعي بعدد التوكينز الحقيقي اللي الرد ده استهلكه (مش عداد وقت)،
+   وبيتخزن تحت تاريخ اليوم زي القديم بالظبط عشان يرجع صفر لوحده كل يوم جديد. */
+const DEFAULT_DAILY_TOKEN_BUDGET = 500000; // رقم احتياطي لو معندناش قيمة متظبطة من فلك
+let globalDailyTokenBudget = DEFAULT_DAILY_TOKEN_BUDGET;
+let totalUsersCount = 1;
+let usageUsedTokens = 0;
 let usageDayKey = null;
 let usageLoaded = false;
-let usageSyncCounter = 0;
+
+db.ref('meta/usersCount').on('value', snap=>{
+  totalUsersCount = Math.max(1, snap.val() || 1);
+  updateUsageWindowUI();
+});
 
 function usageTodayKey(d){
   d = d || new Date();
@@ -1353,30 +1419,26 @@ function loadUsageForToday(){
   const key = usageTodayKey();
   usageDayKey = key;
   usageLoaded = false;
-  db.ref('users/'+currentUser.uid+'/usage/'+key+'/usedMs').once('value')
-    .then(snap=>{ usageUsedMs = snap.val() || 0; usageLoaded = true; updateUsageWindowUI(); })
-    .catch(()=>{ usageUsedMs = 0; usageLoaded = true; updateUsageWindowUI(); });
+  db.ref('users/'+currentUser.uid+'/usage/'+key+'/tokensUsed').once('value')
+    .then(snap=>{ usageUsedTokens = snap.val() || 0; usageLoaded = true; updateUsageWindowUI(); })
+    .catch(()=>{ usageUsedTokens = 0; usageLoaded = true; updateUsageWindowUI(); });
 }
 function syncUsageToFirebase(){
   if (!currentUser || !usageDayKey) return;
-  db.ref('users/'+currentUser.uid+'/usage/'+usageDayKey+'/usedMs').set(usageUsedMs).catch(()=>{});
+  db.ref('users/'+currentUser.uid+'/usage/'+usageDayKey+'/tokensUsed').set(usageUsedTokens).catch(()=>{});
 }
-function formatDurationHMS(ms){
-  const totalSec = Math.max(0, Math.floor(ms/1000));
-  const h = Math.floor(totalSec/3600), m = Math.floor((totalSec%3600)/60), s = totalSec%60;
-  return h>0 ? (h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')) : (m+':'+String(s).padStart(2,'0'));
-}
-function usageRemainingMs(){ return Math.max(0, USAGE_DAILY_BUDGET_MS - usageUsedMs); }
-function usageIsLocked(){ return !!currentUser && usageLoaded && usageRemainingMs() <= 0; }
-function usageTick(){
-  if (!currentUser || !usageLoaded) return;
+function formatTokenCount(n){ return Math.max(0, Math.round(n||0)).toLocaleString('en-US'); }
+function usageShareTokens(){ return Math.max(1, Math.floor(globalDailyTokenBudget / totalUsersCount)); }
+function usageRemainingTokens(){ return Math.max(0, usageShareTokens() - usageUsedTokens); }
+function usageIsLocked(){ return !!currentUser && usageLoaded && usageRemainingTokens() <= 0; }
+// بتتنادى بعد كل رد حقيقي من الذكاء الاصطناعي بعدد التوكينز اللي الرد ده استهلكها فعليًا
+function addTokensUsed(n){
+  if (!currentUser || !n || n <= 0) return;
   const key = usageTodayKey();
-  if (key !== usageDayKey){ usageDayKey = key; usageUsedMs = 0; syncUsageToFirebase(); } // يوم جديد = رصيد جديد
-  if (document.visibilityState === 'visible'){
-    usageUsedMs += 1000;
-    usageSyncCounter++;
-    if (usageSyncCounter >= 10){ usageSyncCounter = 0; syncUsageToFirebase(); } // نزامن كل ~10 ثواني بس، مش كل ثانية
-  }
+  if (key !== usageDayKey){ usageDayKey = key; usageUsedTokens = 0; } // يوم جديد = رصيد جديد
+  usageUsedTokens += n;
+  syncUsageToFirebase();
+  updateUsageWindowUI();
 }
 function updateUsageWindowUI(){
   const bar = document.getElementById('usage-window-bar');
@@ -1388,28 +1450,28 @@ function updateUsageWindowUI(){
   if (!currentUser || !usageLoaded){
     bar.classList.remove('locked');
     fill.style.width = '100%';
-    label.textContent = formatDurationHMS(USAGE_DAILY_BUDGET_MS);
+    label.textContent = formatTokenCount(usageShareTokens());
     lockBanner.style.display = 'none';
     return;
   }
-  const remainingMs = usageRemainingMs();
-  const pct = Math.max(0, Math.min(100, (remainingMs/USAGE_DAILY_BUDGET_MS)*100));
+  const share = usageShareTokens();
+  const remaining = usageRemainingTokens();
+  const pct = Math.max(0, Math.min(100, (remaining/share)*100));
   fill.style.width = pct + '%';
-  label.textContent = formatDurationHMS(remainingMs);
-  if (remainingMs <= 0){
+  label.textContent = formatTokenCount(remaining);
+  if (remaining <= 0){
     bar.classList.add('locked');
-    bar.title = 'خلصت الساعتين بتوع النهارده';
-    lockText.textContent = 'خلصت الساعتين بتوع النهارده — الرصيد هيرجع تاني بكرة.';
+    bar.title = 'التوكن بتاعك خلص النهارده';
+    lockText.textContent = 'التوكن بتاعك خلص النهارده — هيرجع تاني بكرة.';
     lockBanner.style.display = 'flex';
     composerInput.disabled = true; sendBtn.disabled = true; attachBtn.disabled = true;
   } else {
     bar.classList.remove('locked');
-    bar.title = 'متبقي ' + formatDurationHMS(remainingMs) + ' من رصيد النهاردة (ساعتين)';
+    bar.title = 'متبقي ' + formatTokenCount(remaining) + ' توكن من نصيبك النهارده (' + formatTokenCount(share) + ')';
     lockBanner.style.display = 'none';
     composerInput.disabled = false; sendBtn.disabled = false; attachBtn.disabled = false;
   }
 }
-setInterval(()=>{ usageTick(); updateUsageWindowUI(); }, 1000);
 window.addEventListener('beforeunload', syncUsageToFirebase);
 document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='hidden') syncUsageToFirebase(); });
 
@@ -1433,7 +1495,7 @@ auth.onAuthStateChanged(user=>{
   } else {
     currentUser = null;
     currentUserGender = null;
-    usageUsedMs = 0; usageDayKey = null; usageLoaded = false;
+    usageUsedTokens = 0; usageDayKey = null; usageLoaded = false;
     currentConvId = null;
     if(conversationsRef) conversationsRef.off();
     authScreen.style.display='flex';
@@ -2346,6 +2408,12 @@ composer.addEventListener('submit', async (e)=>{
     if (isAbortError(err)){
       thinkingEl.querySelector('.thinking-steps')?.replaceWith(
         Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'تم إيقاف الرد.' })
+      );
+    } else if (err && err.serviceDown){
+      // مفيش أي بديل شغال لـ err.serviceDown دي تحديدًا، فبنقول للمستخدم
+      // صراحة إن الخدمة دي معطلة عشان التوكن خلص — من غير ما نسمّي مزوّد بعينه.
+      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'❌ ' + err.serviceDown + ' معطلة عشان التوكن خلص.' })
       );
     } else {
       thinkingEl.querySelector('.thinking-steps')?.replaceWith(
