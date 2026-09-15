@@ -255,6 +255,7 @@ button:focus,button:focus-visible{outline:none;}
 .thinking-steps{
   display:flex;flex-direction:column;gap:9px;padding:13px 16px;background:var(--panel);
   border:1px solid var(--border);border-radius:14px;border-bottom-right-radius:4px;width:fit-content;max-width:100%;
+  max-height:230px;overflow-y:auto;
 }
 .thinking-step{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--text-dim);}
 .thinking-step.done{opacity:.6;}
@@ -388,6 +389,7 @@ button:focus,button:focus-visible{outline:none;}
 .cosmos-deep-think-live{
   margin:.3rem 0 .5rem;background:var(--panel-raised);
   border:1px solid var(--accent-dim);border-radius:12px;padding:.7rem .85rem;
+  max-height:230px;overflow:hidden;
 }
 .cosmos-deep-think-live-label{
   display:flex;align-items:center;gap:.4rem;color:var(--accent);

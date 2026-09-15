@@ -1982,6 +1982,7 @@ function appendThinkingIndicator(firstStepLabel){
     step.innerHTML = '<span class="thinking-step-icon"><i class="fas '+stepIconClass(text)+'"></i></span><span class="thinking-step-text"></span>';
     step.querySelector('.thinking-step-text').textContent = text;
     stepsEl.appendChild(step);
+    stepsEl.scrollTop = stepsEl.scrollHeight;
     if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
