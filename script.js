@@ -859,10 +859,10 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين بالترتيب
   // الافتراضي زي ما هو، وكل محاولة بتتعرض كخطوة حقيقية للمستخدم أول ما تبدأ.
   for (const p of providers){
-    step('بيجهّز الرد عن طريق ' + p.label + '...');
+    step('بيجهّز الرد...');
     const result = await p.fn(messages);
     if (result && result.text) return { text: result.text, reasoning: result.reasoning || '', provider: p.label };
-    step(p.label + ' مردّش، بيجرب مزوّد تاني...');
+    step('بيجرب طريقة تانية...');
   }
 
   if (!GroqKeyPool.count() && !GeminiKeyPool.count() && !OpenRouterKeyPool.count() && !VercelGatewayKeyPool.count()){
@@ -1866,8 +1866,8 @@ function stepIconClass(text){
   if (/🔎|الإنترنت/.test(text)) return 'fa-magnifying-glass';
   if (/رابط/.test(text)) return 'fa-link';
   if (/كود/.test(text)) return 'fa-code';
-  if (/مردّش/.test(text)) return 'fa-rotate';
-  if (/عن طريق/.test(text)) return 'fa-bolt';
+  if (/طريقة تانية/.test(text)) return 'fa-rotate';
+  if (/بيجهّز الرد/.test(text)) return 'fa-bolt';
   if (/صور/.test(text)) return 'fa-image';
   if (/ملفات|ملف/.test(text)) return 'fa-file-lines';
   return 'fa-circle-notch';
@@ -1905,6 +1905,22 @@ function appendThinkingIndicator(firstStepLabel){
       lastActive.classList.replace('active','done');
       lastActive.querySelector('.thinking-step-icon i').className = 'fas fa-check';
     }
+  };
+  // ── غرفة التفكير العميق اللايف: بتتبني أول ما أول جزء من التفكير الفعلي
+  //    يوصل، وبتفضل بتتحدّث بالنص كامل أول بأول لحد ما الرد يخلص ──
+  wrap._setLiveReasoning = (fullReasoningText)=>{
+    if (!fullReasoningText) return;
+    let liveBox = wrap.querySelector('.cosmos-deep-think-live');
+    if (!liveBox){
+      liveBox = document.createElement('div');
+      liveBox.className = 'cosmos-deep-think-live';
+      liveBox.innerHTML =
+        '<div class="cosmos-deep-think-live-label"><i class="fas fa-brain"></i><span>بيفكر دلوقتي...</span></div>'+
+        '<div class="cosmos-deep-think-live-text"></div>';
+      wrap.appendChild(liveBox);
+    }
+    liveBox.querySelector('.cosmos-deep-think-live-text').textContent = fullReasoningText;
+    if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
   };
   return wrap;
 }
@@ -2085,13 +2101,11 @@ composer.addEventListener('submit', async (e)=>{
           return { role: m.role, text: content };
         });
 
-      // ── التفكير وكتابة الرد بيحصلوا في الخلفية بالكامل — من غير ما نعرض أي نص خام
-      //    للمستخدم وهو لسه بيتكتب. كل خطوة حقيقية بتحصل جوه getAIResponse (قراءة
-      //    رابط، قرار البحث، البحث نفسه، محاولة كل مزوّد) بتتضاف فورًا لمؤشر
-      //    الخطوات عن طريق onStep، وأول ما فيه كود جوه الرد بنضيف خطوة "بيجهّز
-      //    الكود..." كمان، وبعدين الرد الكامل النظيف بيظهر مرة واحدة مع صندوق
-      //    "غرفة التفكير العميق" القابل للفتح جواه ──
-      const onReasoningDelta = ()=>{};
+      // ── التفكير وكتابة الرد بيحصلوا في الخلفية، لكن غرفة التفكير العميق
+      //    بترسم لايف أول بأول من onReasoningDelta وهي بتتحدّث، عشان المستخدم
+      //    يشوف الموديل بيفكر فعليًا. الرد النهائي (content) لسه بيتعرض دفعة
+      //    واحدة زي ما هو، النص الخام اللي بيتعرض لايف هو التفكير بس ──
+      const onReasoningDelta = (fullReasoningText)=> thinkingEl._setLiveReasoning(fullReasoningText);
       const onStep = (text)=> thinkingEl._addStep(text);
       let codeStageShown = false;
       const onContentDelta = (fullText)=>{
