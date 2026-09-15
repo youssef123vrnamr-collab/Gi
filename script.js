@@ -143,6 +143,108 @@ function buildColorPolicyBlock(){
 function buildNoRawLatexBlock(){
   return '\n\nقاعدة إلزامية: ممنوع تستخدم صيغة LaTeX الخام (زي \\frac{}{} أو \\sqrt{} أو \\gamma أو \\times) في أي معادلة رياضية، لأن واجهة المحادثة دي مفيهاش عارض LaTeX وهتظهر للمستخدم كرموز خام غريبة بدل معادلة واضحة. اكتب المعادلات بصيغة نصية عادية ومقروءة بس (زي x^2 أو (a+b)/c أو √x أو a/b أو γ = 1/√(1-v²/c²)).';
 }
+/* ============ نظام كتابة الأكواد الذكي — بطاقة ملف لكل كتلة كود ============
+   هيدر فيه أيقونة/اسم ملف/لغة/عدد أسطر + تلوين كود احترافي (highlight.js) + نسخ/تنزيل + تقييم 👍👎
+   يغذي "غرفة كود دائمة" منفصلة عن غرفة النصوص، بنفس فكرة فلك بالظبط. */
+window.__codeGroups = window.__codeGroups || {};
+let _codeGidCounter = 0;
+
+const CODE_EXT_MAP   = { html:'html', htm:'html', xml:'xml', css:'css', scss:'scss', js:'js', javascript:'js', jsx:'jsx', ts:'ts', typescript:'ts', json:'json', py:'py', python:'py', sql:'sql', sh:'sh', bash:'sh', shell:'sh', c:'c', cpp:'cpp', java:'java', php:'php', rb:'rb', ruby:'rb', go:'go', yaml:'yaml', yml:'yaml', md:'md' };
+const CODE_LABEL_MAP = { html:'HTML', htm:'HTML', css:'CSS', scss:'SCSS', js:'JS', javascript:'JS', jsx:'JSX', ts:'TS', typescript:'TS', json:'JSON', py:'PY', python:'PY', sql:'SQL', sh:'SH', bash:'SH', shell:'SH', c:'C', cpp:'C++', java:'JAVA', php:'PHP', rb:'RUBY', ruby:'RUBY', go:'GO', yaml:'YAML', yml:'YAML', md:'MD' };
+const CODE_NAME_MAP  = { html:'index', css:'style', js:'script', jsx:'app', ts:'app', json:'data', py:'main', sql:'query', sh:'script', c:'main', cpp:'main', java:'Main', php:'index', rb:'main', go:'main', md:'readme' };
+const CODE_HLJS_MAP  = { html:'xml', htm:'xml', css:'css', scss:'scss', js:'javascript', javascript:'javascript', jsx:'javascript', ts:'typescript', typescript:'typescript', json:'json', py:'python', python:'python', sql:'sql', sh:'bash', bash:'bash', shell:'bash', c:'c', cpp:'cpp', java:'java', php:'php', rb:'ruby', ruby:'ruby', go:'go', yaml:'yaml', yml:'yaml', md:'markdown' };
+
+function buildCodeFileCard(lang, code){
+  const gid = 'cg' + (++_codeGidCounter) + '_' + Date.now();
+  window.__codeGroups[gid] = code;
+  const l = (lang||'').toLowerCase().trim();
+  const ext = CODE_EXT_MAP[l] || 'txt';
+  const label = CODE_LABEL_MAP[l] || (l ? l.toUpperCase() : 'TXT');
+  const filename = (CODE_NAME_MAP[l] || 'file') + '.' + ext;
+  const hljsLang = CODE_HLJS_MAP[l] || l || 'plaintext';
+  const lineCount = (code.match(/\n/g) || []).length + 1;
+  return '<div class="code-file-card" data-gid="'+gid+'">'
+    + '<div class="code-file-header" onclick="toggleCodeFileBody(\''+gid+'\')">'
+    + '<div class="code-file-icon code-lang-'+ext+'"><i class="fas fa-code"></i></div>'
+    + '<div class="code-file-meta"><div class="code-file-name" dir="ltr">'+filename+'</div>'
+    + '<div class="code-file-sub">'+label+' · '+lineCount+' سطر</div></div>'
+    + '<button type="button" class="code-file-btn" title="نسخ" onclick="event.stopPropagation();copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
+    + '<button type="button" class="code-file-btn" title="تنزيل" onclick="event.stopPropagation();downloadCodeFile(\''+gid+'\',\''+filename+'\')"><i class="fas fa-download"></i></button>'
+    + '<i class="fas fa-chevron-down code-file-chevron"></i>'
+    + '</div>'
+    + '<div class="code-file-body"><pre><code class="hljs language-'+hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
+    + '<div class="code-rate-bar"><span class="code-rate-label">الكود ده عجبك؟</span>'
+    + '<button type="button" class="code-rate-btn code-rate-good" onclick="rateCodeGood(\''+gid+'\',this)"><i class="fas fa-thumbs-up"></i></button>'
+    + '<button type="button" class="code-rate-btn code-rate-bad" onclick="rateCodeBad(\''+gid+'\',this)"><i class="fas fa-thumbs-down"></i></button>'
+    + '</div></div>';
+}
+
+window.toggleCodeFileBody = function(gid){
+  const card = document.querySelector('.code-file-card[data-gid="'+gid+'"]');
+  if (card) card.classList.toggle('open');
+};
+window.copyCodeFile = function(gid, btnEl){
+  const code = window.__codeGroups[gid];
+  if (!code || !navigator.clipboard) return;
+  navigator.clipboard.writeText(code).then(()=>{
+    const icon = btnEl.querySelector('i');
+    icon.className = 'fas fa-check';
+    setTimeout(()=>{ icon.className = 'fas fa-copy'; }, 1200);
+  });
+};
+window.downloadCodeFile = function(gid, filename){
+  const code = window.__codeGroups[gid];
+  if (!code) return;
+  const blob = new Blob([code], { type:'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+};
+
+// ── تقييم الكود نفسه (منفصل عن تقييم الرد بالكامل) — بيغذي "دروس كود" دائمة ──
+let goodCodeList = [], badCodeList = [];
+ownDb.collection("ai_code_feedback").where("liked","==",true).orderBy("createdAt","desc").limit(6)
+  .onSnapshot(snap => { goodCodeList = snap.docs.map(d=>d.data()); }, err => console.warn("good code feed err", err));
+ownDb.collection("ai_code_feedback").where("liked","==",false).orderBy("createdAt","desc").limit(6)
+  .onSnapshot(snap => { badCodeList = snap.docs.map(d=>d.data()); }, err => console.warn("bad code feed err", err));
+
+window.rateCodeGood = function(gid, btnEl){
+  const code = window.__codeGroups[gid];
+  if (!code) return;
+  const bar = btnEl.closest('.code-rate-bar');
+  bar.querySelectorAll('.code-rate-btn').forEach(b=>b.classList.remove('active'));
+  btnEl.classList.add('active');
+  ownDb.collection("ai_code_feedback").add({
+    userId: (currentUser && currentUser.uid) || null,
+    code: code.slice(0,1500), liked: true,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(e=>console.error(e));
+};
+window.rateCodeBad = function(gid, btnEl){
+  const code = window.__codeGroups[gid];
+  if (!code) return;
+  const bar = btnEl.closest('.code-rate-bar');
+  bar.querySelectorAll('.code-rate-btn').forEach(b=>b.classList.remove('active'));
+  btnEl.classList.add('active');
+  ownDb.collection("ai_code_feedback").add({
+    userId: (currentUser && currentUser.uid) || null,
+    code: code.slice(0,1500), liked: false,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(e=>console.error(e));
+};
+function buildGoodCodeBlock(){
+  if (!goodCodeList.length) return '';
+  const list = goodCodeList.map(g => '```\n'+(g.code||'').slice(0,300)+'\n```').join('\n');
+  return '\n\n--- أمثلة كود سابقة عجبت المستخدمين وقيّموها 👍 (حافظ على نفس الأسلوب والجودة) ---\n' + list + '\n---';
+}
+function buildBadCodeBlock(){
+  if (!badCodeList.length) return '';
+  const list = badCodeList.map(b => '```\n'+(b.code||'').slice(0,300)+'\n```').join('\n');
+  return '\n\n--- أمثلة كود سابقة اتقيّمت سلبيًا 👎 (تجنب نفس الأسلوب ده) ---\n' + list + '\n---';
+}
+
 function buildLessonsBlock(){
   if (!lessonsList.length) return '';
   const list = lessonsList.map(l => '- سؤال: ' + (l.question||'') + '\n  رد اتقيّم سلبيًا: ' + (l.answer||'').slice(0,300)).join('\n');
@@ -163,6 +265,8 @@ function buildSystemPrompt(searchResultsBlock){
     + buildNoRawLatexBlock()
     + buildLessonsBlock()
     + buildGoodAnswersBlock()
+    + buildGoodCodeBlock()
+    + buildBadCodeBlock()
     + (searchResultsBlock || '')
     + (globalAiInstructions ? ('\n\nتعليمات إضافية:\n' + globalAiInstructions) : '');
 }
@@ -717,8 +821,7 @@ function formatAnswer(raw){
 
   for (var bi=0; bi<codeBlocks.length; bi++){
     var blk = codeBlocks[bi];
-    var codeHtml = '<pre style="background:var(--panel-raised);border:1px solid var(--border);border-radius:10px;padding:.7rem .85rem;overflow-x:auto;direction:ltr;text-align:left;margin:.4rem 0"><code>'+escapeHtml(blk.code)+'</code></pre>';
-    s = s.split('\u0000CB' + bi + '\u0000').join(codeHtml);
+    s = s.split('\u0000CB' + bi + '\u0000').join(buildCodeFileCard(blk.lang, blk.code));
   }
   return s;
 }
@@ -806,6 +909,9 @@ function appendMessageBubble(msg){
       bubble.textContent = msg.text;
     } else {
       bubble.innerHTML = formatAnswer(msg.text);
+      if (window.hljs){
+        bubble.querySelectorAll('pre code').forEach(el=>{ try{ window.hljs.highlightElement(el); }catch(e){} });
+      }
     }
     wrap.appendChild(bubble);
   }
@@ -877,6 +983,21 @@ function appendThinkingIndicator(stages){
     wrap.appendChild(liveMsg);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return liveMsg.querySelector('.cosmos-live-stream-text');
+  };
+  // ── لما الموديل يبدأ يكتب كود (```): العملية دي المفروض تحصل في الخلفية، مش قدام
+  //    المستخدم — بنوقف عرض النص الخام (اللي هيبان فيه ``` وعلامات غريبة وهو لسه بيتكتب)
+  //    ونستبدله بمؤشر "بيجهّز الكود..." بسيط، لحد ما بطاقة الملف الجاهزة والمنسّقة تظهر ──
+  wrap._setBuildingCode = ()=>{
+    if (wrap._buildingCodeShown) return;
+    wrap._buildingCodeShown = true;
+    const liveMsg = wrap.querySelector('.cosmos-live-stream');
+    if (liveMsg) liveMsg.querySelector('.cosmos-stream-cursor')?.remove();
+    if (wrap.querySelector('.code-building-row')) return;
+    const row = document.createElement('div');
+    row.className = 'code-building-row';
+    row.innerHTML = '<i class="fas fa-code"></i><span>بيجهّز الكود...</span>';
+    wrap.appendChild(row);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
   };
   return wrap;
 }
@@ -963,6 +1084,14 @@ composer.addEventListener('submit', async (e)=>{
       const onSearchStart = ()=> thinkingEl._setSearching();
       let liveContentEl = null;
       const onContentDelta = (fullText)=>{
+        const fenceIdx = fullText.indexOf('```');
+        if (fenceIdx > -1){
+          // ── كتابة الكود نفسها تحصل في الخلفية — نعرض بس أي نص شرح جه قبل الكود، ثم مؤشر تجهيز ──
+          if (!liveContentEl) liveContentEl = thinkingEl._startLiveContent();
+          if (liveContentEl) liveContentEl.textContent = fullText.slice(0, fenceIdx).trim();
+          thinkingEl._setBuildingCode();
+          return;
+        }
         if (!liveContentEl) liveContentEl = thinkingEl._startLiveContent();
         if (liveContentEl){
           const shown = fullText.length > 6000 ? fullText.slice(-6000) : fullText;
