@@ -3,7 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>محفوظات</title>
+<title>Digital Mind</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1b1a17">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Digital Mind">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800&family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -18,13 +26,17 @@
 
 <!-- ============ LOADING ============ -->
 <div id="loading-screen">
-  <div class="loader-mark">محفوظات</div>
+  <div class="loader-inner">
+    <div class="loader-infinity">∞</div>
+    <div class="loader-mark">Digital Mind</div>
+    <div class="loader-model">AlalaGyGyAgha V1.6</div>
+  </div>
 </div>
 
 <!-- ============ AUTH SCREEN ============ -->
 <div id="auth-screen" class="screen" style="display:none;">
   <div class="auth-card">
-    <h1 class="brand">محفوظات</h1>
+    <h1 class="brand">Digital Mind<span class="brand-model">AlalaGyGyAgha V1.6</span></h1>
     <p class="brand-sub">مساحتك الخاصة، بتفتكر كل حاجة تقولها.</p>
 
     <div class="tab-switch">
@@ -44,6 +56,12 @@
     <form id="signup-form" class="auth-form" style="display:none;">
       <label class="field-label" for="signup-name">الاسم</label>
       <input id="signup-name" class="field-input" type="text" required autocomplete="name" placeholder="اسمك">
+      <label class="field-label">النوع</label>
+      <div class="gender-switch">
+        <button type="button" id="gender-male-btn" class="gender-btn active" data-gender="male">ذكر</button>
+        <button type="button" id="gender-female-btn" class="gender-btn" data-gender="female">أنثى</button>
+      </div>
+      <input type="hidden" id="signup-gender" value="male">
       <label class="field-label" for="signup-email">البريد الإلكتروني</label>
       <input id="signup-email" class="field-input" type="email" required autocomplete="email" placeholder="name@example.com">
       <label class="field-label" for="signup-password">كلمة المرور</label>
@@ -58,7 +76,7 @@
 <div id="app-shell" class="screen" style="display:none;">
   <aside id="sidebar">
     <div class="sidebar-top">
-      <span class="brand-mini">محفوظات</span>
+      <span class="brand-mini">Digital Mind</span>
       <button id="new-chat-btn" class="ghost-btn" type="button"><i class="fas fa-plus"></i><span>محادثة جديدة</span></button>
     </div>
     <nav id="conversation-list" class="conversation-list"></nav>

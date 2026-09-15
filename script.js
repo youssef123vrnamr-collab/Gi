@@ -399,8 +399,20 @@ function buildGoodAnswersBlock(){
    6) نتائج البحث (لو موجودة، بتتحط في الآخر عشان تبقى أقرب حاجة للسؤال)
    7) تعليمات إضافية من لوحة التحكم (globalAiInstructions). ترتيبهم مقصود:
    القواعد الثابتة الأول، والسياق اللي بيتغيّر كل رسالة (بحث/تعليمات إدارية) آخر حاجة. */
+/* ============ اسم المستخدم ونوعه: عشان الذكاء الاصطناعي ينادي المستخدم باسمه
+   ويخاطبه بصيغة الذكر أو الأنثى الصح في كل كلامه (الأفعال والضمائر) ============ */
+function buildUserIdentityBlock(){
+  const name = (currentUser && (currentUser.displayName || currentUser.email)) || '';
+  if (!name) return '';
+  const genderLine = currentUserGender === 'female'
+    ? 'المستخدم ده أنثى — خاطبها بصيغة المؤنث في كل كلامك (الأفعال والضمائر، زي "عايزة، شايفة، حابة")، من غير ما تبالغ في تكرار اسمها في كل رد.'
+    : 'المستخدم ده ذكر — خاطبه بصيغة المذكر في كل كلامك (الأفعال والضمائر، زي "عايز، شايف، حابب")، من غير ما تبالغ في تكرار اسمه في كل رد.';
+  return '\n\nاسم المستخدم اللي بتكلمه هو "' + name + '". نادي عليه باسمه بشكل طبيعي بين حين وآخر مش في كل رسالة. ' + genderLine;
+}
+
 function buildSystemPrompt(searchResultsBlock){
   return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
+    + buildUserIdentityBlock()
     + buildLiveContextBlock()
     + buildReasoningRoomBlock()
     + buildColorPolicyBlock()
@@ -1020,6 +1032,7 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
 
 /* ============ STATE ============ */
 let currentUser = null;
+let currentUserGender = null; // 'male' | 'female' | null — بيتحدد من بروفايل المستخدم في Firebase
 let currentConvId = null;
 let conversationsRef = null;
 // ── ممكن تتراكم أكتر من مرفق مع بعض (صور و/أو ملفات)، كل واحد بصندوقه الخاص جنب التاني ──
@@ -1242,6 +1255,16 @@ const deleteCancelBtn = document.getElementById('delete-cancel-btn');
 const deleteConfirmBtn = document.getElementById('delete-confirm-btn');
 
 /* ============ AUTH TABS ============ */
+const genderMaleBtn = document.getElementById('gender-male-btn');
+const genderFemaleBtn = document.getElementById('gender-female-btn');
+const signupGenderInput = document.getElementById('signup-gender');
+[genderMaleBtn, genderFemaleBtn].forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    genderMaleBtn.classList.toggle('active', btn===genderMaleBtn);
+    genderFemaleBtn.classList.toggle('active', btn===genderFemaleBtn);
+    signupGenderInput.value = btn.dataset.gender;
+  });
+});
 tabLogin.addEventListener('click', ()=>{
   tabLogin.classList.add('active'); tabSignup.classList.remove('active');
   loginForm.style.display='flex'; signupForm.style.display='none';
@@ -1256,6 +1279,7 @@ signupForm.addEventListener('submit', async (e)=>{
   e.preventDefault();
   signupError.textContent='';
   const name = document.getElementById('signup-name').value.trim();
+  const gender = signupGenderInput.value === 'female' ? 'female' : 'male';
   const email = document.getElementById('signup-email').value.trim();
   const password = document.getElementById('signup-password').value;
   const btn = signupForm.querySelector('.primary-btn');
@@ -1265,9 +1289,11 @@ signupForm.addEventListener('submit', async (e)=>{
     await cred.user.updateProfile({ displayName: name || email.split('@')[0] });
     await db.ref('users/'+cred.user.uid+'/profile').set({
       name: name || email.split('@')[0],
+      gender,
       email,
       createdAt: Date.now()
     });
+    currentUserGender = gender;
     // onAuthStateChanged below handles the transition into the app.
   } catch(err){
     signupError.textContent = describeAuthError(err);
@@ -1311,16 +1337,21 @@ logoutBtn.addEventListener('click', ()=> auth.signOut());
 
 /* ============ AUTH STATE ============ */
 auth.onAuthStateChanged(user=>{
-  loadingScreen.style.display='none';
+  loadingScreen.classList.add('fade-out');
+  setTimeout(()=>{ loadingScreen.style.display='none'; }, 450);
   if(user){
     currentUser = user;
     userNameLabel.textContent = user.displayName || user.email;
     authScreen.style.display='none';
     appShell.style.display='flex';
+    db.ref('users/'+user.uid+'/profile/gender').once('value')
+      .then(snap=>{ currentUserGender = snap.val() || null; })
+      .catch(()=>{ currentUserGender = null; });
     listenToConversations();
     refreshGeoContext(); // بيجيب الموقع/مواعيد الصلاة/القبلة في الخلفية، من غير ما يعطل حاجة
   } else {
     currentUser = null;
+    currentUserGender = null;
     currentConvId = null;
     if(conversationsRef) conversationsRef.off();
     authScreen.style.display='flex';
@@ -1753,7 +1784,7 @@ function maybeAddZipAllButton(wrap){
       const blob = await zip.generateAsync({ type:'blob' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = 'محفوظات-ملفات.zip';
+      a.href = url; a.download = 'digital-mind-files.zip';
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     } catch(e){ console.error(e); showToast('❌ مقدرتش أضغط الملفات'); }
@@ -1951,15 +1982,15 @@ function appendMessageBubble(msg){
    أيقونة "✓ خلصت"، والخطوة الشغالة دلوقتي بتاخد أيقونة تعبّر عن نوعها (بحث،
    رابط، مزوّد ذكاء اصطناعي...) بحلقة نابضة حواليها، بدل نقطة بسيطة واحدة
    لكل الأنواع — عشان الشكل يبان احترافي ومفهوم مش مجرد تحميل عام. */
-function stepIconClass(text){
-  if (/🔎|الإنترنت/.test(text)) return 'fa-magnifying-glass';
-  if (/رابط/.test(text)) return 'fa-link';
-  if (/كود/.test(text)) return 'fa-code';
-  if (/طريقة تانية/.test(text)) return 'fa-rotate';
-  if (/بيجهّز الرد/.test(text)) return 'fa-bolt';
-  if (/صور/.test(text)) return 'fa-image';
-  if (/ملفات|ملف/.test(text)) return 'fa-file-lines';
-  return 'fa-circle-notch';
+function stepKind(text){
+  if (/🔎|الإنترنت/.test(text)) return 'search';
+  if (/رابط/.test(text)) return 'link';
+  if (/كود/.test(text)) return 'code';
+  if (/طريقة تانية/.test(text)) return 'retry';
+  if (/بيجهّز الرد/.test(text)) return 'prepare';
+  if (/صور/.test(text)) return 'image';
+  if (/ملفات|ملف/.test(text)) return 'file';
+  return 'general';
 }
 function appendThinkingIndicator(firstStepLabel){
   const wrap = document.createElement('div');
@@ -1975,11 +2006,11 @@ function appendThinkingIndicator(firstStepLabel){
     const prevActive = stepsEl.querySelector('.thinking-step.active');
     if (prevActive){
       prevActive.classList.replace('active','done');
-      prevActive.querySelector('.thinking-step-icon i').className = 'fas fa-check';
+      prevActive.querySelector('.thinking-step-icon').innerHTML = '<i class="fas fa-check"></i>';
     }
     const step = document.createElement('div');
     step.className = 'thinking-step active';
-    step.innerHTML = '<span class="thinking-step-icon"><i class="fas '+stepIconClass(text)+'"></i></span><span class="thinking-step-text"></span>';
+    step.innerHTML = '<span class="thinking-step-icon"><span class="infinity-glyph infinity-'+stepKind(text)+'">∞</span></span><span class="thinking-step-text"></span>';
     step.querySelector('.thinking-step-text').textContent = text;
     stepsEl.appendChild(step);
     stepsEl.scrollTop = stepsEl.scrollHeight;
@@ -1993,7 +2024,7 @@ function appendThinkingIndicator(firstStepLabel){
     const lastActive = stepsEl.querySelector('.thinking-step.active');
     if (lastActive){
       lastActive.classList.replace('active','done');
-      lastActive.querySelector('.thinking-step-icon i').className = 'fas fa-check';
+      lastActive.querySelector('.thinking-step-icon').innerHTML = '<i class="fas fa-check"></i>';
     }
   };
   // ── غرفة التفكير العميق اللايف: بتتبني أول ما أول جزء من التفكير الفعلي

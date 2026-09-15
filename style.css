@@ -30,11 +30,36 @@ button:focus,button:focus-visible{outline:none;}
   position:fixed;inset:0;background:var(--bg);
   display:flex;align-items:center;justify-content:center;
   z-index:100;
+  background:
+    radial-gradient(ellipse at 50% 30%, rgba(216,163,76,0.10), transparent 60%),
+    var(--bg);
+  transition:opacity .45s ease;
+}
+#loading-screen.fade-out{opacity:0;pointer-events:none;}
+.loader-inner{display:flex;flex-direction:column;align-items:center;gap:8px;}
+.loader-infinity{
+  font-size:64px;font-weight:700;line-height:1;
+  animation:splashInfinityCycle 3s ease-in-out infinite, infinityPop 1.8s ease-in-out infinite;
+  margin-bottom:4px;
 }
 .loader-mark{
   font-family:'Cairo',sans-serif;font-weight:800;font-size:22px;
-  letter-spacing:1px;color:var(--accent);
-  opacity:0.85;
+  letter-spacing:.5px;
+  direction:ltr;color:var(--text);opacity:.9;
+}
+.loader-model{
+  font-family:'Tajawal',sans-serif;font-weight:500;font-size:12px;
+  letter-spacing:.5px;direction:ltr;color:var(--text-dim);
+  opacity:.7;
+}
+@keyframes splashInfinityCycle{
+  0%,100%{color:#d8a34c;filter:drop-shadow(0 0 16px rgba(216,163,76,.5));}
+  33%{color:#8a6fd6;filter:drop-shadow(0 0 16px rgba(138,111,214,.5));}
+  66%{color:#4fb894;filter:drop-shadow(0 0 16px rgba(79,184,148,.5));}
+}
+@keyframes infinityPop{
+  0%,100%{transform:scale(1);}
+  50%{transform:scale(1.08);}
 }
 
 /* ============ SCREENS ============ */
@@ -58,6 +83,12 @@ button:focus,button:focus-visible{outline:none;}
 .brand{
   font-family:'Cairo',sans-serif;font-weight:800;font-size:26px;
   color:var(--text);text-align:center;
+  direction:ltr;
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+}
+.brand-model{
+  font-family:'Tajawal',sans-serif;font-weight:500;font-size:11.5px;
+  letter-spacing:.4px;color:var(--text-dim);opacity:.75;
 }
 .brand-sub{
   text-align:center;color:var(--text-dim);font-size:14px;
@@ -72,6 +103,14 @@ button:focus,button:focus-visible{outline:none;}
   transition:background .2s,color .2s;
 }
 .tab-btn.active{background:var(--panel-raised);color:var(--accent);}
+
+.gender-switch{display:flex;gap:8px;}
+.gender-btn{
+  flex:1;padding:9px 0;border-radius:8px;border:1px solid var(--border);
+  background:var(--bg);color:var(--text-dim);font-family:'Tajawal',sans-serif;font-weight:700;font-size:14px;
+  cursor:pointer;transition:background .2s,color .2s,border-color .2s;
+}
+.gender-btn.active{background:var(--panel-raised);color:var(--accent);border-color:var(--accent-dim);}
 
 .auth-form{display:flex;flex-direction:column;gap:4px;}
 .field-label{font-size:13px;color:var(--text-dim);margin-top:12px;margin-bottom:6px;}
@@ -104,7 +143,7 @@ button:focus,button:focus-visible{outline:none;}
 #sidebar.collapsed{margin-right:-270px;}
 
 .sidebar-top{padding:18px 16px 12px;border-bottom:1px solid var(--border);}
-.brand-mini{font-family:'Cairo',sans-serif;font-weight:800;color:var(--accent);font-size:17px;display:block;margin-bottom:12px;}
+.brand-mini{font-family:'Cairo',sans-serif;font-weight:800;color:var(--accent);font-size:17px;display:block;margin-bottom:12px;direction:ltr;text-align:right;}
 
 .ghost-btn{
   width:100%;padding:9px 0;border-radius:8px;border:1px solid var(--border);
@@ -270,15 +309,58 @@ button:focus,button:focus-visible{outline:none;}
   background:var(--accent);color:#1b1a17;
   box-shadow:0 0 0 0 rgba(216,163,76,.5);animation:stepPulseRing 1.4s infinite;
 }
-.thinking-step.active .thinking-step-icon i{animation:stepIconSpin 1.6s linear infinite;}
-.thinking-step.active .thinking-step-icon .fa-check{animation:none;}
+.thinking-step.active .thinking-step-icon .infinity-glyph{
+  font-size:13px;font-weight:700;line-height:1;display:inline-block;
+}
 .thinking-step.done .thinking-step-icon{background:transparent;color:var(--accent-dim);}
 @keyframes stepPulseRing{
   0%{box-shadow:0 0 0 0 rgba(216,163,76,.45);}
   70%{box-shadow:0 0 0 7px rgba(216,163,76,0);}
   100%{box-shadow:0 0 0 0 rgba(216,163,76,0);}
 }
-@keyframes stepIconSpin{from{transform:rotate(0);}to{transform:rotate(360deg);}}
+
+/* ============ كل نوع خطوة له لون وطريقة حركة مختلفة لعلامة ما لا نهاية ============
+   بحث = نبض سريع أزرق (زي مسح/سكان) | رابط = دوران بطيء تركوازي (زي اتصال)
+   كود = فليكر بنفسجي سريع (زي وميض شاشة) | إعادة محاولة = دوران سريع برتقالي
+   تجهيز الرد = تدرج لوني كامل ذهبي (الحالة العامة الافتراضية)
+   صور = تمايل وردي (wave) | ملفات = تلاشي/ظهور أخضر (زي قلب صفحة) ============ */
+.infinity-search{animation:infinitySearchPulse 1s ease-in-out infinite;}
+@keyframes infinitySearchPulse{
+  0%,100%{color:#4a90d9;transform:scale(1);}
+  50%{color:#7fb6ee;transform:scale(1.22);}
+}
+.infinity-link{animation:infinityLinkSpin 1.8s linear infinite;color:#3aa7a0;}
+@keyframes infinityLinkSpin{
+  0%{transform:rotate(0deg);}
+  100%{transform:rotate(360deg);}
+}
+.infinity-code{animation:infinityCodeFlicker .5s steps(2,end) infinite;color:#9b6fd6;}
+@keyframes infinityCodeFlicker{
+  0%,100%{opacity:1;}
+  50%{opacity:.35;}
+}
+.infinity-retry{animation:infinityRetrySpin .7s linear infinite reverse;color:#e08a3c;}
+@keyframes infinityRetrySpin{
+  0%{transform:rotate(0deg);}
+  100%{transform:rotate(360deg);}
+}
+.infinity-prepare{animation:infinityColorCycle 1.6s ease-in-out infinite;}
+.infinity-image{animation:infinityImageWave 1.4s ease-in-out infinite;color:#d66f96;}
+@keyframes infinityImageWave{
+  0%,100%{transform:skewX(0deg) scale(1);}
+  50%{transform:skewX(-12deg) scale(1.1);}
+}
+.infinity-file{animation:infinityFileBlink 1.3s ease-in-out infinite;color:#4fb894;}
+@keyframes infinityFileBlink{
+  0%,100%{opacity:1;transform:translateY(0);}
+  50%{opacity:.4;transform:translateY(-2px);}
+}
+.infinity-general{animation:infinityColorCycle 2.4s ease-in-out infinite;}
+@keyframes infinityColorCycle{
+  0%,100%{color:#1b1a17;}
+  33%{color:#5b3a86;}
+  66%{color:#2f6f5e;}
+}
 
 /* ============ صف المرفقات: كل ملف في صندوقه الخاص، جنب بعض مش فوق بعض ============
    صف واحد ثابت الارتفاع (flex-wrap:nowrap) وممكن تتسحب يمين وشمال
