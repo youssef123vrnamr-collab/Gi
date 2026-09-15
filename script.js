@@ -1967,6 +1967,18 @@ composer.addEventListener('submit', async (e)=>{
   composerInput.style.height='auto';
   clearAttachPreview();
   sendBtn.disabled = true;
+  sendBtn.classList.add('sending');
+  const sendBtnIcon = document.getElementById('send-btn-icon');
+  sendBtnIcon.className = 'fas fa-circle-notch';
+  // مؤقت أمان: لو لأي سبب غير متوقع الرد اتعلّق (شبكة واقفة، تبويب اتجمّد،
+  // إلخ) ومكملش لحد الـ finally بتاعت الطلب، الزرار برضه هيرجع شغّال بعد
+  // 45 ثانية بدل ما يفضل عالق "بيبعت" للأبد.
+  clearTimeout(window.__sendWatchdog);
+  window.__sendWatchdog = setTimeout(()=>{
+    sendBtn.disabled = false;
+    sendBtn.classList.remove('sending');
+    sendBtnIcon.className = 'fas fa-arrow-up';
+  }, 45000);
   refreshGeoContext(); // مجرد محاولة تحديث في الخلفية لو لسه معندناش بيانات موقع/صلاة اليوم
 
   const convRef = db.ref('users/'+currentUser.uid+'/conversations/'+currentConvId);
@@ -2060,7 +2072,10 @@ composer.addEventListener('submit', async (e)=>{
     thinkingEl.querySelector('.thinking-stage')?.remove();
     console.error(err);
   } finally {
+    clearTimeout(window.__sendWatchdog);
     sendBtn.disabled = false;
+    sendBtn.classList.remove('sending');
+    document.getElementById('send-btn-icon').className = 'fas fa-arrow-up';
   }
 });
 
