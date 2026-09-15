@@ -1043,53 +1043,12 @@ function appendThinkingIndicator(stages){
   wrap._clearStage = ()=> clearInterval(wrap._stageTimer);
   // ── لما البحث يبدأ فعليًا ──
   wrap._setSearching = ()=>{ stageOverridden = true; if(stageEl.isConnected) stageEl.textContent = 'بيبحث عبر الإنترنت 🔎...'; };
-  // ── لما غرفة التفكير العميق تبدأ تيجي حية من الموديل — بيستبدل نقط "بيفكر" بصندوق تفكير حي ──
-  wrap._startLiveReasoning = ()=>{
-    if (wrap._contentStarted) return null; // الرد الحقيقي بدأ يوصل، متعرضش تفكير بعد كده
-    if (wrap.querySelector('.cosmos-deep-think-live')) return wrap.querySelector('.cosmos-deep-think-live-text');
-    stageOverridden = true;
-    clearInterval(wrap._stageTimer);
-    wrap.querySelector('.thinking-dots')?.remove();
-    stageEl.remove();
-    const liveBox = document.createElement('div');
-    liveBox.className = 'cosmos-deep-think-live';
-    liveBox.innerHTML = '<div class="cosmos-deep-think-live-label"><i class="fas fa-brain"></i> غرفة التفكير العميق — بيفكر دلوقتي...</div>'+
-      '<div class="cosmos-deep-think-live-text"></div>';
-    wrap.appendChild(liveBox);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    return liveBox.querySelector('.cosmos-deep-think-live-text');
-  };
-  // ── لما الرد النهائي (content) يبدأ يوصل — بنشيل صندوق التفكير الحي ونعرض الرد وهو بيتكتب،
-  //    حرف بحرف، نفس إحساس فلك بالظبط (نص حر من غير مستطيل/فقاعة، مع مؤشر كتابة نابض) ──
-  wrap._startLiveContent = ()=>{
-    if (wrap._contentStarted) return wrap.querySelector('.cosmos-live-stream-text');
-    wrap._contentStarted = true;
-    stageOverridden = true;
-    clearInterval(wrap._stageTimer);
-    wrap.querySelector('.thinking-dots')?.remove();
-    stageEl.remove();
-    wrap.querySelector('.cosmos-deep-think-live')?.remove();
-    const liveMsg = document.createElement('div');
-    liveMsg.className = 'msg assistant cosmos-live-stream';
-    liveMsg.innerHTML = '<span class="cosmos-live-stream-text"></span><span class="cosmos-stream-cursor">▍</span>';
-    wrap.appendChild(liveMsg);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    return liveMsg.querySelector('.cosmos-live-stream-text');
-  };
-  // ── لما الموديل يبدأ يكتب كود (```): العملية دي المفروض تحصل في الخلفية، مش قدام
-  //    المستخدم — بنوقف عرض النص الخام (اللي هيبان فيه ``` وعلامات غريبة وهو لسه بيتكتب)
-  //    ونستبدله بمؤشر "بيجهّز الكود..." بسيط، لحد ما بطاقة الملف الجاهزة والمنسّقة تظهر ──
+  // ── التفكير (reasoning) وكتابة الرد وكتابة الكود كلها بتتم في الخلفية دلوقتي —
+  //    من غير ما نعرض للمستخدم أي نص خام وهو لسه بيتكتب. المستخدم بيشوف بس نقط
+  //    "بيفكر..." لحد ما الرد الكامل والمنسّق يجهز، وبعدين بنعرضه دفعة واحدة —
+  //    وصندوق "غرفة التفكير العميق" القابل للفتح بيفضل موجود جوه الرسالة النهائية زي ما هو ──
   wrap._setBuildingCode = ()=>{
-    if (wrap._buildingCodeShown) return;
-    wrap._buildingCodeShown = true;
-    const liveMsg = wrap.querySelector('.cosmos-live-stream');
-    if (liveMsg) liveMsg.querySelector('.cosmos-stream-cursor')?.remove();
-    if (wrap.querySelector('.code-building-row')) return;
-    const row = document.createElement('div');
-    row.className = 'code-building-row';
-    row.innerHTML = '<i class="fas fa-code"></i><span>بيجهّز الكود...</span>';
-    wrap.appendChild(row);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (stageEl.isConnected) stageEl.textContent = 'بيجهّز الكود...';
   };
   return wrap;
 }
@@ -1168,31 +1127,17 @@ composer.addEventListener('submit', async (e)=>{
       const historySnap = await convRef.child('messages').once('value');
       const history = Object.values(historySnap.val() || {}).filter(m=>m.text).map(m=>({ role:m.role, text:m.text }));
 
-      let liveTextEl = null;
-      const onReasoningDelta = (fullReasoning)=>{
-        if (!liveTextEl) liveTextEl = thinkingEl._startLiveReasoning();
-        if (liveTextEl){
-          const shown = fullReasoning.length > 4000 ? fullReasoning.slice(-4000) : fullReasoning;
-          liveTextEl.textContent = shown;
-          liveTextEl.parentElement.scrollTop = liveTextEl.parentElement.scrollHeight;
-        }
-      };
+      // ── التفكير وكتابة الرد بيحصلوا في الخلفية بالكامل — من غير ما نعرض أي نص خام
+      //    للمستخدم وهو لسه بيتكتب. أول ما فيه كود جوه الرد، بنبدّل مؤشر "بيفكر" بـ
+      //    "بيجهّز الكود..."، وبعدين الرد الكامل النظيف بيظهر مرة واحدة مع صندوق
+      //    "غرفة التفكير العميق" القابل للفتح جواه ──
+      const onReasoningDelta = ()=>{};
       const onSearchStart = ()=> thinkingEl._setSearching();
-      let liveContentEl = null;
+      let codeStageShown = false;
       const onContentDelta = (fullText)=>{
-        const fenceIdx = fullText.indexOf('```');
-        if (fenceIdx > -1){
-          // ── كتابة الكود نفسها تحصل في الخلفية — نعرض بس أي نص شرح جه قبل الكود، ثم مؤشر تجهيز ──
-          if (!liveContentEl) liveContentEl = thinkingEl._startLiveContent();
-          if (liveContentEl) liveContentEl.textContent = fullText.slice(0, fenceIdx).trim();
+        if (!codeStageShown && fullText.indexOf('```') > -1){
+          codeStageShown = true;
           thinkingEl._setBuildingCode();
-          return;
-        }
-        if (!liveContentEl) liveContentEl = thinkingEl._startLiveContent();
-        if (liveContentEl){
-          const shown = fullText.length > 6000 ? fullText.slice(-6000) : fullText;
-          liveContentEl.textContent = shown; // نص خام أثناء الكتابة (بدون تنسيق) — زي فلك بالظبط
-          messagesEl.scrollTop = messagesEl.scrollHeight;
         }
       };
 
