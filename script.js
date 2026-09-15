@@ -637,6 +637,18 @@ const attachInput = document.getElementById('attach-input');
 const attachPreview = document.getElementById('attach-preview');
 const modelSelect = document.getElementById('model-select');
 
+/* ============ CONVERSATION CONTEXT MENU + MODALS ELEMENTS ============ */
+const contextMenu = document.getElementById('conv-context-menu');
+const contextMenuBackdrop = document.getElementById('context-menu-backdrop');
+const renameModal = document.getElementById('rename-modal');
+const renameForm = document.getElementById('rename-form');
+const renameInput = document.getElementById('rename-input');
+const renameCancelBtn = document.getElementById('rename-cancel-btn');
+const deleteModal = document.getElementById('delete-modal');
+const deleteModalText = document.getElementById('delete-modal-text');
+const deleteCancelBtn = document.getElementById('delete-cancel-btn');
+const deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+
 /* ============ MODEL SELECTOR ============ */
 modelSelect.innerHTML = MODEL_OPTIONS.map(o=>'<option value="'+o.id+'">'+o.label+'</option>').join('');
 modelSelect.value = selectedModel;
@@ -732,10 +744,13 @@ auth.onAuthStateChanged(user=>{
 });
 
 /* ============ CONVERSATIONS ============ */
+let conversationsCache = {};
+
 function listenToConversations(){
   conversationsRef = db.ref('users/'+currentUser.uid+'/conversations');
   conversationsRef.on('value', snap=>{
     const data = snap.val() || {};
+    conversationsCache = data;
     renderConversationList(data);
     const ids = Object.keys(data);
     if(!currentConvId && ids.length){
@@ -750,13 +765,189 @@ function renderConversationList(data){
   conversationList.innerHTML='';
   const entries = Object.entries(data).sort((a,b)=> (b[1].updatedAt||0)-(a[1].updatedAt||0));
   for(const [id, conv] of entries){
+    const title = conv.title || 'محادثة جديدة';
     const item = document.createElement('div');
     item.className = 'conv-item' + (id===currentConvId ? ' active' : '');
-    item.textContent = conv.title || 'محادثة جديدة';
-    item.addEventListener('click', ()=> openConversation(id));
+    item.dataset.convId = id;
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'conv-item-title';
+    titleSpan.textContent = title;
+    item.appendChild(titleSpan);
+
+    const kebabBtn = document.createElement('button');
+    kebabBtn.type = 'button';
+    kebabBtn.className = 'conv-kebab';
+    kebabBtn.setAttribute('aria-label', 'خيارات المحادثة');
+    kebabBtn.innerHTML = '<i class="fas fa-ellipsis-vertical"></i>';
+    kebabBtn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      openContextMenu(id, (conversationsCache[id]||{}).title || 'محادثة جديدة', kebabBtn.getBoundingClientRect());
+    });
+    item.appendChild(kebabBtn);
+
+    attachConvItemGestures(item, id);
     conversationList.appendChild(item);
   }
 }
+
+/* ============ LONG-PRESS / RIGHT-CLICK ON A CONVERSATION ITEM ============
+   لمسة عادية = فتح المحادثة. ضغطة مطوّلة (أو زر يمين على الديسكتوب أو ضغط
+   أيقونة الثلاث نقط) = تفتح قائمة صغيرة فيها "تعديل الاسم" و"حذف المحادثة". */
+function attachConvItemGestures(item, id){
+  const LONG_PRESS_MS = 450;
+  const MOVE_TOLERANCE = 10;
+  let timer = null, startX = 0, startY = 0, longPressed = false;
+
+  function clearTimer(){ if(timer){ clearTimeout(timer); timer = null; } }
+  function getTitle(){ return (conversationsCache[id]||{}).title || 'محادثة جديدة'; }
+
+  item.addEventListener('touchstart', (e)=>{
+    const t = e.touches && e.touches[0];
+    if(!t) return;
+    longPressed = false;
+    startX = t.clientX; startY = t.clientY;
+    clearTimer();
+    item.classList.add('pressing');
+    timer = setTimeout(()=>{
+      longPressed = true;
+      item.classList.remove('pressing');
+      if(navigator.vibrate) navigator.vibrate(12);
+      openContextMenu(id, getTitle(), item.getBoundingClientRect());
+    }, LONG_PRESS_MS);
+  }, {passive:true});
+
+  item.addEventListener('touchmove', (e)=>{
+    const t = e.touches && e.touches[0];
+    if(!t) return;
+    if(Math.abs(t.clientX-startX) > MOVE_TOLERANCE || Math.abs(t.clientY-startY) > MOVE_TOLERANCE){
+      clearTimer();
+      item.classList.remove('pressing');
+    }
+  }, {passive:true});
+
+  item.addEventListener('touchend', ()=>{ clearTimer(); item.classList.remove('pressing'); });
+  item.addEventListener('touchcancel', ()=>{ clearTimer(); item.classList.remove('pressing'); });
+
+  item.addEventListener('contextmenu', (e)=>{
+    e.preventDefault();
+    openContextMenu(id, getTitle(), { left:e.clientX, top:e.clientY, right:e.clientX, bottom:e.clientY });
+  });
+
+  item.addEventListener('click', ()=>{
+    if(longPressed){ longPressed = false; return; }
+    openConversation(id);
+  });
+}
+
+/* ============ CONTEXT MENU (تعديل الاسم / حذف) ============ */
+function openContextMenu(id, title, anchorRect){
+  contextMenu.innerHTML =
+    '<button type="button" class="context-menu-item" data-action="rename"><i class="fas fa-pen"></i><span>تعديل اسم المحادثة</span></button>'+
+    '<div class="context-menu-divider"></div>'+
+    '<button type="button" class="context-menu-item danger" data-action="delete"><i class="fas fa-trash-can"></i><span>حذف المحادثة</span></button>';
+
+  contextMenu.querySelector('[data-action="rename"]').addEventListener('click', ()=>{
+    closeContextMenu();
+    openRenameModal(id, title);
+  });
+  contextMenu.querySelector('[data-action="delete"]').addEventListener('click', ()=>{
+    closeContextMenu();
+    openDeleteModal(id, title);
+  });
+
+  contextMenu.style.display = 'block';
+  contextMenuBackdrop.style.display = 'block';
+
+  requestAnimationFrame(()=>{
+    const mw = contextMenu.offsetWidth || 210;
+    const mh = contextMenu.offsetHeight || 96;
+    let left = anchorRect.left;
+    let top = (anchorRect.bottom||anchorRect.top) + 6;
+    if(left + mw > window.innerWidth - 10) left = window.innerWidth - mw - 10;
+    if(left < 10) left = 10;
+    if(top + mh > window.innerHeight - 10) top = anchorRect.top - mh - 6;
+    if(top < 10) top = 10;
+    contextMenu.style.left = left + 'px';
+    contextMenu.style.top = top + 'px';
+  });
+}
+function closeContextMenu(){
+  contextMenu.style.display = 'none';
+  contextMenuBackdrop.style.display = 'none';
+}
+contextMenuBackdrop.addEventListener('click', closeContextMenu);
+
+/* ============ RENAME MODAL ============ */
+let renameConvId = null;
+function openRenameModal(id, title){
+  renameConvId = id;
+  renameInput.value = title;
+  renameModal.classList.add('open');
+  setTimeout(()=>{ renameInput.focus(); renameInput.select(); }, 60);
+}
+function closeRenameModal(){
+  renameModal.classList.remove('open');
+  renameConvId = null;
+}
+renameCancelBtn.addEventListener('click', closeRenameModal);
+renameModal.addEventListener('click', (e)=>{ if(e.target === renameModal) closeRenameModal(); });
+renameForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const id = renameConvId;
+  const newTitle = renameInput.value.trim();
+  closeRenameModal();
+  if(!id || !newTitle) return;
+  try{
+    await db.ref('users/'+currentUser.uid+'/conversations/'+id).update({ title:newTitle });
+    if(id === currentConvId) conversationTitle.textContent = newTitle;
+  } catch(err){
+    console.error('rename err', err);
+    alert('معلش، مقدرتش أعدّل اسم المحادثة.');
+  }
+});
+
+/* ============ DELETE MODAL ============ */
+let deleteConvId = null;
+function openDeleteModal(id, title){
+  deleteConvId = id;
+  deleteModalText.textContent = 'هتتحذف محادثة "'+title+'" والرسائل اللي فيها نهائيًا، ومش هينفع ترجّعها تاني.';
+  deleteModal.classList.add('open');
+}
+function closeDeleteModal(){
+  deleteModal.classList.remove('open');
+  deleteConvId = null;
+}
+deleteCancelBtn.addEventListener('click', closeDeleteModal);
+deleteModal.addEventListener('click', (e)=>{ if(e.target === deleteModal) closeDeleteModal(); });
+deleteConfirmBtn.addEventListener('click', async ()=>{
+  const id = deleteConvId;
+  if(!id) return;
+  deleteConfirmBtn.disabled = true;
+  try{
+    await db.ref('users/'+currentUser.uid+'/conversations/'+id).remove();
+    if(id === currentConvId){
+      currentConvId = null;
+      if(messagesRef) messagesRef.off();
+      messagesEl.innerHTML = '';
+      // مستمع listenToConversations هيفتح تاني محادثة موجودة، أو يبدأ واحدة جديدة لو مفيش حاجة باقية.
+    }
+  } catch(err){
+    console.error('delete err', err);
+    alert('معلش، مقدرتش أحذف المحادثة.');
+  } finally {
+    deleteConfirmBtn.disabled = false;
+    closeDeleteModal();
+  }
+});
+
+document.addEventListener('keydown', (e)=>{
+  if(e.key === 'Escape'){
+    closeContextMenu();
+    closeRenameModal();
+    closeDeleteModal();
+  }
+});
 
 function startNewConversation(){
   const ref = db.ref('users/'+currentUser.uid+'/conversations').push();
@@ -769,7 +960,7 @@ let messagesRef = null;
 function openConversation(convId){
   if(messagesRef) messagesRef.off();
   currentConvId = convId;
-  conversationTitle.textContent = 'محادثة';
+  conversationTitle.textContent = (conversationsCache[convId] && conversationsCache[convId].title) || 'محادثة جديدة';
   messagesEl.innerHTML='';
   messagesRef = db.ref('users/'+currentUser.uid+'/conversations/'+convId+'/messages');
   messagesRef.on('child_added', snap=>{
@@ -780,7 +971,7 @@ function openConversation(convId){
     }
     appendMessageBubble(msg);
   });
-  document.querySelectorAll('.conv-item').forEach(el=> el.classList.remove('active'));
+  document.querySelectorAll('.conv-item').forEach(el=> el.classList.toggle('active', el.dataset.convId === convId));
   if(window.innerWidth <= 760) sidebar.classList.add('collapsed');
 }
 
@@ -1088,7 +1279,7 @@ attachInput.addEventListener('change', async ()=>{
   try{
     const dataUrl = await compressImage(file);
     pendingImage = { dataUrl };
-    attachPreview.innerHTML = '<img src="'+dataUrl+'"><button type="button" id="remove-attach">×</button>';
+    attachPreview.innerHTML = '<img src="'+dataUrl+'"><button type="button" id="remove-attach"><i class="fas fa-xmark"></i></button>';
     attachPreview.style.display = 'flex';
     document.getElementById('remove-attach').addEventListener('click', ()=>{
       pendingImage = null;

@@ -54,20 +54,20 @@
   <aside id="sidebar">
     <div class="sidebar-top">
       <span class="brand-mini">محفوظات</span>
-      <button id="new-chat-btn" class="ghost-btn" type="button">+ محادثة جديدة</button>
+      <button id="new-chat-btn" class="ghost-btn" type="button"><i class="fas fa-plus"></i><span>محادثة جديدة</span></button>
     </div>
     <nav id="conversation-list" class="conversation-list"></nav>
     <div class="sidebar-bottom">
       <div class="user-chip">
         <span id="user-name-label">—</span>
       </div>
-      <button id="logout-btn" class="ghost-btn subtle" type="button">تسجيل الخروج</button>
+      <button id="logout-btn" class="ghost-btn subtle" type="button"><i class="fas fa-arrow-right-from-bracket"></i><span>تسجيل الخروج</span></button>
     </div>
   </aside>
 
   <main id="chat-main">
     <header id="chat-header">
-      <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="القائمة">☰</button>
+      <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="القائمة"><i class="fas fa-bars"></i></button>
       <span id="conversation-title">محادثة جديدة</span>
       <select id="model-select" class="model-select"></select>
     </header>
@@ -86,6 +86,38 @@
       </form>
     </div>
   </main>
+</div>
+
+<!-- ============ CONVERSATION CONTEXT MENU (long-press / right-click / kebab) ============ -->
+<div id="context-menu-backdrop" class="context-menu-backdrop"></div>
+<div id="conv-context-menu" class="context-menu" role="menu"></div>
+
+<!-- ============ RENAME CONVERSATION MODAL ============ -->
+<div id="rename-modal" class="app-modal-overlay">
+  <div class="app-modal">
+    <div class="app-modal-icon accent"><i class="fas fa-pen"></i></div>
+    <h3 class="app-modal-title">تعديل اسم المحادثة</h3>
+    <form id="rename-form">
+      <input id="rename-input" class="field-input" type="text" maxlength="60" autocomplete="off" placeholder="اسم المحادثة">
+      <div class="app-modal-actions">
+        <button type="button" id="rename-cancel-btn" class="app-modal-btn ghost">إلغاء</button>
+        <button type="submit" class="app-modal-btn primary">حفظ</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ DELETE CONVERSATION MODAL ============ -->
+<div id="delete-modal" class="app-modal-overlay">
+  <div class="app-modal">
+    <div class="app-modal-icon danger"><i class="fas fa-trash-can"></i></div>
+    <h3 class="app-modal-title">حذف المحادثة؟</h3>
+    <p class="app-modal-text" id="delete-modal-text">هتتحذف المحادثة والرسائل اللي فيها نهائيًا، ومش هينفع ترجّعها تاني.</p>
+    <div class="app-modal-actions">
+      <button type="button" id="delete-cancel-btn" class="app-modal-btn ghost">إلغاء</button>
+      <button type="button" id="delete-confirm-btn" class="app-modal-btn danger"><i class="fas fa-trash-can"></i><span>حذف</span></button>
+    </div>
+  </div>
 </div>
 
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
