@@ -751,7 +751,12 @@ function openConversation(convId){
   messagesEl.innerHTML='';
   messagesRef = db.ref('users/'+currentUser.uid+'/conversations/'+convId+'/messages');
   messagesRef.on('child_added', snap=>{
-    appendMessageBubble(snap.val());
+    const msg = snap.val();
+    if (msg && msg.ts && window.__locallyRendered && window.__locallyRendered.has(msg.ts)){
+      window.__locallyRendered.delete(msg.ts);
+      return;
+    }
+    appendMessageBubble(msg);
   });
   document.querySelectorAll('.conv-item').forEach(el=> el.classList.remove('active'));
   if(window.innerWidth <= 760) sidebar.classList.add('collapsed');
@@ -877,6 +882,93 @@ function buildDeepThinkBox(reasoningText){
     '<div class="cosmos-deep-think-body"><div class="cosmos-deep-think-inner">'+escapeHtml(reasoningText)+'</div></div>';
   box.querySelector('.cosmos-deep-think-toggle').addEventListener('click', ()=> box.classList.toggle('open'));
   return box;
+}
+
+// ── أنيميشن الكتابة التدريجي الثابت — نفس فلك بالظبط: بيفكك الـ HTML الجاهز (منسّق، ملوّن،
+//    فيه بطاقات كود) لعمليات "حرف / فتح تاج / قفل تاج" وبيعيد بناءه تدريجيًا بسرعة هادية وثابتة،
+//    من غير ما يعتمد على سرعة الشبكة. بطاقة الكود بتتحط دفعة واحدة جوه مكانها، مش حرف حرف ──
+function typewriterReveal(container, html, onDone){
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  const ops = [];
+  (function walk(node){
+    const kids = node.childNodes;
+    for (let i=0;i<kids.length;i++){
+      const child = kids[i];
+      if (child.nodeType === 3){
+        const t = child.nodeValue;
+        for (let c=0;c<t.length;c++) ops.push({ type:'char', ch:t[c] });
+      } else if (child.nodeType === 1){
+        if (child.classList && child.classList.contains('code-file-card')){
+          ops.push({ type:'block', node: child.cloneNode(true) });
+        } else {
+          ops.push({ type:'open', tag: child.tagName.toLowerCase(), attrs: child.attributes });
+          walk(child);
+          ops.push({ type:'close' });
+        }
+      }
+    }
+  })(temp);
+
+  container.innerHTML = '';
+  const caret = document.createElement('span');
+  caret.className = 'cosmos-stream-cursor';
+  caret.textContent = '▍';
+  container.appendChild(caret);
+
+  const stack = [container];
+  let idx = 0;
+  function tick(){
+    const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
+    let n = 3;
+    while (n-- > 0 && idx < ops.length){
+      const op = ops[idx++];
+      const top = stack[stack.length-1];
+      if (op.type === 'char'){
+        if (top.lastChild && top.lastChild.nodeType === 3) top.lastChild.nodeValue += op.ch;
+        else top.insertBefore(document.createTextNode(op.ch), top===container?caret:null);
+      } else if (op.type === 'open'){
+        const el = document.createElement(op.tag);
+        if (op.attrs) for (let a=0;a<op.attrs.length;a++) el.setAttribute(op.attrs[a].name, op.attrs[a].value);
+        top.insertBefore(el, top===container?caret:null);
+        stack.push(el);
+      } else if (op.type === 'block'){
+        top.insertBefore(op.node, top===container?caret:null);
+        if (window.hljs) op.node.querySelectorAll('pre code').forEach(el=>{ try{ window.hljs.highlightElement(el); }catch(e){} });
+      } else {
+        stack.pop();
+      }
+    }
+    if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (idx < ops.length) setTimeout(tick, 10);
+    else { caret.remove(); if (onDone) onDone(); }
+  }
+  tick();
+}
+
+// ── بتحوّل صندوق "بيفكر/بيتكتب حي" لنفس الرسالة النهائية، وتعمل عليها أنيميشن الكتابة
+//    التدريجي فوق النص المنسّق والملوّن الكامل (مش النص الخام) — دي الخطوة اللي كانت ناقصة ──
+function renderFinalAssistantMessage(wrap, msg){
+  wrap.querySelector('.thinking-dots')?.remove();
+  wrap.querySelector('.thinking-stage')?.remove();
+  wrap.querySelector('.cosmos-deep-think-live')?.remove();
+  wrap.querySelector('.code-building-row')?.remove();
+  wrap.querySelector('.cosmos-live-stream')?.remove();
+
+  if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning));
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg assistant';
+  wrap.appendChild(bubble);
+
+  typewriterReveal(bubble, formatAnswer(msg.text), ()=>{
+    wrap.appendChild(buildActionBar(msg.question || '', msg.text));
+    const time = document.createElement('div');
+    time.className = 'msg-time';
+    time.textContent = formatTime(msg.ts);
+    wrap.appendChild(time);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
 }
 
 function appendMessageBubble(msg){
@@ -1064,9 +1156,13 @@ composer.addEventListener('submit', async (e)=>{
   try{
     if(image){
       const replyText = await analyzeImageWithGemini(image.dataUrl, text);
-      thinkingEl._clearStage(); thinkingEl.remove();
+      thinkingEl._clearStage();
       const replyTs = Date.now();
-      await convRef.child('messages').push({ role:'assistant', text: replyText, provider:'Gemini Vision', ts: replyTs });
+      const assistantMsg = { role:'assistant', text: replyText, provider:'Gemini Vision', ts: replyTs };
+      window.__locallyRendered = window.__locallyRendered || new Set();
+      window.__locallyRendered.add(replyTs);
+      renderFinalAssistantMessage(thinkingEl, assistantMsg);
+      await convRef.child('messages').push(assistantMsg);
       await convRef.update({ updatedAt: replyTs });
     } else {
       const historySnap = await convRef.child('messages').once('value');
@@ -1101,10 +1197,13 @@ composer.addEventListener('submit', async (e)=>{
       };
 
       const reply = await getAIResponse(history, onReasoningDelta, onSearchStart, onContentDelta);
-      thinkingEl._clearStage(); thinkingEl.remove();
+      thinkingEl._clearStage();
       const replyTs = Date.now();
       const assistantMsg = { role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs, question: text };
       if (reply.reasoning) assistantMsg.reasoning = reply.reasoning;
+      window.__locallyRendered = window.__locallyRendered || new Set();
+      window.__locallyRendered.add(replyTs);
+      renderFinalAssistantMessage(thinkingEl, assistantMsg);
       await convRef.child('messages').push(assistantMsg);
       await convRef.update({ updatedAt: replyTs });
     }
