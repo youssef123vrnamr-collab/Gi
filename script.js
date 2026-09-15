@@ -143,6 +143,12 @@ function buildColorPolicyBlock(){
 function buildNoRawLatexBlock(){
   return '\n\nقاعدة إلزامية: ممنوع تستخدم صيغة LaTeX الخام (زي \\frac{}{} أو \\sqrt{} أو \\gamma أو \\times) في أي معادلة رياضية، لأن واجهة المحادثة دي مفيهاش عارض LaTeX وهتظهر للمستخدم كرموز خام غريبة بدل معادلة واضحة. اكتب المعادلات بصيغة نصية عادية ومقروءة بس (زي x^2 أو (a+b)/c أو √x أو a/b أو γ = 1/√(1-v²/c²)).';
 }
+/* ============ قاعدة إلزامية: أكواد كاملة أبدًا مبتورة ============
+   أكتر مشكلة بتحصل مع الموديلات: بتوقف الكود في نص الطريق أو تحط تعليق
+   زي "// باقي الكود زي ما هو" بدل ما تكتبه فعليًا. القاعدة دي بتمنع ده. */
+function buildCodeCompletenessBlock(){
+  return '\n\nقاعدة إلزامية بخصوص الأكواد: لما تكتب كود جوه ```، لازم يكون الكود كامل 100% وشغّال من الأول للآخر، من غير أي اختصار أو حذف. ممنوع تماما تستخدم أي حاجة زي "// باقي الكود زي ما هو"، "// rest of the code"، "// ...", "/* نفس الكود اللي فات */"، أو أي جملة تلخيصية بدل ما تكتب الكود فعليًا — حتى لو الملف طويل. لو الكود طويل جدًا ومحتاج مساحة أكبر من اللي قدامك، اكتب أكبر قدر ممكن منه وسيبه بدون علامة إغلاق ``` في نهاية ردك (يعني متقفلش الكود الفاضي)، عشان النظام هيطلب منك تكمل تلقائيًا من نفس النقطة؛ أما لو خلصت الكود فعلاً، اقفله بـ ``` عادي. الأولوية دايمًا لكود كامل وصحيح، حتى لو ده معناه إجابة أطول.';
+}
 /* ============ نظام كتابة الأكواد الذكي — بطاقة ملف لكل كتلة كود ============
    هيدر فيه أيقونة/اسم ملف/لغة/عدد أسطر + تلوين كود احترافي (highlight.js) + نسخ/تنزيل + تقييم 👍👎
    يغذي "غرفة كود دائمة" منفصلة عن غرفة النصوص، بنفس فكرة فلك بالظبط. */
@@ -285,6 +291,7 @@ function buildSystemPrompt(searchResultsBlock){
     + buildReasoningRoomBlock()
     + buildColorPolicyBlock()
     + buildNoRawLatexBlock()
+    + buildCodeCompletenessBlock()
     + buildLessonsBlock()
     + buildGoodAnswersBlock()
     + buildGoodCodeBlock()
@@ -365,82 +372,117 @@ function buildSearchResultsBlock(results){
   return '\n\n--- نتائج بحث حقيقية من الإنترنت الآن (استخدمها في ردك، وممنوع تتجاهلها أو تجاوب من معلوماتك العامة القديمة لو فيها تعارض) ---\n' + list + '\n---';
 }
 
-/* ============ خط الدفاع 1: Groq — Streaming + غرفة التفكير العميق الحية ============ */
+/* ============ خط الدفاع 1: Groq — Streaming + غرفة التفكير العميق الحية ============
+   لو الرد اتقطع قبل ما يخلص (finish_reason === 'length' — بيحصل غالبًا مع أكواد
+   طويلة)، بنكمّل تلقائيًا بطلب تاني من نفس النقطة، لحد ما يخلص فعلاً أو نوصل
+   للحد الأقصى من المحاولات، بدل ما نسيب الكود مبتور. */
+const CONTINUE_PROMPT = 'كمل بالظبط من نفس الحرف اللي وقفت عنده، من غير ما تعيد ولا حرف كتبته قبل كده، ومن غير أي مقدمة أو تعليق زيادة. لو كنت في نص كود، كمل الكود نفسه لحد ما يخلص ويتقفل بـ ``` — ممنوع تلخيص أو اختصار أي جزء.';
+const MAX_CONTINUATIONS = 5;
+
 async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, onContentDelta){
   if (!GroqKeyPool.count()) return null;
   const maxAttempts = Math.min(GroqKeyPool.count(), 3);
   const sys = buildSystemPrompt(searchResultsBlock || '');
-  const messages = [{ role:'system', content: sys }].concat(historyMsgs);
-  for (let i=0;i<maxAttempts;i++){
-    const key = GroqKeyPool.next();
-    if (!key) break;
-    try{
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "openai/gpt-oss-120b", messages, max_tokens: 8192, temperature: 0.4,
-          stream: true, reasoning_effort: 'high', reasoning_format: 'parsed'
-        })
-      });
-      if (!res.ok || !res.body){
-        GroqKeyPool.report(key, res.status !== 429);
-        if (res.status !== 429) return null;
-        continue;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '', full = '', fullReasoning = '';
-      while (true){
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-        for (const line of lines){
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6).trim();
-          if (payload === '[DONE]') continue;
-          try{
-            const evt = JSON.parse(payload);
-            const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
-            if (!delta) continue;
-            if (delta.content){ full += delta.content; if (onContentDelta) onContentDelta(full); }
-            const reasoningPiece = delta.reasoning || delta.reasoning_content;
-            if (reasoningPiece){ fullReasoning += reasoningPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning); }
-          } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+  let runningMessages = [{ role:'system', content: sys }].concat(historyMsgs);
+  let fullTotal = '', fullReasoning = '';
+
+  for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+    let roundResult = null;
+    for (let i=0;i<maxAttempts;i++){
+      const key = GroqKeyPool.next();
+      if (!key) break;
+      try{
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
+            stream: true, reasoning_effort: 'high', reasoning_format: 'parsed'
+          })
+        });
+        if (!res.ok || !res.body){
+          GroqKeyPool.report(key, res.status !== 429);
+          if (res.status !== 429) { i = maxAttempts; break; }
+          continue;
         }
-      }
-      GroqKeyPool.report(key, true);
-      if (full) return { text: full, reasoning: fullReasoning };
-    } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '', full = '', reasoningPart = '', finishReason = null;
+        while (true){
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines){
+            if (!line.startsWith('data: ')) continue;
+            const payload = line.slice(6).trim();
+            if (payload === '[DONE]') continue;
+            try{
+              const evt = JSON.parse(payload);
+              const choice = evt.choices && evt.choices[0];
+              if (!choice) continue;
+              if (choice.finish_reason) finishReason = choice.finish_reason;
+              const delta = choice.delta;
+              if (!delta) continue;
+              if (delta.content){ full += delta.content; if (onContentDelta) onContentDelta(fullTotal + full); }
+              const rPiece = delta.reasoning || delta.reasoning_content;
+              if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+            } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+          }
+        }
+        GroqKeyPool.report(key, true);
+        roundResult = { text: full, reasoning: reasoningPart, finishReason };
+        break;
+      } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); }
+    }
+    if (!roundResult || !roundResult.text) break;
+    fullTotal += roundResult.text;
+    fullReasoning = round === 0 ? roundResult.reasoning : (fullReasoning + '\n' + roundResult.reasoning);
+    if (roundResult.finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
+    runningMessages = runningMessages.concat([
+      { role:'assistant', content: roundResult.text },
+      { role:'user', content: CONTINUE_PROMPT }
+    ]);
   }
-  return null;
+  return fullTotal ? { text: fullTotal, reasoning: fullReasoning } : null;
 }
 
 /* ============ خط الدفاع 2: Gemini ============ */
 async function callGeminiChat(historyMsgs){
   if (!GeminiKeyPool.count()) return null;
   const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
-  const contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  for (let i=0;i<maxAttempts;i++){
-    const key = GeminiKeyPool.next();
-    if (!key) break;
-    try{
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: { temperature: 0.4, maxOutputTokens: 8192 } })
-      });
-      const data = await res.json();
-      const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
-        data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
-      GeminiKeyPool.report(key, res.status !== 429);
-      if (txt) return { text: txt, reasoning: '' };
-      if (res.status !== 429) return null;
-    } catch(e){ console.warn("Gemini call failed", e); }
+  let contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  let fullTotal = '';
+
+  for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+    let roundText = null, roundFinish = null;
+    for (let i=0;i<maxAttempts;i++){
+      const key = GeminiKeyPool.next();
+      if (!key) break;
+      try{
+        const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: { temperature: 0.4, maxOutputTokens: 8192 } })
+        });
+        const data = await res.json();
+        const cand = data && data.candidates && data.candidates[0];
+        const txt = cand && cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
+        GeminiKeyPool.report(key, res.status !== 429);
+        if (txt){ roundText = txt; roundFinish = cand.finishReason || null; break; }
+        if (res.status !== 429) { i = maxAttempts; break; }
+      } catch(e){ console.warn("Gemini call failed", e); }
+    }
+    if (!roundText) break;
+    fullTotal += roundText;
+    if (roundFinish !== 'MAX_TOKENS' || round === MAX_CONTINUATIONS) break;
+    contents = contents.concat([
+      { role:'model', parts:[{ text: roundText }] },
+      { role:'user', parts:[{ text: CONTINUE_PROMPT }] }
+    ]);
   }
-  return null;
+  return fullTotal ? { text: fullTotal, reasoning: '' } : null;
 }
 
 /* ============ خط الدفاع 3: OpenRouter (موديلات مجانية) ============ */
@@ -457,7 +499,7 @@ async function getFreeOpenRouterModels(key){
 }
 async function callOpenRouterChat(historyMsgs){
   if (!OpenRouterKeyPool.count()) return null;
-  const messages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
+  const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const maxAttempts = Math.min(OpenRouterKeyPool.count(), 3);
   for (let i=0;i<maxAttempts;i++){
     const key = OpenRouterKeyPool.next();
@@ -467,16 +509,27 @@ async function callOpenRouterChat(historyMsgs){
     let keyFailed429 = false;
     for (const model of models){
       try{
-        const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
-          body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4 })
-        });
-        const d = await r.json();
-        const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
-        OpenRouterKeyPool.report(key, r.status !== 429);
-        if (txt) return { text: txt, reasoning: '' };
-        if (r.status === 429){ keyFailed429 = true; continue; }
+        let messages = baseMessages.slice();
+        let fullTotal = '';
+        for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4 })
+          });
+          const d = await r.json();
+          const choice = d && d.choices && d.choices[0];
+          const txt = choice && choice.message && choice.message.content;
+          OpenRouterKeyPool.report(key, r.status !== 429);
+          if (!txt){ if (r.status === 429) keyFailed429 = true; break; }
+          fullTotal += txt;
+          if (choice.finish_reason !== 'length' || round === MAX_CONTINUATIONS) break;
+          messages = messages.concat([
+            { role:'assistant', content: txt },
+            { role:'user', content: CONTINUE_PROMPT }
+          ]);
+        }
+        if (fullTotal) return { text: fullTotal, reasoning: '' };
       } catch(e){ console.warn("OpenRouter call failed", e); }
     }
     if (!keyFailed429) break;
@@ -487,7 +540,7 @@ async function callOpenRouterChat(historyMsgs){
 /* ============ خط الدفاع 4: Vercel AI Gateway ============ */
 async function callVercelChat(historyMsgs){
   if (!VercelGatewayKeyPool.count()) return null;
-  const messages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
+  const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const models = ['openai/gpt-4o-mini','google/gemini-2.0-flash','anthropic/claude-haiku-4-5'];
   const maxAttempts = Math.min(VercelGatewayKeyPool.count(), 3);
   for (let i=0;i<maxAttempts;i++){
@@ -496,16 +549,27 @@ async function callVercelChat(historyMsgs){
     let keyFailed429 = false;
     for (const model of models){
       try{
-        const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
-          method: "POST",
-          headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: false })
-        });
-        const d = await r.json();
-        const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
-        VercelGatewayKeyPool.report(key, r.status !== 429);
-        if (txt) return { text: txt, reasoning: '' };
-        if (r.status === 429){ keyFailed429 = true; continue; }
+        let messages = baseMessages.slice();
+        let fullTotal = '';
+        for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+          const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: false })
+          });
+          const d = await r.json();
+          const choice = d && d.choices && d.choices[0];
+          const txt = choice && choice.message && choice.message.content;
+          VercelGatewayKeyPool.report(key, r.status !== 429);
+          if (!txt){ if (r.status === 429) keyFailed429 = true; break; }
+          fullTotal += txt;
+          if (choice.finish_reason !== 'length' || round === MAX_CONTINUATIONS) break;
+          messages = messages.concat([
+            { role:'assistant', content: txt },
+            { role:'user', content: CONTINUE_PROMPT }
+          ]);
+        }
+        if (fullTotal) return { text: fullTotal, reasoning: '' };
       } catch(e){ console.warn("Vercel Gateway call failed", e); }
     }
     if (!keyFailed429) break;

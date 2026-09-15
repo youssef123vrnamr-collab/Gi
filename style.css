@@ -226,7 +226,7 @@ body{
 .msg-sender-name{font-size:12.5px;font-weight:700;color:var(--text-dim);}
 .msg-time{font-size:11px;color:var(--text-dim);margin-top:4px;padding:0 3px;}
 
-.msg{font-size:15px;line-height:1.7;white-space:pre-wrap;}
+.msg{font-size:16px;line-height:1.75;white-space:pre-wrap;}
 .msg.user{background:var(--accent);color:#1b1a17;padding:11px 15px;border-radius:14px;border-bottom-left-radius:4px;}
 /* ردود الذكاء الاصطناعي: نص حر بلا مستطيل ولا حدود — نفس فلك بالظبط */
 .msg.assistant{background:none;border:none;padding:2px 3px;color:var(--text);}
