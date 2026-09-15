@@ -205,11 +205,6 @@ body{
   display:none;
 }
 #conversation-title{font-weight:700;font-size:14.5px;color:var(--text-dim);flex:1;}
-.model-select{
-  background:var(--panel-raised);color:var(--accent);border:1px solid var(--border);
-  border-radius:20px;padding:6px 12px;font-family:'Tajawal',sans-serif;font-weight:700;
-  font-size:12.5px;cursor:pointer;outline:none;max-width:150px;
-}
 
 .messages{
   flex:1;overflow-y:auto;padding:24px 18px;display:flex;flex-direction:column;gap:18px;

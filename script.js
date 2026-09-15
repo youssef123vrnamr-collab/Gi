@@ -121,14 +121,9 @@ function submitAIFeedback(liked, question, answer){
 }
 
 const AI_DISPLAY_NAME = "AlalaGyGyAgha V1.6";
-const MODEL_OPTIONS = [
-  { id: 'auto', label: 'الاختيار التلقائي' },
-  { id: 'groq', label: 'Groq · gpt-oss-120b' },
-  { id: 'gemini', label: 'Gemini' },
-  { id: 'openrouter', label: 'OpenRouter (مجاني)' },
-  { id: 'vercel', label: 'Vercel AI Gateway' }
-];
-let selectedModel = localStorage.getItem('mahfoozat_model') || 'auto';
+// النظام تلقائي بس دلوقتي — مفيش اختيار يدوي لموديل معيّن ولا متغيّر بيتفحص
+// قيمته، عشان المستخدم دايمًا ياخد نفس تجربة "خطوط الدفاع"
+// (Groq → Gemini → OpenRouter → Vercel) بالترتيب الثابت في getAIResponse.
 
 /* ============ القراءة الصوتية (Text-to-Speech) — كانت موجودة في فلك وناقصة هنا ============
    بتقرا رد الذكاء بصوت عربي لو متاح على الجهاز، مع زرار توقف لو المستخدم عايز يقاطع. */
@@ -391,6 +386,14 @@ function buildGoodAnswersBlock(){
     '\n---\nخد بالك من الأسلوب والمستوى اللي عجب المستخدمين في الردود دي، وحاول تحافظ عليه أو تتخطاه.';
 }
 
+/* ============ تجميع "تعليمات النظام" الكاملة — دالة واحدة بتلزّق كل البلوكات فوق بعض ============
+   كل بلوك (buildXBlock) مسؤول عن قاعدة واحدة بس (هوية، تفكير عميق، تلوين،
+   جودة كود، دروس مستفادة...) والدالة دي بترتبهم بترتيب ثابت وواحد لكل رسالة:
+   1) الهوية الأساسية  2) السياق الحي (وقت/موقع/صلاة)  3) غرفة التفكير العميق
+   4) قواعد التلوين واللاتكس والكود  5) الدروس والردود الحلوة القديمة
+   6) نتائج البحث (لو موجودة، بتتحط في الآخر عشان تبقى أقرب حاجة للسؤال)
+   7) تعليمات إضافية من لوحة التحكم (globalAiInstructions). ترتيبهم مقصود:
+   القواعد الثابتة الأول، والسياق اللي بيتغيّر كل رسالة (بحث/تعليمات إدارية) آخر حاجة. */
 function buildSystemPrompt(searchResultsBlock){
   return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
     + buildLiveContextBlock()
@@ -526,6 +529,14 @@ async function performWebSearch(query, includeDomains){
   } catch(e){ console.warn('performWebSearch failed', e); return null; }
 }
 
+/* ============ قرار "هل الرسالة محتاجة بحث؟" — مرحلتين، بنفس فكرة النظام التلقائي للموديلات ============
+   المرحلة 1 (سريعة، من غير أي طلب شبكة): لو الرسالة فيها كلمة صريحة من
+   WEB_SEARCH_TRIGGERS (زي "ابحث" أو "اخر اخبار")، القرار بيبقى "أيوه محتاجة
+   بحث" فورًا من غير أي تأخير.
+   المرحلة 2 (لو المرحلة 1 مقالتش حاجة): بنسأل نموذج صغير وسريع (Groq) يحكم
+   هو نفسه بكلمة واحدة بس ("نعم"/"لا") هل الرسالة محتاجة معلومة حديثة أو
+   حدث حالي، عشان نمسك الحالات اللي مفيهاش كلمة مفتاحية واضحة لكنها فعليًا
+   محتاجة بحث (زي "مين رئيس وزراء بريطانيا؟" من غير ما يقول "ابحث"). */
 // ── مرحلة أولى سريعة: كلمات صريحة بتدل على طلب بحث (رد فوري من غير انتظار) ──
 const WEB_SEARCH_TRIGGERS = [
   'ابحث', 'دور لي', 'دور على', 'فتش', 'اخبار', 'أخبار', 'اخر اخبار', 'آخر أخبار',
@@ -837,11 +848,9 @@ async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, on
     { id:'openrouter', label:'OpenRouter', fn: callOpenRouterChat },
     { id:'vercel', label:'Vercel Gateway', fn: callVercelChat }
   ];
-  const ordered = selectedModel === 'auto'
-    ? providers
-    : providers.slice().sort((a,b) => (a.id===selectedModel?-1:0) - (b.id===selectedModel?-1:0));
-
-  for (const p of ordered){
+  // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين
+  // بالترتيب الافتراضي زي ما هو، وأول واحد يرجّع رد بنستخدمه.
+  for (const p of providers){
     const result = await p.fn(messages);
     if (result && result.text) return { text: result.text, reasoning: result.reasoning || '', provider: p.label };
   }
@@ -852,7 +861,11 @@ async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, on
   throw new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
 }
 
-/* ============ تحليل الصور عبر Gemini Vision (زي فلك بالظبط) ============ */
+/* ============ تحليل الصور عبر Gemini Vision (زي فلك بالظبط) ============
+   التدفق: 1) compressImage بتصغّر أي صورة لحد 900px وتضغطها jpeg 0.6 قبل
+   أي حاجة تانية (تخزين أو إرسال) عشان الرسالة تفضل خفيفة. 2) الصور
+   المضغوطة بتتحول لـ base64 وتتبعت لـ Gemini Vision مع نص السؤال (لو
+   موجود) في analyzeImagesWithGemini، وبيرجع وصف/تحليل نصي للصور. */
 // بنضغط الصورة (max 900px, jpeg 0.6) قبل الإرسال والتخزين، عشان الرسالة تفضل خفيفة في قاعدة البيانات
 function compressImage(file){
   return new Promise((resolve, reject) => {
@@ -921,6 +934,24 @@ const MAX_FILE_CONTEXT_CHARS = 18000;
 
 const TEXT_EXTENSIONS = /\.(txt|md|json|csv|js|ts|jsx|tsx|py|java|c|cpp|h|cs|php|rb|go|rs|sql|sh|yaml|yml|xml|html|css|log)$/i;
 
+/* ============ نظام معالجة المرفقات — فرز وتوجيه تلقائي، بنفس فكرة النظام التلقائي للموديلات بالظبط ============
+   زي ما نظام الموديلات بيجرب المزوّدين بالترتيب من غير ما المستخدم يختار،
+   نظام المرفقات ده بيكتشف نوع الملف تلقائيًا وبيوجّهه لأداة القراءة
+   المناسبة له، من غير أي تدخل يدوي:
+   1) getFileKind(file) — "الحكم": بيبص على امتداد الاسم ونوع MIME ويرجّع
+      كلمة وحدة تصف نوع الملف (image/audio/pdf/docx/excel/zip/text/other).
+   2) لكل نوع، فيه دالة استخراج مخصصة له بس (single responsibility):
+      - extractPdfText   → PDF عن طريق pdf.js
+      - extractDocxText  → Word عن طريق mammoth.js
+      - extractExcelText → Excel/CSV عن طريق SheetJS، شيت شيت
+      - transcribeAudio  → صوت عن طريق Groq Whisper (بيرجع نص التفريغ)
+      - readZipFile      → ملف مضغوط، إما بيفكه ويقرا كل ملف نصي جواه أو
+        بيسيبه مقفول وبيرجّع بس قائمة أسماء الملفات (حسب opts.extractZip)
+      - readFileAsText   → أي ملف نصي/كود عادي مباشرة
+   3) processAttachedFile(file, opts) — "الموزّع الرئيسي": بيستدعي
+      getFileKind أول حاجة، وعلى حسب النتيجة بيستدعي دالة الاستخراج
+      الصح، وبيرجّع شكل موحّد { kind, name, extractedText, note } جاهز
+      إنه يتحط في سياق المحادثة للذكاء الاصطناعي، مهما كان نوع الملف. */
 function getFileKind(file){
   const name = (file.name || '').toLowerCase();
   const type = (file.type || '').toLowerCase();
@@ -1088,7 +1119,6 @@ const sendBtn = composer.querySelector('.send-btn');
 const attachBtn = document.getElementById('attach-btn');
 const attachInput = document.getElementById('attach-input');
 const attachPreview = document.getElementById('attach-preview');
-const modelSelect = document.getElementById('model-select');
 
 /* ============ CONVERSATION CONTEXT MENU + MODALS ELEMENTS ============ */
 const contextMenu = document.getElementById('conv-context-menu');
@@ -1101,14 +1131,6 @@ const deleteModal = document.getElementById('delete-modal');
 const deleteModalText = document.getElementById('delete-modal-text');
 const deleteCancelBtn = document.getElementById('delete-cancel-btn');
 const deleteConfirmBtn = document.getElementById('delete-confirm-btn');
-
-/* ============ MODEL SELECTOR ============ */
-modelSelect.innerHTML = MODEL_OPTIONS.map(o=>'<option value="'+o.id+'">'+o.label+'</option>').join('');
-modelSelect.value = selectedModel;
-modelSelect.addEventListener('change', ()=>{
-  selectedModel = modelSelect.value;
-  localStorage.setItem('mahfoozat_model', selectedModel);
-});
 
 /* ============ AUTH TABS ============ */
 tabLogin.addEventListener('click', ()=>{
