@@ -379,8 +379,8 @@ button:focus,button:focus-visible{outline:none;}
 .send-btn:hover{transform:scale(1.08);}
 /* زرار الإرسال أثناء انتظار الرد: بيفضل بلون الـ accent العادي (مش باهت)
    وبتتحول أيقونته لسبينر دوّار، عشان يبان واضح إنه "بيبعت" مش إنه "متعطّل". */
-.send-btn.sending{cursor:default;transform:none;opacity:1;}
-.send-btn.sending i{animation:sendSpin .7s linear infinite;}
+.send-btn.sending{cursor:pointer;transform:none;opacity:1;}
+.send-btn.sending i{animation:none;}
 @keyframes sendSpin{to{transform:rotate(360deg);}}
 .send-btn:disabled:not(.sending){opacity:.5;cursor:default;transform:none;}
 

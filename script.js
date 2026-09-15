@@ -16,6 +16,11 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
+// ── التحكم في إيقاف الرد: كل رسالة بتتبعت بتاخد AbortController جديد،
+//    وأي fetch شغال في المعالجة (بحث، قراءة رابط، أي مزوّد ذكاء اصطناعي)
+//    بيتربط بنفس الـ signal بتاعه، عشان ضغطة "إيقاف" توقف كل حاجة فورًا ──
+let currentAbortController = null;
+function isAbortError(e){ return e && e.name === 'AbortError'; }
 // ── Firestore بتاع مشروع محفوظات نفسه (مش فلك) — هنا هنخزّن "الذاكرة الدائمة" (غرفة 3):
 //    تقييمات الردود 👍👎 اللي بتغذي دروس مستفادة وردود عجبت الناس، خاصة بمحفوظات بس ──
 const ownDb = firebase.firestore();
@@ -522,11 +527,12 @@ async function performWebSearch(query, includeDomains){
     const r = await fetch('https://api.tavily.com/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: currentAbortController ? currentAbortController.signal : undefined
     });
     if (!r.ok) return null;
     return await r.json();
-  } catch(e){ console.warn('performWebSearch failed', e); return null; }
+  } catch(e){ if (isAbortError(e)) throw e; console.warn('performWebSearch failed', e); return null; }
 }
 
 /* ============ قرار "هل الرسالة محتاجة بحث؟" — مرحلتين، بنفس فكرة النظام التلقائي للموديلات ============
@@ -567,13 +573,14 @@ async function classifyNeedsSearch(userMsg){
           { role: 'system', content: 'رد بكلمة واحدة بس: "نعم" لو الرسالة محتاجة معلومة حديثة/حقيقية أو حدث حالي أو حاجة لازم تتأكد منها من الإنترنت (زي أخبار، أسعار، تواريخ قريبة، أسماء أشخاص أو شركات أو منتجات حالية، نتائج، إحصائيات، حاجة بتتغيّر بمرور الوقت). أو رد "لا" لو مجرد كلام عادي، تحية، سؤال عن مفهوم علمي/تاريخي ثابت، طلب مساعدة عامة، أو طلب برمجة/كود. رد بكلمة واحدة بس من غير أي شرح.' },
           { role: 'user', content: userMsg }
         ]
-      })
+      }),
+      signal: currentAbortController ? currentAbortController.signal : undefined
     });
     if (!r.ok) return false;
     const d = await r.json();
     const ans = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
     return /نعم|yes/i.test(ans.trim());
-  } catch(e){ console.warn('classifyNeedsSearch failed', e); return false; }
+  } catch(e){ if (isAbortError(e)) throw e; console.warn('classifyNeedsSearch failed', e); return false; }
 }
 
 // ── لو المستخدم بعت رابط صريح، بندخله فعليًا عبر Tavily Extract (مش بحث، قراءة رابط بعينه) ──
@@ -590,13 +597,14 @@ async function performUrlExtract(url){
     const r = await fetch('https://api.tavily.com/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: key, urls: [url] })
+      body: JSON.stringify({ api_key: key, urls: [url] }),
+      signal: currentAbortController ? currentAbortController.signal : undefined
     });
     if (!r.ok) return null;
     const d = await r.json();
     const item = d && d.results && d.results[0];
     return item ? { url: item.url || url, content: item.raw_content || '' } : null;
-  } catch(e){ console.warn('performUrlExtract failed', e); return null; }
+  } catch(e){ if (isAbortError(e)) throw e; console.warn('performUrlExtract failed', e); return null; }
 }
 function buildUrlContentBlock(extracted){
   if (!extracted || !extracted.content) return '';
@@ -636,7 +644,8 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
           body: JSON.stringify({
             model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
             stream: true, reasoning_effort: 'high', reasoning_format: 'parsed'
-          })
+          }),
+          signal: currentAbortController ? currentAbortController.signal : undefined
         });
         if (!res.ok || !res.body){
           GroqKeyPool.report(key, res.status !== 429);
@@ -672,7 +681,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
         GroqKeyPool.report(key, true);
         roundResult = { text: full, reasoning: reasoningPart, finishReason };
         break;
-      } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); }
+      } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); if (isAbortError(e)) throw e; }
     }
     if (!roundResult || !roundResult.text) break;
     fullTotal += roundResult.text;
@@ -702,7 +711,8 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
     const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg })
+      body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg }),
+      signal: currentAbortController ? currentAbortController.signal : undefined
     });
     const data = await res.json();
     return { ok: res.ok, status: res.status, data };
@@ -727,7 +737,7 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
           break;
         }
         if (status !== 429) { i = maxAttempts; break; }
-      } catch(e){ console.warn("Gemini call failed", e); }
+      } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini call failed", e); }
     }
     if (!roundText) break;
     fullTotal += roundText;
@@ -746,12 +756,12 @@ let orFreeModelsCache = { list: [], key: null, at: 0 };
 async function getFreeOpenRouterModels(key){
   if (orFreeModelsCache.key === key && orFreeModelsCache.list.length && (Date.now()-orFreeModelsCache.at) < 1800000) return orFreeModelsCache.list;
   try{
-    const r = await fetch("https://openrouter.ai/api/v1/models", { headers: { "Authorization": "Bearer " + key } });
+    const r = await fetch("https://openrouter.ai/api/v1/models", { headers: { "Authorization": "Bearer " + key }, signal: currentAbortController ? currentAbortController.signal : undefined });
     const d = await r.json();
     const list = (d && d.data ? d.data : []).filter(m => m && m.pricing && Number(m.pricing.prompt)===0 && Number(m.pricing.completion)===0).map(m=>m.id).slice(0,3);
     if (list.length){ orFreeModelsCache = { list, key, at: Date.now() }; return list; }
     return [];
-  } catch(e){ return []; }
+  } catch(e){ if (isAbortError(e)) throw e; return []; }
 }
 async function callOpenRouterChat(historyMsgs, onReasoningDelta){
   if (!OpenRouterKeyPool.count()) return null;
@@ -771,7 +781,8 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
           const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
-            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' } })
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' } }),
+            signal: currentAbortController ? currentAbortController.signal : undefined
           });
           if (!r.ok || !r.body){
             OpenRouterKeyPool.report(key, r.status !== 429);
@@ -815,7 +826,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
           ]);
         }
         if (fullTotal) return { text: fullTotal, reasoning: fullReasoning };
-      } catch(e){ console.warn("OpenRouter call failed", e); }
+      } catch(e){ if (isAbortError(e)) throw e; console.warn("OpenRouter call failed", e); }
     }
     if (!keyFailed429) break;
   }
@@ -840,7 +851,8 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
           const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true })
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true }),
+            signal: currentAbortController ? currentAbortController.signal : undefined
           });
           if (!r.ok || !r.body){
             VercelGatewayKeyPool.report(key, r.status !== 429);
@@ -884,7 +896,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
           ]);
         }
         if (fullTotal) return { text: fullTotal, reasoning: fullReasoning };
-      } catch(e){ console.warn("Vercel Gateway call failed", e); }
+      } catch(e){ if (isAbortError(e)) throw e; console.warn("Vercel Gateway call failed", e); }
     }
     if (!keyFailed429) break;
   }
@@ -992,7 +1004,8 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
       const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({ contents: [{ parts }] })
+        body: JSON.stringify({ contents: [{ parts }] }),
+        signal: currentAbortController ? currentAbortController.signal : undefined
       });
       const data = await res.json();
       const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
@@ -1000,7 +1013,7 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
       GeminiKeyPool.report(key, res.status !== 429);
       if (txt) return txt;
       if (res.status !== 429) break;
-    } catch(e){ console.warn("Gemini vision failed", e); }
+    } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini vision failed", e); }
   }
   return "عذراً، مقدرتش أحلل الصورة دلوقتي.";
 }
@@ -2097,6 +2110,12 @@ composerInput.addEventListener('input', ()=>{
 
 composer.addEventListener('submit', async (e)=>{
   e.preventDefault();
+  // ── لو الزرار دلوقتي في وضع "إيقاف" (رد شغال)، ضغطة تانية عليه بتوقف
+  //    الرد فورًا من غير ما تبعت رسالة جديدة ──
+  if (sendBtn.classList.contains('sending')){
+    if (currentAbortController) currentAbortController.abort();
+    return;
+  }
   const text = composerInput.value.trim();
   const attachmentsSnapshot = pendingAttachments.slice();
   const images = attachmentsSnapshot.filter(a=>a.type==='image');
@@ -2105,16 +2124,16 @@ composer.addEventListener('submit', async (e)=>{
   composerInput.value='';
   composerInput.style.height='auto';
   clearAttachPreview();
-  sendBtn.disabled = true;
+  currentAbortController = new AbortController();
   sendBtn.classList.add('sending');
   const sendBtnIcon = document.getElementById('send-btn-icon');
-  sendBtnIcon.className = 'fas fa-circle-notch';
+  sendBtnIcon.className = 'fas fa-stop';
   // مؤقت أمان: لو لأي سبب غير متوقع الرد اتعلّق (شبكة واقفة، تبويب اتجمّد،
   // إلخ) ومكملش لحد الـ finally بتاعت الطلب، الزرار برضه هيرجع شغّال بعد
   // 45 ثانية بدل ما يفضل عالق "بيبعت" للأبد.
   clearTimeout(window.__sendWatchdog);
   window.__sendWatchdog = setTimeout(()=>{
-    sendBtn.disabled = false;
+    if (currentAbortController) currentAbortController.abort();
     sendBtn.classList.remove('sending');
     sendBtnIcon.className = 'fas fa-arrow-up';
   }, 45000);
@@ -2125,6 +2144,7 @@ composer.addEventListener('submit', async (e)=>{
   if(text) userMsg.text = text;
   if(images.length) userMsg.images = images.map(i=>i.dataUrl);
   if(files.length){
+
     userMsg.files = files.map(f=>{
       const entry = { name: f.name, kind: f.kind, note: f.note || '' };
       if (f.extractedText) entry.fileContext = f.extractedText.slice(0, 8000);
@@ -2204,13 +2224,20 @@ composer.addEventListener('submit', async (e)=>{
     }
   } catch(err){
     thinkingEl._clearStage();
-    thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-      Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' })
-    );
-    console.error(err);
+    thinkingEl.querySelector('.cosmos-deep-think-live')?.remove();
+    if (isAbortError(err)){
+      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'تم إيقاف الرد.' })
+      );
+    } else {
+      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' })
+      );
+      console.error(err);
+    }
   } finally {
     clearTimeout(window.__sendWatchdog);
-    sendBtn.disabled = false;
+    currentAbortController = null;
     sendBtn.classList.remove('sending');
     document.getElementById('send-btn-icon').className = 'fas fa-arrow-up';
   }
