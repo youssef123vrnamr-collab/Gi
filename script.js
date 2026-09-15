@@ -829,7 +829,7 @@ function formatAnswer(raw){
     var cb = colorBlocks[ci];
     var esc = cb.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     esc = esc.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-    s = s.split('\u0000CL' + ci + '\u0000').join('<span style="color:'+cb.color+'">'+esc+'</span>');
+    s = s.split('\u0000CL' + ci + '\u0000').join('<div class="note-card note-'+cb.color+'">'+esc+'</div>');
   }
 
   for (var bi=0; bi<codeBlocks.length; bi++){

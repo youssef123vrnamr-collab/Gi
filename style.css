@@ -285,7 +285,16 @@ body{
 .cosmos-source-chip img{width:14px;height:14px;border-radius:3px;flex-shrink:0;}
 .cosmos-source-chip:hover{border-color:var(--accent-dim);color:var(--text);}
 
-/* ============ نظام كتابة الأكواد الذكي — بطاقة ملف حديثة لكل كود ============ */
+/* ============ بطاقة الملاحظة الملوّنة — نفس لغة كارت الكود بالظبط (محدودة، منضبطة، مش بتخرج بره الشاشة) ============ */
+.note-card{
+  margin:.45rem 0;padding:.65rem .9rem;border-radius:10px;
+  background:var(--panel-raised);border:1px solid var(--border);border-inline-start:3px solid var(--note-c,var(--accent));
+  max-width:100%;box-sizing:border-box;overflow-wrap:break-word;word-break:break-word;
+  font-size:14px;line-height:1.6;color:var(--note-c,var(--text));
+}
+.note-red{--note-c:#e06c5a;} .note-green{--note-c:#6fbf73;} .note-blue{--note-c:#5a9ce0;}
+.note-yellow{--note-c:#dfc35a;} .note-orange{--note-c:#e2953f;} .note-purple{--note-c:#a789e0;}
+.note-pink{--note-c:#e07fb0;} .note-cyan{--note-c:#5fc9d6;} .note-teal{--note-c:#4fb3a0;} .note-gold{--note-c:#d8a34c;}
 .code-file-card{
   margin:.5rem 0;border:1px solid var(--border);border-radius:12px;
   overflow:hidden;background:#161512;max-width:100%;box-sizing:border-box;
