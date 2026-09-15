@@ -142,6 +142,7 @@ body{
 .messages{
   flex:1;overflow-y:auto;overflow-x:hidden;padding:24px 18px;display:flex;flex-direction:column;gap:18px;
 }
+.messages.repaint-kick{transform:translateZ(0);}
 .msg-wrap{display:flex;flex-direction:column;max-width:70%;min-width:0;overflow-x:hidden;}
 .msg-wrap.user{align-self:flex-end;align-items:flex-end;}
 .msg-wrap.assistant{align-self:flex-start;align-items:flex-start;max-width:92%;}
