@@ -233,9 +233,17 @@ function buildProCodeQualityBlock(){
     'باختصار: تخيل إن الكود ده هيتراجع من مبرمج محترف تاني قبل ما يتنشر — لازم يبان إنه مكتوب باحتراف من أول قراءة، مش مجرد حل سريع.';
 }
 
-/* ============ قاعدة تلوين النص + منع اللاتكس الخام (نفس فلك بالظبط) ============ */
+/* ============ قاعدة تلوين وتنسيق النص (ألوان متناسقة مع خلفية التطبيق + تنسيقات حرة) + منع اللاتكس الخام ============ */
 function buildColorPolicyBlock(){
-  return '\n\nقاعدة تلوين النص: عندك إمكانية تلوّن أجزاء من ردك النصي (مش الكود) بنفسك وقت ما تحس إن اللون هيفيد فعلاً — زي تحذير مهم بالأحمر، أو نقطة إيجابية/نجاح بالأخضر، أو معلومة مميزة بلون مختلف. استخدم الصيغة دي بالظبط حوالين الجزء اللي عايز تلوّنه: [[color:الاسم]]النص هنا[[/color]] — والاسم لازم يكون واحد من دول بالظبط: red, green, blue, yellow, orange, purple, pink, cyan, teal, gold. متستخدمش الصيغة دي إلا لو فعلاً محتاجها، ومتلوّنش الرد كله ولا كل سطر.';
+  return '\n\nقاعدة التلوين والتنسيق: عندك حرية إنك تلوّن وتنسّق أي جزء من ردك النصي (مش الكود) زي ما تحس إنه مناسب، لكن الألوان لازم تكون من مجموعة محددة ومظبوطة عشان تبان متناسقة مع خلفية التطبيق الغامقة الدافية، مش أي لون عشوائي ممكن يبان لاقع أو مش متناسق مع التصميم. استخدم الصيغة دي بالظبط: [[fmt:خصائص]]النص هنا[[/fmt]] — و"خصائص" قائمة مفصولة بفاصلة، ممكن تحط فيها لون واحد بس من القائمة المسموحة دي (وكل لون له معنى مقترح بس مش إلزامي تلتزم بيه):\n'
+    + '- gold أو amber → تمييز أو تنبيه إيجابي أو نقطة مهمة\n'
+    + '- sage → نجاح أو نقطة إيجابية\n'
+    + '- rose → تحذير أو خطأ\n'
+    + '- coral → تنبيه متوسط\n'
+    + '- sky → معلومة أو ملاحظة\n'
+    + '- lavender → حاجة مميزة أو غير عادية\n'
+    + '- sand أو slate → تفاصيل ثانوية أقل أهمية\n'
+    + 'وممكن تضيف مع اللون (أو من غيره) أي من دول: bold, italic, underline, strike, highlight — و highlight بتحط خلفية خفيفة شفافة بنفس اللون حوالين النص زي شارة (badge). مثال: [[fmt:rose,bold]]تحذير مهم[[/fmt]] أو [[fmt:gold,highlight]]نقطة مميزة[[/fmt]]. ممنوع تماما تستخدم أي لون تاني غير القائمة دي، وممنوع تكتب كود hex أو أسماء ألوان عادية زي red أو blue أو green مباشرة — استخدم الأسماء المتناسقة دي بس عشان تفضل شكل التطبيق موحّد وحلو. ومتلوّنش أو تنسّق الرد كله ولا كل سطر، استخدمها بس لما فعلاً تفيد.';
 }
 function buildNoRawLatexBlock(){
   return '\n\nقاعدة إلزامية: ممنوع تستخدم صيغة LaTeX الخام (زي \\frac{}{} أو \\sqrt{} أو \\gamma أو \\times) في أي معادلة رياضية، لأن واجهة المحادثة دي مفيهاش عارض LaTeX وهتظهر للمستخدم كرموز خام غريبة بدل معادلة واضحة. اكتب المعادلات بصيغة نصية عادية ومقروءة بس (زي x^2 أو (a+b)/c أو √x أو a/b أو γ = 1/√(1-v²/c²)).';
@@ -1433,16 +1441,41 @@ function escapeHtml(s){
 
 // ── نفس فكرة formatAIAnswer بتاع فلك: تلوين مخصص، كتل كود، خطوط عريضة، عناوين،
 //    صفوف جداول (بما إن مفيش عارض جداول حقيقي، بنحولها لسطر بنقط فاصلة زي فلك بالظبط) ──
+// ── لوحة ألوان متناسقة مع خلفية التطبيق الغامقة الدافية (--bg:#1b1a17) — الذكاء
+//    بيختار من الأسماء دي بس، مش أي لون خام، عشان يفضل الشكل موحّد وحلو دايمًا.
+//    الأسماء القديمة (red/green/blue...) لسه متدعّمة عشان الرسائل المخزّنة قبل كده. ──
+var STYLE_COLOR_PALETTE = {
+  gold:'#d8a34c', amber:'#e8b768', coral:'#e0916d', rose:'#d98a8f',
+  sage:'#9cb88a', mint:'#7fc4ad', sky:'#7fa8d0', lavender:'#b29bd6',
+  sand:'#c9b28a', slate:'#9aa3b0',
+  red:'#d98a8f', green:'#9cb88a', blue:'#7fa8d0', yellow:'#e8b768',
+  orange:'#e0916d', purple:'#b29bd6', pink:'#d9a0ae', cyan:'#7fc4ad', teal:'#6fae9c'
+};
+function styleHexToRgba(hex, alpha){
+  var h = hex.replace('#','');
+  var r = parseInt(h.substring(0,2),16), g = parseInt(h.substring(2,4),16), b = parseInt(h.substring(4,6),16);
+  return 'rgba('+r+','+g+','+b+','+alpha+')';
+}
+
 function formatAnswer(raw){
   if (!raw) return '';
   var s = String(raw);
 
-  var colorBlocks = [];
-  var allowedColors = /^(red|green|blue|yellow|orange|purple|pink|cyan|teal|gold)$/i;
-  s = s.replace(/\[\[color:([a-zA-Z]+)\]\]([\s\S]*?)\[\[\/color\]\]/g, function(m, name, inner){
-    if (!allowedColors.test(name.trim())) return inner;
-    var idx = colorBlocks.length;
-    colorBlocks.push({ color: name.trim().toLowerCase(), text: inner });
+  var styleBlocks = [];
+  // ── بيتقبل الصيغة الجديدة [[fmt:خصائص]]...[[/fmt]] (لون + bold/italic/underline/strike/highlight)
+  //    وكمان الصيغة القديمة [[color:اسم]]...[[/color]] للتوافق مع رسائل اتخزنت قبل كده ──
+  s = s.replace(/\[\[(fmt|color):([a-zA-Z, ]+)\]\]([\s\S]*?)\[\[\/\1\]\]/g, function(m, tag, tokensRaw, inner){
+    var tokens = tokensRaw.split(',').map(function(t){ return t.trim().toLowerCase(); }).filter(Boolean);
+    var colorToken = tokens.filter(function(t){ return STYLE_COLOR_PALETTE[t]; })[0];
+    var mods = {
+      bold: tokens.indexOf('bold') > -1,
+      italic: tokens.indexOf('italic') > -1,
+      underline: tokens.indexOf('underline') > -1,
+      strike: tokens.indexOf('strike') > -1,
+      highlight: tokens.indexOf('highlight') > -1
+    };
+    var idx = styleBlocks.length;
+    styleBlocks.push({ hex: colorToken ? STYLE_COLOR_PALETTE[colorToken] : null, mods: mods, text: inner });
     return '\u0000CL' + idx + '\u0000';
   });
 
@@ -1484,11 +1517,28 @@ function formatAnswer(raw){
   s = s.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,.08);padding:.1rem .3rem;border-radius:4px;direction:ltr;display:inline-block">$1</code>');
   s = s.replace(/\n{3,}/g, '\n\n').replace(/\n/g, '<br>');
 
-  for (var ci=0; ci<colorBlocks.length; ci++){
-    var cb = colorBlocks[ci];
+  for (var ci=0; ci<styleBlocks.length; ci++){
+    var cb = styleBlocks[ci];
     var esc = cb.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     esc = esc.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-    s = s.split('\u0000CL' + ci + '\u0000').join('<span style="color:'+cb.color+'">'+esc+'</span>');
+    var hex = cb.hex || '#d8a34c';
+    var styleParts = [];
+    if (cb.mods.highlight){
+      styleParts.push('background:'+styleHexToRgba(hex,0.16));
+      styleParts.push('color:'+hex);
+      styleParts.push('padding:.05rem .4rem');
+      styleParts.push('border-radius:6px');
+    } else if (cb.hex){
+      styleParts.push('color:'+hex);
+    }
+    if (cb.mods.bold) styleParts.push('font-weight:700');
+    if (cb.mods.italic) styleParts.push('font-style:italic');
+    var decorations = [];
+    if (cb.mods.underline) decorations.push('underline');
+    if (cb.mods.strike) decorations.push('line-through');
+    if (decorations.length) styleParts.push('text-decoration:'+decorations.join(' '));
+    var styleAttr = styleParts.length ? ' style="'+styleParts.join(';')+'"' : '';
+    s = s.split('\u0000CL' + ci + '\u0000').join('<span'+styleAttr+'>'+esc+'</span>');
   }
 
   for (var bi=0; bi<codeBlocks.length; bi++){
