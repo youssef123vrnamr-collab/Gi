@@ -168,15 +168,15 @@ function buildCodeFileCard(lang, code){
     + '<div class="code-file-icon code-lang-'+ext+'"><i class="fas fa-code"></i></div>'
     + '<div class="code-file-meta"><div class="code-file-name" dir="ltr">'+filename+'</div>'
     + '<div class="code-file-sub">'+label+' · '+lineCount+' سطر</div></div>'
-    + '<button type="button" class="code-file-btn" title="نسخ" onclick="event.stopPropagation();copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
-    + '<button type="button" class="code-file-btn" title="تنزيل" onclick="event.stopPropagation();downloadCodeFile(\''+gid+'\',\''+filename+'\')"><i class="fas fa-download"></i></button>'
-    + '<i class="fas fa-chevron-down code-file-chevron"></i>'
     + '</div>'
-    + '<div class="code-file-body"><pre><code class="hljs language-'+hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
-    + '<div class="code-rate-bar"><span class="code-rate-label">الكود ده عجبك؟</span>'
+    + '<div class="code-file-actions">'
+    + '<button type="button" class="code-file-btn" title="نسخ" onclick="copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
+    + '<button type="button" class="code-file-btn" title="تنزيل" onclick="downloadCodeFile(\''+gid+'\',\''+filename+'\')"><i class="fas fa-download"></i></button>'
     + '<button type="button" class="code-rate-btn code-rate-good" onclick="rateCodeGood(\''+gid+'\',this)"><i class="fas fa-thumbs-up"></i></button>'
     + '<button type="button" class="code-rate-btn code-rate-bad" onclick="rateCodeBad(\''+gid+'\',this)"><i class="fas fa-thumbs-down"></i></button>'
-    + '</div></div>';
+    + '</div>'
+    + '<div class="code-file-body"><pre><code class="hljs language-'+hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
+    + '</div>';
 }
 
 window.toggleCodeFileBody = function(gid){
