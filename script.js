@@ -1333,6 +1333,86 @@ function describeAuthError(err){
   return map[err.code] || 'حصل خطأ، جرب تاني.';
 }
 
+/* ============ رصيد الاستخدام اليومي: ساعتين في اليوم، في أي وقت المستخدم يستخدمهم ============
+   مش مواعيد ثابتة — المستخدم بيستهلك من رصيد ساعتين طول اليوم زي ما يريحه، والعداد
+   بيمشي بس لما التبويب فاتح وشغال قدامه (مش وهو مقفول/في الخلفية). الرصيد بيتخزن في
+   Firebase تحت تاريخ اليوم عشان يفضل زي ما هو لو قفل وفتح التطبيق تاني أو غيّر جهاز،
+   وبيترجع يمتلئ لوحده مع أول رسالة في يوم جديد (يوم جديد = مفتاح تاريخ جديد). */
+const USAGE_DAILY_BUDGET_MS = 2 * 60 * 60 * 1000; // ساعتين
+let usageUsedMs = 0;
+let usageDayKey = null;
+let usageLoaded = false;
+let usageSyncCounter = 0;
+
+function usageTodayKey(d){
+  d = d || new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function loadUsageForToday(){
+  if (!currentUser) return;
+  const key = usageTodayKey();
+  usageDayKey = key;
+  usageLoaded = false;
+  db.ref('users/'+currentUser.uid+'/usage/'+key+'/usedMs').once('value')
+    .then(snap=>{ usageUsedMs = snap.val() || 0; usageLoaded = true; updateUsageWindowUI(); })
+    .catch(()=>{ usageUsedMs = 0; usageLoaded = true; updateUsageWindowUI(); });
+}
+function syncUsageToFirebase(){
+  if (!currentUser || !usageDayKey) return;
+  db.ref('users/'+currentUser.uid+'/usage/'+usageDayKey+'/usedMs').set(usageUsedMs).catch(()=>{});
+}
+function formatDurationHMS(ms){
+  const totalSec = Math.max(0, Math.floor(ms/1000));
+  const h = Math.floor(totalSec/3600), m = Math.floor((totalSec%3600)/60), s = totalSec%60;
+  return h>0 ? (h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')) : (m+':'+String(s).padStart(2,'0'));
+}
+function usageRemainingMs(){ return Math.max(0, USAGE_DAILY_BUDGET_MS - usageUsedMs); }
+function usageIsLocked(){ return !!currentUser && usageLoaded && usageRemainingMs() <= 0; }
+function usageTick(){
+  if (!currentUser || !usageLoaded) return;
+  const key = usageTodayKey();
+  if (key !== usageDayKey){ usageDayKey = key; usageUsedMs = 0; syncUsageToFirebase(); } // يوم جديد = رصيد جديد
+  if (document.visibilityState === 'visible'){
+    usageUsedMs += 1000;
+    usageSyncCounter++;
+    if (usageSyncCounter >= 10){ usageSyncCounter = 0; syncUsageToFirebase(); } // نزامن كل ~10 ثواني بس، مش كل ثانية
+  }
+}
+function updateUsageWindowUI(){
+  const bar = document.getElementById('usage-window-bar');
+  if (!bar) return;
+  const fill = document.getElementById('usage-window-fill');
+  const label = document.getElementById('usage-window-label');
+  const lockBanner = document.getElementById('usage-lock-banner');
+  const lockText = document.getElementById('usage-lock-text');
+  if (!currentUser || !usageLoaded){
+    bar.classList.remove('locked');
+    fill.style.width = '100%';
+    label.textContent = formatDurationHMS(USAGE_DAILY_BUDGET_MS);
+    lockBanner.style.display = 'none';
+    return;
+  }
+  const remainingMs = usageRemainingMs();
+  const pct = Math.max(0, Math.min(100, (remainingMs/USAGE_DAILY_BUDGET_MS)*100));
+  fill.style.width = pct + '%';
+  label.textContent = formatDurationHMS(remainingMs);
+  if (remainingMs <= 0){
+    bar.classList.add('locked');
+    bar.title = 'خلصت الساعتين بتوع النهارده';
+    lockText.textContent = 'خلصت الساعتين بتوع النهارده — الرصيد هيرجع تاني بكرة.';
+    lockBanner.style.display = 'flex';
+    composerInput.disabled = true; sendBtn.disabled = true; attachBtn.disabled = true;
+  } else {
+    bar.classList.remove('locked');
+    bar.title = 'متبقي ' + formatDurationHMS(remainingMs) + ' من رصيد النهاردة (ساعتين)';
+    lockBanner.style.display = 'none';
+    composerInput.disabled = false; sendBtn.disabled = false; attachBtn.disabled = false;
+  }
+}
+setInterval(()=>{ usageTick(); updateUsageWindowUI(); }, 1000);
+window.addEventListener('beforeunload', syncUsageToFirebase);
+document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='hidden') syncUsageToFirebase(); });
+
 logoutBtn.addEventListener('click', ()=> auth.signOut());
 
 /* ============ AUTH STATE ============ */
@@ -1347,11 +1427,13 @@ auth.onAuthStateChanged(user=>{
     db.ref('users/'+user.uid+'/profile/gender').once('value')
       .then(snap=>{ currentUserGender = snap.val() || null; })
       .catch(()=>{ currentUserGender = null; });
+    loadUsageForToday();
     listenToConversations();
     refreshGeoContext(); // بيجيب الموقع/مواعيد الصلاة/القبلة في الخلفية، من غير ما يعطل حاجة
   } else {
     currentUser = null;
     currentUserGender = null;
+    usageUsedMs = 0; usageDayKey = null; usageLoaded = false;
     currentConvId = null;
     if(conversationsRef) conversationsRef.off();
     authScreen.style.display='flex';
@@ -2142,6 +2224,10 @@ composerInput.addEventListener('input', ()=>{
 
 composer.addEventListener('submit', async (e)=>{
   e.preventDefault();
+  if (usageIsLocked()){
+    updateUsageWindowUI();
+    return;
+  }
   // ── لو الزرار دلوقتي في وضع "إيقاف" (رد شغال)، ضغطة تانية عليه بتوقف
   //    الرد فورًا من غير ما تبعت رسالة جديدة ──
   if (sendBtn.classList.contains('sending')){

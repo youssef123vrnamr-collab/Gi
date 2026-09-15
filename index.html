@@ -6,7 +6,9 @@
 <title>Digital Mind</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1a17">
-<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="icon" href="icons/icon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="icons/icon-16.png" type="image/png" sizes="16x16">
+<link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -92,7 +94,17 @@
     <header id="chat-header">
       <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="القائمة"><i class="fas fa-bars"></i></button>
       <span id="conversation-title">محادثة جديدة</span>
+      <div id="usage-window-bar" class="usage-window-bar" title="">
+        <span id="usage-window-icon" class="usage-window-icon"><i class="fas fa-clock"></i></span>
+        <span class="usage-window-track"><span id="usage-window-fill" class="usage-window-fill"></span></span>
+        <span id="usage-window-label" class="usage-window-label">--:--</span>
+      </div>
     </header>
+
+    <div id="usage-lock-banner" class="usage-lock-banner" style="display:none;">
+      <i class="fas fa-lock"></i>
+      <span id="usage-lock-text">الجلسة النهارده خلصت.</span>
+    </div>
 
     <div id="messages" class="messages"></div>
 
