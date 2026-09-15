@@ -357,7 +357,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
         method: "POST",
         headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "openai/gpt-oss-120b", messages, max_tokens: 8000, temperature: 0.4,
+          model: "openai/gpt-oss-120b", messages, max_tokens: 1500, temperature: 0.4,
           stream: true, reasoning_effort: 'high', reasoning_format: 'parsed'
         })
       });
@@ -408,7 +408,7 @@ async function callGeminiChat(historyMsgs){
       const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: { temperature: 0.4, maxOutputTokens: 6000 } })
+        body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: { temperature: 0.4, maxOutputTokens: 1500 } })
       });
       const data = await res.json();
       const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
@@ -448,7 +448,7 @@ async function callOpenRouterChat(historyMsgs){
         const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
           headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
-          body: JSON.stringify({ model, messages, max_tokens: 6000, temperature: 0.4 })
+          body: JSON.stringify({ model, messages, max_tokens: 1200, temperature: 0.4 })
         });
         const d = await r.json();
         const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
@@ -477,7 +477,7 @@ async function callVercelChat(historyMsgs){
         const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
           method: "POST",
           headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages, max_tokens: 6000, temperature: 0.4, stream: false })
+          body: JSON.stringify({ model, messages, max_tokens: 1200, temperature: 0.4, stream: false })
         });
         const d = await r.json();
         const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
@@ -793,14 +793,6 @@ function formatAnswer(raw){
     codeBlocks.push({ lang: (lang||'').trim(), code: code.replace(/\n$/,'') });
     return '\u0000CB' + idx + '\u0000';
   });
-  // ── لو الرد اتقطع (الموديل خلّص التوكنز) وفيه ``` مفتوحة من غير ما تتقفل، نعتبر باقي
-  //    النص كله كود ونحطه في كارت برضو، بدل ما يظهر كنص خام على الشاشة ──
-  var openFence = s.match(/```([a-zA-Z0-9]*)\n?([\s\S]*)$/);
-  if (openFence) {
-    var oIdx = codeBlocks.length;
-    codeBlocks.push({ lang: (openFence[1]||'').trim(), code: openFence[2] });
-    s = s.slice(0, openFence.index) + '\u0000CB' + oIdx + '\u0000';
-  }
 
   s = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
@@ -829,7 +821,7 @@ function formatAnswer(raw){
     var cb = colorBlocks[ci];
     var esc = cb.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     esc = esc.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-    s = s.split('\u0000CL' + ci + '\u0000').join('<div class="note-card note-'+cb.color+'">'+esc+'</div>');
+    s = s.split('\u0000CL' + ci + '\u0000').join('<span style="color:'+cb.color+'">'+esc+'</span>');
   }
 
   for (var bi=0; bi<codeBlocks.length; bi++){
