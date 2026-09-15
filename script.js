@@ -895,17 +895,6 @@ function buildDeepThinkBox(reasoningText){
 // ── أنيميشن الكتابة التدريجي الثابت — نفس فلك بالظبط: بيفكك الـ HTML الجاهز (منسّق، ملوّن،
 //    فيه بطاقات كود) لعمليات "حرف / فتح تاج / قفل تاج" وبيعيد بناءه تدريجيًا بسرعة هادية وثابتة،
 //    من غير ما يعتمد على سرعة الشبكة. بطاقة الكود بتتحط دفعة واحدة جوه مكانها، مش حرف حرف ──
-// ── إصلاح باج "الرسمة العالقة": بعض متصفحات الأندرويد (غير كروم) بتسيب رسمة قديمة
-//    (paint) عالقة للعناصر اللي فوق لما بنشيل/نضيف عناصر تانية جنبها بسرعة (زي قفل
-//    صندوق التفكير العميق). الحل: نجبر المتصفح يعمل إعادة رسم (recomposite) للحاوية كلها ──
-function kickRepaint(){
-  if (!messagesEl) return;
-  messagesEl.classList.add('repaint-kick');
-  requestAnimationFrame(()=>{
-    requestAnimationFrame(()=> messagesEl.classList.remove('repaint-kick'));
-  });
-}
-
 function typewriterReveal(container, html, onDone){
   const temp = document.createElement('div');
   temp.innerHTML = html;
@@ -973,7 +962,6 @@ function renderFinalAssistantMessage(wrap, msg){
   wrap.querySelector('.cosmos-deep-think-live')?.remove();
   wrap.querySelector('.code-building-row')?.remove();
   wrap.querySelector('.cosmos-live-stream')?.remove();
-  kickRepaint();
 
   if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning));
 
@@ -988,7 +976,6 @@ function renderFinalAssistantMessage(wrap, msg){
     time.textContent = formatTime(msg.ts);
     wrap.appendChild(time);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-    kickRepaint();
   });
 }
 
@@ -1040,7 +1027,6 @@ function appendMessageBubble(msg){
 
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  kickRepaint();
 }
 
 function appendThinkingIndicator(stages){
@@ -1052,7 +1038,6 @@ function appendThinkingIndicator(stages){
     '<div class="thinking-stage"></div>';
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  kickRepaint();
   const stageEl = wrap.querySelector('.thinking-stage');
   const list = (stages && stages.length) ? stages : ['بيفكر...'];
   let idx = 0;
@@ -1074,7 +1059,6 @@ function appendThinkingIndicator(stages){
     clearInterval(wrap._stageTimer);
     wrap.querySelector('.thinking-dots')?.remove();
     stageEl.remove();
-    kickRepaint();
     const liveBox = document.createElement('div');
     liveBox.className = 'cosmos-deep-think-live';
     liveBox.innerHTML = '<div class="cosmos-deep-think-live-label"><i class="fas fa-brain"></i> غرفة التفكير العميق — بيفكر دلوقتي...</div>'+

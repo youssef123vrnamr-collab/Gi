@@ -142,7 +142,6 @@ body{
 .messages{
   flex:1;overflow-y:auto;overflow-x:hidden;padding:24px 18px;display:flex;flex-direction:column;gap:18px;
 }
-.messages.repaint-kick{transform:translateZ(0);}
 .msg-wrap{display:flex;flex-direction:column;max-width:70%;min-width:0;overflow-x:hidden;}
 .msg-wrap.user{align-self:flex-end;align-items:flex-end;}
 .msg-wrap.assistant{align-self:flex-start;align-items:flex-start;max-width:92%;}
@@ -324,12 +323,12 @@ body{
 .code-file-name:empty::before{content:'ملف';color:#8a8a86;}
 .code-file-sub{font-size:13px;color:#8a8a86;margin-top:3px;}
 .code-file-chevron{display:none;}
-.code-file-body{max-height:0;overflow:hidden;transition:max-height .25s ease;max-width:100%;width:100%;box-sizing:border-box;}
-.code-file-card.open .code-file-body{max-height:460px;overflow-y:auto;overflow-x:hidden;}
-.code-file-body pre{margin:0;padding:.8rem;direction:ltr;text-align:left;background:#0d0c0a !important;overflow-x:hidden;max-width:100%;width:100%;box-sizing:border-box;}
-.code-file-body code{font-family:'Consolas','Courier New',monospace;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;display:block;}
+.code-file-body{max-height:0;overflow:hidden;transition:max-height .25s ease;max-width:100%;}
+.code-file-card.open .code-file-body{max-height:460px;overflow:auto;}
+.code-file-body pre{margin:0;padding:.8rem;direction:ltr;text-align:left;background:#0d0c0a !important;overflow-x:auto;max-width:100%;box-sizing:border-box;}
+.code-file-body code{font-family:'Consolas','Courier New',monospace;font-size:13px;line-height:1.6;white-space:pre;}
 .code-file-actions{
-  display:flex;align-items:center;gap:26px;padding:2px 6px 0;
+  display:flex;align-items:center;gap:26px;padding:2px 6px 14px;
 }
 .code-file-btn{
   border:none;background:transparent;color:var(--text-dim);cursor:pointer;
@@ -362,7 +361,4 @@ body{
   #sidebar:not(.collapsed){margin-right:0;}
   .icon-btn{display:block;}
   .msg-wrap{max-width:85%;}
-  .code-file-card{max-width:100%;}
-  .code-file-body pre{padding:.6rem;}
-  .code-file-body code{font-size:12px;}
 }
