@@ -385,6 +385,7 @@ function buildGoodAnswersBlock(){
 
 function buildSystemPrompt(searchResultsBlock){
   return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
+    + buildLiveContextBlock()
     + buildReasoningRoomBlock()
     + buildColorPolicyBlock()
     + buildNoRawLatexBlock()
@@ -396,6 +397,98 @@ function buildSystemPrompt(searchResultsBlock){
     + buildBadCodeBlock()
     + (searchResultsBlock || '')
     + (globalAiInstructions ? ('\n\nتعليمات إضافية:\n' + globalAiInstructions) : '');
+}
+
+/* ============ الوقت / التاريخ / الهجري / مواعيد الصلاة / اتجاه القبلة (حقيقي، لحظي) ============
+   بيانات الساعة والتاريخ بتتحسب محليًا (Intl) من غير أي نت. بيانات الموقع ومواعيد
+   الصلاة واتجاه القبلة بتتجاب مرة واحدة في اليوم (لأول رسالة) عن طريق موقع
+   المتصفح الجغرافي + Aladhan API (مواعيد الصلاة + التاريخ الهجري الدقيق + اتجاه
+   القبلة) + BigDataCloud (اسم المدينة/الدولة) — كلها من غير أي مفتاح API. */
+let geoState = { status:'idle', lat:null, lng:null, locationName:'', timings:null, hijriApi:null, qiblaDeg:null, qiblaCompass:null, fetchedDay:null };
+
+function requestGeolocation(){
+  return new Promise((resolve)=>{
+    if (!navigator.geolocation){ resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      ()  => resolve(null),
+      { enableHighAccuracy:false, timeout:8000, maximumAge:600000 }
+    );
+  });
+}
+
+function bearingToCompass(deg){
+  const dirs = ['شمال','شمال شرقي','شرق','جنوب شرقي','جنوب','جنوب غربي','غرب','شمال غربي'];
+  const idx = Math.round(((deg % 360) + 360) % 360 / 45) % 8;
+  return dirs[idx];
+}
+
+// ── بتتجاب مرة واحدة في اليوم بس (كاش بـ fetchedDay)، وبتفشل بهدوء لو المستخدم رفض إذن الموقع ──
+async function refreshGeoContext(){
+  const todayKey = new Date().toDateString();
+  if (geoState.fetchedDay === todayKey && geoState.timings) return;
+  if (geoState.status === 'denied' && geoState.fetchedDay === todayKey) return;
+
+  const loc = await requestGeolocation();
+  if (!loc){ geoState.status = 'denied'; geoState.fetchedDay = todayKey; return; }
+
+  geoState.lat = loc.lat; geoState.lng = loc.lng; geoState.status = 'ok';
+  try{
+    const [geoRes, prayerRes, qiblaRes] = await Promise.all([
+      fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+loc.lat+'&longitude='+loc.lng+'&localityLanguage=ar').then(r=>r.json()).catch(()=>null),
+      fetch('https://api.aladhan.com/v1/timings/'+Math.floor(Date.now()/1000)+'?latitude='+loc.lat+'&longitude='+loc.lng+'&method=5').then(r=>r.json()).catch(()=>null),
+      fetch('https://api.aladhan.com/v1/qibla/'+loc.lat+'/'+loc.lng).then(r=>r.json()).catch(()=>null)
+    ]);
+    if (geoRes){
+      geoState.locationName = [geoRes.city || geoRes.locality, geoRes.principalSubdivision, geoRes.countryName].filter(Boolean).join('، ');
+    }
+    if (prayerRes && prayerRes.data){
+      geoState.timings = prayerRes.data.timings;
+      geoState.hijriApi = prayerRes.data.date && prayerRes.data.date.hijri;
+    }
+    if (qiblaRes && qiblaRes.data && typeof qiblaRes.data.direction === 'number'){
+      geoState.qiblaDeg = qiblaRes.data.direction;
+      geoState.qiblaCompass = bearingToCompass(qiblaRes.data.direction);
+    }
+    geoState.fetchedDay = todayKey;
+  } catch(e){ console.warn('refreshGeoContext failed', e); }
+}
+
+// ── الساعة والتاريخ (ميلادي + هجري تقريبي) بيتحسبوا محليًا من غير نت، فبيبقوا جاهزين فورًا ──
+function getLiveClockBlock(){
+  const now = new Date();
+  let weekdayAr = '', dateAr = '', timeAr = '', hijriAr = '';
+  try{ weekdayAr = new Intl.DateTimeFormat('ar-EG', { weekday:'long' }).format(now); } catch(e){}
+  try{ dateAr = new Intl.DateTimeFormat('ar-EG', { day:'numeric', month:'long', year:'numeric' }).format(now); } catch(e){}
+  try{ timeAr = new Intl.DateTimeFormat('ar-EG', { hour:'numeric', minute:'2-digit', hour12:true }).format(now); } catch(e){}
+  try{ hijriAr = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura', { day:'numeric', month:'long', year:'numeric' }).format(now); } catch(e){}
+  return { weekdayAr, dateAr, timeAr, hijriAr };
+}
+
+function buildLiveContextBlock(){
+  const c = getLiveClockBlock();
+  let block = '\n\n--- الوقت والتاريخ الحاليين (بيانات حقيقية دلوقتي، اعتمد عليها دايمًا ولو مختلفة عن أي معلومة عندك من قبل) ---\n'
+    + 'اليوم: ' + c.weekdayAr + '\n'
+    + 'التاريخ الميلادي: ' + c.dateAr + '\n'
+    + 'الساعة الحالية (بتوقيت جهاز المستخدم): ' + c.timeAr + '\n'
+    + (c.hijriAr ? ('التاريخ الهجري (تقريبي): ' + c.hijriAr + '\n') : '');
+
+  if (geoState.locationName) block += 'موقع المستخدم الحالي: ' + geoState.locationName + '\n';
+  if (geoState.hijriApi && geoState.hijriApi.month){
+    block += 'التاريخ الهجري الدقيق حسب موقع المستخدم: ' + geoState.hijriApi.day + ' ' + geoState.hijriApi.month.ar + ' ' + geoState.hijriApi.year + 'هـ\n';
+  }
+  if (geoState.timings){
+    const t = geoState.timings;
+    block += 'مواعيد الصلاة اليوم في موقع المستخدم: الفجر ' + t.Fajr + '، الشروق ' + t.Sunrise + '، الظهر ' + t.Dhuhr + '، العصر ' + t.Asr + '، المغرب ' + t.Maghrib + '، العشاء ' + t.Isha + '\n';
+  }
+  if (geoState.qiblaCompass){
+    block += 'اتجاه القبلة من موقع المستخدم: ' + geoState.qiblaCompass + ' (بزاوية تقريبية ' + Math.round(geoState.qiblaDeg) + '° من الشمال)\n';
+  }
+  if (geoState.status === 'denied'){
+    block += 'ملحوظة: المستخدم مسموحش (أو لسه) بالوصول لموقعه الجغرافي، فمعرفتش أجيب مواعيد الصلاة أو اتجاه القبلة أو اسم مدينته بالظبط — لو سأل عن حاجة من دي، قوله يسمح بإذن الموقع من المتصفح.\n';
+  }
+  block += '---';
+  return block;
 }
 
 /* ============ البحث الحقيقي في الإنترنت عبر Tavily (نفس فلك بالظبط) ============ */
@@ -769,17 +862,21 @@ function compressImage(file){
     reader.readAsDataURL(file);
   });
 }
-async function analyzeImageWithGemini(dataUrl, promptText){
+async function analyzeImagesWithGemini(dataUrls, promptText){
   if (!GeminiKeyPool.count()){
     return "لسه مفيش مفتاح Gemini متسجل على فلك، فمقدرش أحلل الصور دلوقتي.";
   }
-  const commaIdx = dataUrl.indexOf(',');
-  const base64Data = commaIdx > -1 ? dataUrl.slice(commaIdx+1) : dataUrl;
-  const mimeMatch = /^data:([^;]+);base64/.exec(dataUrl);
-  const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
-  const fullPrompt = (promptText || 'صف هذه الصورة بالتفصيل باللغة العربية.') +
+  const list = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
+  const imageParts = list.map(dataUrl=>{
+    const commaIdx = dataUrl.indexOf(',');
+    const base64Data = commaIdx > -1 ? dataUrl.slice(commaIdx+1) : dataUrl;
+    const mimeMatch = /^data:([^;]+);base64/.exec(dataUrl);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    return { inline_data: { mime_type: mimeType, data: base64Data } };
+  });
+  const fullPrompt = (promptText || (list.length > 1 ? 'صف الصور دي بالتفصيل باللغة العربية.' : 'صف هذه الصورة بالتفصيل باللغة العربية.')) +
     '\n\nجاوب بأسلوب احترافي منظم بنقاط عند الحاجة، من غير ماركداون خام زي ### أو --- أو جداول |.';
-  const parts = [{ text: fullPrompt }, { inline_data: { mime_type: mimeType, data: base64Data } }];
+  const parts = [{ text: fullPrompt }].concat(imageParts);
   const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
   for (let i=0;i<maxAttempts;i++){
     const key = GeminiKeyPool.next();
@@ -805,8 +902,9 @@ async function analyzeImageWithGemini(dataUrl, promptText){
 let currentUser = null;
 let currentConvId = null;
 let conversationsRef = null;
-let pendingImage = null;      // { dataUrl (compressed) } — للصور بس (بتتحلل بـ Gemini Vision زي ما هي)
-let pendingAttachment = null; // { name, kind, extractedText, note, zipEntries? } — لباقي أنواع الملفات
+// ── ممكن تتراكم أكتر من مرفق مع بعض (صور و/أو ملفات)، كل واحد بصندوقه الخاص جنب التاني ──
+let pendingAttachments = []; // [{ id, type:'image'|'file', dataUrl?, name, kind, note, extractedText, processing }]
+let attachSeq = 0;
 
 /* ============ قراءة/تحليل الملفات المرفقة (PDF / Word / Excel / صوت / ZIP / نصوص) ============
    كل دالة بترجع نص مستخرج من الملف، وده بيتحط جوه رسالة المستخدم كـ"سياق" يتقرا
@@ -1081,6 +1179,7 @@ auth.onAuthStateChanged(user=>{
     authScreen.style.display='none';
     appShell.style.display='flex';
     listenToConversations();
+    refreshGeoContext(); // بيجيب الموقع/مواعيد الصلاة/القبلة في الخلفية، من غير ما يعطل حاجة
   } else {
     currentUser = null;
     currentConvId = null;
@@ -1594,22 +1693,37 @@ function appendMessageBubble(msg){
     wrap.appendChild(header);
   }
 
-  if(msg.image){
-    const imgEl = document.createElement('img');
-    imgEl.className = 'msg-image';
-    imgEl.src = msg.image;
-    imgEl.loading = 'lazy';
-    wrap.appendChild(imgEl);
+  // ── صور الرسالة: بنستحمل رسائل قديمة كانت بتخزّن صورة واحدة (msg.image) وكمان
+  //    الشكل الجديد اللي بيدعم أكتر من صورة مع بعض (msg.images) ──
+  const msgImages = msg.images && msg.images.length ? msg.images : (msg.image ? [msg.image] : []);
+  if(msgImages.length){
+    const grid = document.createElement('div');
+    grid.className = 'msg-images-grid';
+    msgImages.forEach(src=>{
+      const imgEl = document.createElement('img');
+      imgEl.className = 'msg-image';
+      imgEl.src = src;
+      imgEl.loading = 'lazy';
+      grid.appendChild(imgEl);
+    });
+    wrap.appendChild(grid);
   }
 
-  if(msg.fileName){
-    const chip = document.createElement('div');
-    chip.className = 'attach-file-chip';
-    const icon = FILE_KIND_ICON[msg.fileKind] || 'fa-file';
-    chip.innerHTML = '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
-      '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(msg.fileName)+'</div>'+
-      '<div class="attach-file-status">'+escapeHtml(msg.fileNote||'')+'</div></div>';
-    wrap.appendChild(chip);
+  // ── نفس الفكرة لملفات الرسالة: msg.files (جديد، أكتر من ملف) أو msg.fileName (قديم) ──
+  const msgFiles = msg.files && msg.files.length ? msg.files : (msg.fileName ? [{ name: msg.fileName, kind: msg.fileKind, note: msg.fileNote }] : []);
+  if(msgFiles.length){
+    const filesWrap = document.createElement('div');
+    filesWrap.className = 'msg-files-row';
+    msgFiles.forEach(f=>{
+      const chip = document.createElement('div');
+      chip.className = 'attach-file-chip';
+      const icon = FILE_KIND_ICON[f.kind] || 'fa-file';
+      chip.innerHTML = '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
+        '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(f.name)+'</div>'+
+        '<div class="attach-file-status">'+escapeHtml(f.note||'')+'</div></div>';
+      filesWrap.appendChild(chip);
+    });
+    wrap.appendChild(filesWrap);
   }
 
   if(msg.role !== 'user' && msg.reasoning){
@@ -1680,62 +1794,87 @@ function appendThinkingIndicator(stages){
 const FILE_KIND_ICON = { image:'fa-image', audio:'fa-microphone', pdf:'fa-file-pdf', docx:'fa-file-word', excel:'fa-file-excel', zip:'fa-file-zipper', text:'fa-file-code', other:'fa-file' };
 
 function clearAttachPreview(){
-  pendingImage = null;
-  pendingAttachment = null;
+  pendingAttachments = [];
   attachPreview.style.display = 'none';
   attachPreview.innerHTML = '';
 }
 
-attachBtn.addEventListener('click', ()=> attachInput.click());
-attachInput.addEventListener('change', async ()=>{
-  const file = attachInput.files && attachInput.files[0];
-  attachInput.value = '';
-  if(!file) return;
+function removeAttachmentById(id){
+  pendingAttachments = pendingAttachments.filter(a => a.id !== id);
+  renderAttachPreview();
+}
 
-  const kind = getFileKind(file);
-
-  // ── الصور بتفضل زي ما هي بالظبط: معاينة صورة + تحليل Gemini Vision ──
-  if (kind === 'image'){
-    try{
-      const dataUrl = await compressImage(file);
-      pendingAttachment = null;
-      pendingImage = { dataUrl };
-      attachPreview.innerHTML = '<img src="'+dataUrl+'"><button type="button" id="remove-attach"><i class="fas fa-xmark"></i></button>';
-      attachPreview.style.display = 'flex';
-      document.getElementById('remove-attach').addEventListener('click', clearAttachPreview);
-    } catch(e){ console.error(e); showToast('⚠️ مقدرتش أقرا الصورة دي'); }
+// ── بتعيد رسم كل المرفقات المعلّقة، كل واحد في صندوقه الخاص وزرار الإكس جواه هو نفسه،
+//    وكلهم جنب بعض في صف واحد (flex-wrap) مش فوق بعض ──
+function renderAttachPreview(){
+  if (!pendingAttachments.length){
+    attachPreview.style.display = 'none';
+    attachPreview.innerHTML = '';
     return;
   }
-
-  // ── ZIP: نسأل المستخدم الأول يفك ولا يسيبه مضغوط، قبل ما نعالج الملف ──
-  let extractZip = true;
-  if (kind === 'zip'){
-    extractZip = confirm('عايز أفك الضغط وأقرا اللي جوه الملف؟\n"موافق" = هفكه وأحلل محتواه\n"إلغاء" = هسيبه مضغوط زي ما هو');
-  }
-
-  pendingImage = null;
-  const icon = FILE_KIND_ICON[kind] || 'fa-file';
-  attachPreview.innerHTML =
-    '<div class="attach-file-chip processing" id="attach-file-chip">'+
-    '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
-    '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(file.name)+'</div>'+
-    '<div class="attach-file-status">بيتقرا...</div></div></div>'+
-    '<button type="button" id="remove-attach"><i class="fas fa-xmark"></i></button>';
-  attachPreview.style.display = 'flex';
-  document.getElementById('remove-attach').addEventListener('click', clearAttachPreview);
-
-  try{
-    const result = await processAttachedFile(file, { extractZip });
-    pendingAttachment = result;
-    const chip = document.getElementById('attach-file-chip');
-    if (chip){
-      chip.classList.remove('processing');
-      chip.querySelector('.attach-file-status').textContent = result.note || 'جاهز';
+  attachPreview.innerHTML = pendingAttachments.map(a=>{
+    const removeBtn = '<button type="button" class="attach-remove-btn" data-remove-id="'+a.id+'"><i class="fas fa-xmark"></i></button>';
+    if (a.type === 'image'){
+      return '<div class="attach-item" data-attach-id="'+a.id+'"><img src="'+a.dataUrl+'">'+removeBtn+'</div>';
     }
-  } catch(e){
-    console.error(e);
-    showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''));
-    clearAttachPreview();
+    const icon = FILE_KIND_ICON[a.kind] || 'fa-file';
+    return '<div class="attach-item" data-attach-id="'+a.id+'">'+
+      '<div class="attach-file-chip'+(a.processing?' processing':'')+'">'+
+      '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
+      '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(a.name)+'</div>'+
+      '<div class="attach-file-status">'+escapeHtml(a.processing ? 'بيتقرا...' : (a.note||'جاهز'))+'</div></div></div>'+
+      removeBtn+'</div>';
+  }).join('');
+  attachPreview.style.display = 'flex';
+  attachPreview.querySelectorAll('.attach-remove-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=> removeAttachmentById(btn.dataset.removeId));
+  });
+}
+
+attachBtn.addEventListener('click', ()=> attachInput.click());
+attachInput.addEventListener('change', async ()=>{
+  const files = Array.from(attachInput.files || []);
+  attachInput.value = '';
+  if(!files.length) return;
+
+  // ── بنعالج كل ملف على حدة وبنضيفه لصف المرفقات من غير ما نمسح اللي قبله ──
+  for (const file of files){
+    const kind = getFileKind(file);
+    const id = 'a' + (++attachSeq);
+
+    // ── الصور بتتحلل بـ Gemini Vision زي ما هي بالظبط ──
+    if (kind === 'image'){
+      try{
+        const dataUrl = await compressImage(file);
+        pendingAttachments.push({ id, type:'image', dataUrl });
+        renderAttachPreview();
+      } catch(e){ console.error(e); showToast('⚠️ مقدرتش أقرا الصورة دي'); }
+      continue;
+    }
+
+    // ── ZIP: نسأل المستخدم الأول يفك ولا يسيبه مضغوط، قبل ما نعالج الملف ──
+    let extractZip = true;
+    if (kind === 'zip'){
+      extractZip = confirm('عايز أفك الضغط وأقرا اللي جوه ملف "'+file.name+'"؟\n"موافق" = هفكه وأحلل محتواه\n"إلغاء" = هسيبه مضغوط زي ما هو');
+    }
+
+    pendingAttachments.push({ id, type:'file', name:file.name, kind, processing:true });
+    renderAttachPreview();
+
+    try{
+      const result = await processAttachedFile(file, { extractZip });
+      const item = pendingAttachments.find(a=>a.id===id);
+      if (item){
+        item.processing = false;
+        item.note = result.note || 'جاهز';
+        item.extractedText = result.extractedText;
+      }
+      renderAttachPreview();
+    } catch(e){
+      console.error(e);
+      showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''));
+      removeAttachmentById(id);
+    }
   }
 });
 
@@ -1748,23 +1887,26 @@ composerInput.addEventListener('input', ()=>{
 composer.addEventListener('submit', async (e)=>{
   e.preventDefault();
   const text = composerInput.value.trim();
-  const image = pendingImage;
-  const attachment = pendingAttachment;
-  if((!text && !image && !attachment) || !currentConvId) return;
+  const attachmentsSnapshot = pendingAttachments.slice();
+  const images = attachmentsSnapshot.filter(a=>a.type==='image');
+  const files = attachmentsSnapshot.filter(a=>a.type==='file');
+  if((!text && !images.length && !files.length) || !currentConvId) return;
   composerInput.value='';
   composerInput.style.height='auto';
   clearAttachPreview();
   sendBtn.disabled = true;
+  refreshGeoContext(); // مجرد محاولة تحديث في الخلفية لو لسه معندناش بيانات موقع/صلاة اليوم
 
   const convRef = db.ref('users/'+currentUser.uid+'/conversations/'+currentConvId);
   const userMsg = { role:'user', ts: Date.now() };
   if(text) userMsg.text = text;
-  if(image) userMsg.image = image.dataUrl;
-  if(attachment){
-    userMsg.fileName = attachment.name;
-    userMsg.fileKind = attachment.kind;
-    userMsg.fileNote = attachment.note || '';
-    if (attachment.extractedText) userMsg.fileContext = attachment.extractedText.slice(0, 8000);
+  if(images.length) userMsg.images = images.map(i=>i.dataUrl);
+  if(files.length){
+    userMsg.files = files.map(f=>{
+      const entry = { name: f.name, kind: f.kind, note: f.note || '' };
+      if (f.extractedText) entry.fileContext = f.extractedText.slice(0, 8000);
+      return entry;
+    });
   }
   await convRef.child('messages').push(userMsg);
   await convRef.update({ updatedAt: Date.now() });
@@ -1773,17 +1915,17 @@ composer.addEventListener('submit', async (e)=>{
   const snap = await convRef.once('value');
   const conv = snap.val();
   if(conv && (!conv.title || conv.title==='محادثة جديدة')){
-    await convRef.update({ title: (text || (attachment && attachment.name) || 'صورة').slice(0,40) });
+    await convRef.update({ title: (text || (files[0] && files[0].name) || (images.length ? 'صورة' : '')).slice(0,40) });
   }
 
-  const thinkingEl = appendThinkingIndicator(image
-    ? ['بيفتح الصورة...', 'بيحلل التفاصيل...', 'بيصيغ الوصف...']
-    : (attachment ? ['بيقرا الملف المرفق...', 'بيحلل المحتوى...', 'بيصيغ الإجابة...']
+  const thinkingEl = appendThinkingIndicator(images.length
+    ? ['بيفتح الصور...', 'بيحلل التفاصيل...', 'بيصيغ الوصف...']
+    : (files.length ? ['بيقرا الملفات المرفقة...', 'بيحلل المحتوى...', 'بيصيغ الإجابة...']
       : ['بيقرا رسالتك...', 'بيفكر في الرد...', 'بيصيغ الإجابة...']));
 
   try{
-    if(image){
-      const replyText = await analyzeImageWithGemini(image.dataUrl, text);
+    if(images.length){
+      const replyText = await analyzeImagesWithGemini(images.map(i=>i.dataUrl), text);
       thinkingEl._clearStage();
       const replyTs = Date.now();
       const assistantMsg = { role:'assistant', text: replyText, provider:'Gemini Vision', ts: replyTs };
@@ -1794,14 +1936,20 @@ composer.addEventListener('submit', async (e)=>{
       await convRef.update({ updatedAt: replyTs });
     } else {
       const historySnap = await convRef.child('messages').once('value');
-      // ── لو فيه ملف مرفق (PDF/Word/Excel/صوت/ZIP/كود)، بنضيف محتواه المستخرج
+      // ── لو فيه ملفات مرفقة (PDF/Word/Excel/صوت/ZIP/كود)، بنضيف محتواها المستخرج
       //    كسياق جوه نفس رسالة المستخدم اللي بتتبعت للذكاء، من غير ما يتحط
       //    جوه فقاعة الرسالة اللي المستخدم شايفها (اللي فضلت بس النص اللي كتبه) ──
       const history = Object.values(historySnap.val() || {})
-        .filter(m=>m.text || m.fileContext)
+        .filter(m=>m.text || (m.files && m.files.some(f=>f.fileContext)) || m.fileContext)
         .map(m=>{
           let content = m.text || '';
-          if (m.fileContext){
+          if (m.files && m.files.length){
+            m.files.forEach(f=>{
+              if (f.fileContext){
+                content += '\n\n--- محتوى ملف مرفق (' + (f.name||'ملف') + (f.note?' — '+f.note:'') + ') ---\n' + f.fileContext + '\n---';
+              }
+            });
+          } else if (m.fileContext){
             content += '\n\n--- محتوى ملف مرفق (' + (m.fileName||'ملف') + (m.fileNote?' — '+m.fileNote:'') + ') ---\n' + m.fileContext + '\n---';
           }
           return { role: m.role, text: content };

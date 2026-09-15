@@ -242,6 +242,10 @@ body{
 @keyframes codeBuildPulse{0%,100%{opacity:.45;}50%{opacity:1;}}
 
 .msg-image{max-width:100%;max-height:280px;border-radius:12px;margin-bottom:6px;display:block;}
+.msg-images-grid{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
+.msg-images-grid .msg-image{width:140px;height:140px;max-width:140px;max-height:140px;object-fit:cover;margin-bottom:0;}
+.msg-files-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px;}
+.msg-files-row .attach-file-chip{max-width:220px;}
 
 .thinking-dots{
   display:flex;gap:5px;padding:14px 16px;background:var(--panel);border:1px solid var(--border);
@@ -259,19 +263,26 @@ body{
   30%{opacity:1;transform:translateY(-3px);}
 }
 
+/* ============ صف المرفقات: كل ملف في صندوقه الخاص، جنب بعض مش فوق بعض ============ */
 .attach-preview{
-  display:none;align-items:center;gap:8px;padding:10px 18px 0;flex-wrap:wrap;
+  display:none;align-items:flex-start;gap:10px;padding:10px 18px 0;flex-wrap:wrap;flex-direction:row;
 }
-.attach-preview img{width:52px;height:52px;object-fit:cover;border-radius:10px;border:1px solid var(--border);}
-.attach-preview button{
-  width:24px;height:24px;border-radius:50%;border:none;background:var(--panel-raised);
-  color:var(--text-dim);cursor:pointer;font-size:14px;line-height:1;
+.attach-item{
+  position:relative;flex:0 0 auto;
 }
+.attach-item img{width:52px;height:52px;object-fit:cover;border-radius:10px;border:1px solid var(--border);display:block;}
+.attach-remove-btn{
+  position:absolute;top:-7px;left:-7px;z-index:2;
+  width:22px;height:22px;border-radius:50%;border:2px solid var(--bg,#0f0f12);background:var(--panel-raised);
+  color:var(--text-dim);cursor:pointer;font-size:12px;line-height:1;
+  display:flex;align-items:center;justify-content:center;padding:0;
+}
+.attach-remove-btn:hover{color:var(--text);}
 
 /* ============ بطاقة ملف مرفق (PDF/Word/Excel/صوت/ZIP/كود) في الـ composer ============ */
 .attach-file-chip{
   display:flex;align-items:center;gap:10px;background:var(--panel);
-  border:1px solid var(--border);border-radius:14px;padding:8px 12px;max-width:100%;
+  border:1px solid var(--border);border-radius:14px;padding:8px 12px;max-width:220px;
 }
 .attach-file-chip .attach-file-icon{
   width:36px;height:36px;border-radius:10px;flex-shrink:0;
