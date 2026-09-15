@@ -513,9 +513,9 @@ button:focus,button:focus-visible{outline:none;}
 
 /* ============ غرفة التفكير العميق (Deep Thinking Room) — نفس تصميم فلك، بألوان محفوظات ============ */
 .cosmos-deep-think-live{
-  margin:.3rem 0 .5rem;background:var(--panel-raised);
+  margin:.3rem 0 .5rem;background:var(--panel-raised);min-width:0;max-width:100%;box-sizing:border-box;
   border:1px solid var(--accent-dim);border-radius:12px;padding:.7rem .85rem;
-  height:clamp(220px, 45vh, 420px);display:flex;flex-direction:column;
+  max-height:250px;height:clamp(220px, 45vh, 250px);display:flex;flex-direction:column;overflow-x:hidden;
 }
 .cosmos-deep-think-live-label{
   display:flex;align-items:center;gap:.4rem;color:var(--accent);
@@ -523,31 +523,33 @@ button:focus,button:focus-visible{outline:none;}
 }
 .cosmos-deep-think-live-label i{color:var(--accent);}
 .cosmos-deep-think-live-text{
-  direction:rtl;unicode-bidi:plaintext;color:var(--text-dim);
-  font-size:.82rem;line-height:1.6;overflow-y:auto;white-space:pre-wrap;flex:1;min-height:0;
+  direction:rtl;unicode-bidi:plaintext;color:var(--text-dim);min-width:0;
+  font-size:.82rem;line-height:1.6;overflow-y:auto;overflow-x:hidden;flex:1;min-height:0;
+  white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;
 }
 .cosmos-stream-cursor{animation:cosmosBlink 1s step-start infinite;}
 @keyframes cosmosBlink{50%{opacity:0;}}
 
 .cosmos-deep-think{
-  margin:.3rem 0 .6rem;border:1px solid var(--border);border-radius:10px;
-  background:var(--panel-raised);overflow:hidden;
+  margin:.3rem 0 .6rem;border:1px solid var(--border);border-radius:10px;min-width:0;max-width:100%;
+  background:var(--panel-raised);overflow:hidden;box-sizing:border-box;
 }
 .cosmos-deep-think-toggle{
-  width:100%;display:flex;align-items:center;gap:.45rem;
+  width:100%;display:flex;align-items:center;gap:.45rem;min-width:0;
   background:transparent;border:none;color:var(--text-dim);
   font-size:.8rem;font-weight:600;padding:.55rem .75rem;cursor:pointer;
   font-family:'Tajawal',sans-serif;text-align:right;
 }
 .cosmos-deep-think-toggle i.fa-brain{color:var(--accent);}
-.cosmos-deep-think-toggle span{flex:1;}
-.cosmos-deep-think-chevron{transition:transform .2s ease;font-size:.7rem;}
+.cosmos-deep-think-toggle span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cosmos-deep-think-chevron{transition:transform .2s ease;font-size:.7rem;flex-shrink:0;}
 .cosmos-deep-think.open .cosmos-deep-think-chevron{transform:rotate(180deg);}
 .cosmos-deep-think-body{height:0;overflow:hidden;transition:height .25s ease;}
-.cosmos-deep-think.open .cosmos-deep-think-body{height:clamp(220px, 45vh, 420px);overflow-y:auto;}
+.cosmos-deep-think.open .cosmos-deep-think-body{max-height:250px;height:clamp(220px, 45vh, 250px);overflow-y:auto;overflow-x:hidden;}
 .cosmos-deep-think-inner{
-  direction:rtl;unicode-bidi:plaintext;padding:0 .8rem .75rem;
-  color:var(--text-dim);font-size:.8rem;line-height:1.7;white-space:pre-wrap;
+  direction:rtl;unicode-bidi:plaintext;padding:0 .8rem .75rem;min-width:0;
+  color:var(--text-dim);font-size:.8rem;line-height:1.7;
+  white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;
 }
 
 /* ============ مصادر البحث في الإنترنت ============ */
@@ -582,6 +584,30 @@ button:focus,button:focus-visible{outline:none;}
 .code-file-name{font-size:14px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .code-file-sub{font-size:12px;color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .code-file-arrow{color:var(--text-dim);font-size:13px;flex-shrink:0;}
+
+/* ============ كارت الكود المصغّر (Code Snippet Card) — لشرح جزء كود أو تعديل صغير،
+   بيظهر جوه الرسالة على طول من غير فتح مودال. خلفية سوداء داكنة + حواف دائرية،
+   ورأس فيه اسم اللغة وزرار نسخ. min-width:0 + overflow-x:auto جوه الكارت بس
+   عشان ميأثرش على عرض الشاشة الرئيسية أبدًا ============ */
+.code-snippet-card{
+  display:block;min-width:0;max-width:100%;margin:.5rem 0;
+  border-radius:14px;overflow:hidden;background:#0d0c0a;
+  border:1px solid var(--border);
+}
+.code-snippet-header{
+  display:flex;align-items:center;justify-content:space-between;gap:.5rem;
+  padding:.45rem .75rem;background:#17150f;border-bottom:1px solid var(--border);
+}
+.code-snippet-lang{font-size:11px;font-weight:700;letter-spacing:.03em;color:var(--text-dim);}
+.code-snippet-copy-btn{
+  width:26px;height:26px;border-radius:7px;border:none;background:transparent;
+  color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;transition:background .15s,color .15s;
+}
+.code-snippet-copy-btn:hover{background:rgba(255,255,255,.08);color:var(--text);}
+.code-snippet-body{min-width:0;max-width:100%;overflow-x:auto;}
+.code-snippet-body pre{margin:0;padding:.7rem .85rem;direction:ltr;text-align:left;min-width:0;}
+.code-snippet-body code{font-family:'Consolas','Courier New',monospace;font-size:12.5px;line-height:1.6;white-space:pre;}
 
 /* ── نافذة عرض الكود الكامل ── */
 .code-modal-overlay{
@@ -634,6 +660,24 @@ button:focus,button:focus-visible{outline:none;}
 .cosmos-action-btn:hover{background:var(--panel-raised);color:var(--text);}
 .cosmos-action-btn.liked{color:#7ba87a;}
 .cosmos-action-btn.disliked{color:var(--error);}
+
+/* ============ إشعارات Toast — أنواع مختلفة (شبكة/حدود/ملف غير مدعوم/نجاح/عام) ============ */
+.app-toast{
+  position:fixed;bottom:100px;left:50%;transform:translateX(-50%) translateY(8px);
+  display:flex;align-items:center;gap:.5rem;
+  background:var(--panel-raised,#222);color:var(--text,#fff);padding:10px 16px;border-radius:20px;
+  font-size:13px;z-index:9999;box-shadow:0 4px 18px rgba(0,0,0,.35);border:1px solid var(--border,#333);
+  max-width:85vw;text-align:center;opacity:0;pointer-events:none;
+  transition:opacity .2s,transform .2s;
+}
+.app-toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+.app-toast i{flex-shrink:0;}
+.app-toast.toast-error i{color:var(--error,#e06060);}
+.app-toast.toast-network i{color:#d8a34c;}
+.app-toast.toast-limit i{color:#d8a34c;}
+.app-toast.toast-unsupported i{color:var(--error,#e06060);}
+.app-toast.toast-success i{color:#7ba87a;}
+.app-toast.toast-info i{color:var(--accent);}
 
 @media (max-width:760px){
   #sidebar{position:fixed;top:0;bottom:0;right:0;z-index:20;box-shadow:-8px 0 24px rgba(0,0,0,.35);}

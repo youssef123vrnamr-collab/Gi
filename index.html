@@ -17,11 +17,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800&family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <link rel="stylesheet" href="style.css">
-<!-- ============ مكتبات قراءة/إنشاء الملفات (PDF / Word / Excel / ZIP) ============ -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth.js/1.7.2/mammoth.browser.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- ============ مكتبات قراءة/إنشاء الملفات (PDF / Word / Excel / ZIP) — بقت Lazy Loading:
+     مش بتتحمّل هنا خالص، وبتتحمّل ديناميكيًا بس وقت رفع ملف من نوعها (شوف loadScriptOnce
+     في script.js) عشان تقلل زمن التحميل الابتدائي وميتحملش كل المكتبات الثقيلة مقدمًا ============ -->
 </head>
 <body>
 
@@ -112,7 +110,7 @@
       <form id="composer" class="composer">
         <input type="file" id="attach-input" hidden multiple>
         <div class="composer-card">
-          <textarea id="composer-input" rows="1" placeholder="اكتب رسالتك..."></textarea>
+          <textarea id="composer-input" rows="1" placeholder="اكتب رسالتك..." aria-label="اكتب رسالتك"></textarea>
           <div class="composer-toolbar">
             <div class="composer-toolbar-left">
               <button type="button" id="attach-btn" class="composer-icon-btn attach-btn" aria-label="إرفاق ملف"><i class="fas fa-plus"></i></button>

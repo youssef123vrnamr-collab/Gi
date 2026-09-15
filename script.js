@@ -21,6 +21,68 @@ const db = firebase.database();
 //    بيتربط بنفس الـ signal بتاعه، عشان ضغطة "إيقاف" توقف كل حاجة فورًا ──
 let currentAbortController = null;
 function isAbortError(e){ return e && e.name === 'AbortError'; }
+
+// ── تحميل كسول (Lazy Loading) للمكتبات الثقيلة (pdf.js / mammoth / xlsx / jszip):
+//    كل مكتبة بتتحمّل من الـ CDN مرة واحدة بس، وبس لما المستخدم فعلاً يرفع ملف
+//    من نوعها — بدل ما الأربعة يتحمّلوا مقدمًا مع كل فتحة للتطبيق ويبطّئوا التحميل الأولي ──
+const __loadedScripts = {};
+function loadScriptOnce(url){
+  if (__loadedScripts[url]) return __loadedScripts[url];
+  __loadedScripts[url] = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => resolve(true);
+    s.onerror = () => { delete __loadedScripts[url]; reject(new Error('فشل تحميل مكتبة: ' + url)); };
+    document.head.appendChild(s);
+  });
+  return __loadedScripts[url];
+}
+const LIB_URLS = {
+  pdfjs:  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+  mammoth:'https://cdnjs.cloudflare.com/ajax/libs/mammoth.js/1.7.2/mammoth.browser.min.js',
+  xlsx:   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+  jszip:  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
+};
+
+// ── مرونة الشبكة (Network Resilience): دمج إشارتين Abort في واحدة (زرار الإيقاف
+//    اليدوي + مهلة الطلب Timeout)، عشان أي طلب يتقفل تلقائيًا لو الشبكة اتعلقت
+//    بدل ما يفضل معلّق للأبد، وبرضه يتقفل فورًا لو المستخدم دوس "إيقاف" ──
+function combineSignals(signals){
+  const valid = signals.filter(Boolean);
+  if (!valid.length) return undefined;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any(valid);
+  const controller = new AbortController();
+  valid.forEach(s=>{
+    if (s.aborted) controller.abort(s.reason);
+    else s.addEventListener('abort', ()=>controller.abort(s.reason), { once:true });
+  });
+  return controller.signal;
+}
+// مهلة موحّدة لكل طلبات الشبكة (30 ثانية) بدل ما تفضل معلّقة من غير حد أقصى
+function requestSignal(extraMs){
+  const timeoutSignal = (typeof AbortSignal.timeout === 'function') ? AbortSignal.timeout(extraMs || 30000) : null;
+  return combineSignals([currentAbortController ? currentAbortController.signal : null, timeoutSignal]);
+}
+// ── إعادة محاولة تلقائية بتأخير متزايد (Exponential Backoff): بتتعمل بس على
+//    فشل الاتصال الأولي (قبل ما البث يبدأ) — لو الفشل حصل بعد ما البث بدأ
+//    والنص اتجمّع جزء منه، بنكمل من نفس النقطة (Auto-Resume) مش بنعيد الاتصال ──
+async function fetchWithRetry(url, options, maxRetries){
+  maxRetries = (maxRetries == null) ? 2 : maxRetries;
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++){
+    try{
+      return await fetch(url, options);
+    } catch(e){
+      lastErr = e;
+      if (isAbortError(e)) throw e; // إيقاف يدوي أو Timeout — متكررش
+      if (attempt === maxRetries) throw e;
+      const delay = 500 * Math.pow(2, attempt); // 500ms, 1s, 2s...
+      await new Promise(r=>setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 // ── Firestore بتاع مشروع محفوظات نفسه (مش فلك) — هنا هنخزّن "الذاكرة الدائمة" (غرفة 3):
 //    تقييمات الردود 👍👎 اللي بتغذي دروس مستفادة وردود عجبت الناس، خاصة بمحفوظات بس ──
 const ownDb = firebase.firestore();
@@ -194,23 +256,34 @@ function speakText(text, btnEl){
 }
 function showToastSafe(msg){ showToast(msg); }
 
-// ── توست بسيط لرسائل قصيرة (نجاح/تحذير) — مفيش نظام توست جاهز في محفوظات فاستخدمناه هنا ──
+// ── نظام إشعارات Toast مع تصنيف نوع الخطأ (شبكة / تجاوز حدود / ملف غير مدعوم / نجاح / عام) —
+//    كل نوع له أيقونة ولون مميز، وaria-live عشان قارئات الشاشة تعلن الرسالة تلقائيًا ──
+const TOAST_TYPES = {
+  error:      { icon:'fa-circle-exclamation', cls:'toast-error' },
+  network:    { icon:'fa-wifi', cls:'toast-network' },
+  limit:      { icon:'fa-gauge-high', cls:'toast-limit' },
+  unsupported:{ icon:'fa-file-circle-xmark', cls:'toast-unsupported' },
+  success:    { icon:'fa-circle-check', cls:'toast-success' },
+  info:       { icon:'fa-circle-info', cls:'toast-info' }
+};
 let __toastTimer = null;
-function showToast(msg){
+function showToast(msg, type){
+  const meta = TOAST_TYPES[type] || TOAST_TYPES.info;
   let el = document.getElementById('mahfoozat-toast');
   if (!el){
     el = document.createElement('div');
     el.id = 'mahfoozat-toast';
-    el.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);' +
-      'background:var(--panel-raised,#222);color:var(--text,#fff);padding:10px 18px;border-radius:20px;' +
-      'font-size:13px;z-index:9999;box-shadow:0 4px 18px rgba(0,0,0,.35);border:1px solid var(--border,#333);' +
-      'max-width:85vw;text-align:center;opacity:0;transition:opacity .2s;pointer-events:none;';
+    el.className = 'app-toast';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
     document.body.appendChild(el);
   }
-  el.textContent = msg;
-  el.style.opacity = '1';
+  el.className = 'app-toast ' + meta.cls;
+  el.innerHTML = '<i class="fas '+meta.icon+'" aria-hidden="true"></i><span></span>';
+  el.querySelector('span').textContent = msg;
+  el.classList.add('show');
   clearTimeout(__toastTimer);
-  __toastTimer = setTimeout(()=>{ el.style.opacity = '0'; }, 2600);
+  __toastTimer = setTimeout(()=>{ el.classList.remove('show'); }, 3200);
 }
 
 /* ============ غرفة 1: التفكير العميق — نفس تعليمات فلك بالظبط + دفعها لتفكير احترافي حقيقي ============ */
@@ -280,12 +353,39 @@ function buildCodeFileCard(lang, code){
   window.__codeMeta[gid] = { filename, title, label, hljsLang: CODE_HLJS_MAP[l] || l || 'plaintext' };
   // ── بطاقة بمقاس ثابت دايمًا (نفس الشكل/الطول/العرض) بغض النظر عن طول الكود —
   //    الضغط عليها بيفتح الكود كامل في نافذة منفصلة، مش بيوسّع جوه الشات ──
-  return '<div class="code-file-card" data-gid="'+gid+'" onclick="openCodeFileModal(\''+gid+'\')">'
+  return '<div class="code-file-card" data-gid="'+gid+'" onclick="openCodeFileModal(\''+gid+'\')" '
+    + 'role="button" tabindex="0" aria-label="فتح كود '+label+'" '
+    + 'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();openCodeFileModal(\''+gid+'\');}">'
     + '<div class="code-file-icon"><i class="fas fa-code"></i></div>'
     + '<div class="code-file-meta"><div class="code-file-name" dir="ltr">'+title+'</div>'
     + '<div class="code-file-sub" dir="ltr">كود · '+label+'</div></div>'
     + '<i class="fas fa-chevron-left code-file-arrow"></i>'
     + '</div>';
+}
+
+// ── كارت الكود المصغّر (Code Snippet Card): لشرح جزء كود أو تعديل صغير —
+//    بيظهر جوه الرسالة على طول (من غير فتح مودال)، بخلفية سوداء داكنة وحواف دائرية،
+//    ورأس فيه اسم اللغة + زرار نسخ. النموذج له حرية كاملة يستدعيه ويكرره بأي عدد.
+//    max-width:100% + overflow-x:auto جوه الكارت بس، عشان ميأثرش على عرض الشاشة. ──
+function buildCodeSnippetCard(lang, code){
+  const gid = 'sn' + (++_codeGidCounter) + '_' + Date.now();
+  window.__codeGroups[gid] = code;
+  const l = (lang||'').toLowerCase().trim();
+  const label = CODE_LABEL_MAP[l] || (l ? l.toUpperCase() : 'TXT');
+  const hljsLang = CODE_HLJS_MAP[l] || l || 'plaintext';
+  return '<div class="code-snippet-card" data-gid="'+gid+'">'
+    + '<div class="code-snippet-header">'
+    + '<span class="code-snippet-lang" dir="ltr">'+label+'</span>'
+    + '<button type="button" class="code-snippet-copy-btn" title="نسخ" onclick="copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
+    + '</div>'
+    + '<div class="code-snippet-body"><pre><code class="hljs language-'+hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
+    + '</div>';
+}
+// ── معيار الاختيار بين الكارت المصغّر (Snippet) والكارت الكامل (File):
+//    كود صغير (سطور قليلة وحروف قليلة) = Snippet Card مباشر، غير كده = File Card بالمودال ──
+function isSmallSnippet(code){
+  const lines = code.split('\n').length;
+  return lines <= 8 && code.length <= 380;
 }
 
 window.openCodeFileModal = function(gid){
@@ -538,11 +638,11 @@ async function performWebSearch(query, includeDomains){
       include_image_descriptions: true
     };
     if (includeDomains && includeDomains.length) body.include_domains = includeDomains;
-    const r = await fetch('https://api.tavily.com/search', {
+    const r = await fetchWithRetry('https://api.tavily.com/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: currentAbortController ? currentAbortController.signal : undefined
+      signal: requestSignal(30000)
     });
     if (!r.ok) return null;
     return await r.json();
@@ -576,7 +676,7 @@ async function classifyNeedsSearch(userMsg){
   try{
     const apiKey = GroqKeyPool.next();
     if (!apiKey || !userMsg || userMsg.trim().length < 4) return false;
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const r = await fetchWithRetry('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -588,7 +688,7 @@ async function classifyNeedsSearch(userMsg){
           { role: 'user', content: userMsg }
         ]
       }),
-      signal: currentAbortController ? currentAbortController.signal : undefined
+      signal: requestSignal(30000)
     });
     if (!r.ok) return false;
     const d = await r.json();
@@ -608,11 +708,11 @@ async function performUrlExtract(url){
   const key = getTavilyApiKey();
   if (!key) return null;
   try{
-    const r = await fetch('https://api.tavily.com/extract', {
+    const r = await fetchWithRetry('https://api.tavily.com/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ api_key: key, urls: [url] }),
-      signal: currentAbortController ? currentAbortController.signal : undefined
+      signal: requestSignal(30000)
     });
     if (!r.ok) return null;
     const d = await r.json();
@@ -653,14 +753,14 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
       const key = GroqKeyPool.next();
       if (!key) break;
       try{
-        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        const res = await fetchWithRetry("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
             stream: true, reasoning_effort: 'high', reasoning_format: 'parsed', stream_options: { include_usage: true }
           }),
-          signal: currentAbortController ? currentAbortController.signal : undefined
+          signal: requestSignal(60000)
         });
         if (!res.ok || !res.body){
           GroqKeyPool.report(key, res.status !== 429);
@@ -671,29 +771,39 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '', full = '', reasoningPart = '', finishReason = null, usedTokens = 0;
-        while (true){
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines){
-            if (!line.startsWith('data: ')) continue;
-            const payload = line.slice(6).trim();
-            if (payload === '[DONE]') continue;
-            try{
-              const evt = JSON.parse(payload);
-              if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
-              const choice = evt.choices && evt.choices[0];
-              if (!choice) continue;
-              if (choice.finish_reason) finishReason = choice.finish_reason;
-              const delta = choice.delta;
-              if (!delta) continue;
-              if (delta.content){ full += delta.content; if (onContentDelta) onContentDelta(fullTotal + full); }
-              const rPiece = delta.reasoning || delta.reasoning_content;
-              if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
-            } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+        try{
+          while (true){
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines){
+              if (!line.startsWith('data: ')) continue;
+              const payload = line.slice(6).trim();
+              if (payload === '[DONE]') continue;
+              try{
+                const evt = JSON.parse(payload);
+                if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
+                const choice = evt.choices && evt.choices[0];
+                if (!choice) continue;
+                if (choice.finish_reason) finishReason = choice.finish_reason;
+                const delta = choice.delta;
+                if (!delta) continue;
+                if (delta.content){ full += delta.content; if (onContentDelta) onContentDelta(fullTotal + full); }
+                const rPiece = delta.reasoning || delta.reasoning_content;
+                if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+              } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+            }
           }
+        } catch(streamErr){
+          // ── انقطاع الشبكة أثناء البث نفسه: لو اتجمّع نص فعلاً، منرميهوش —
+          //    بنعامله زي finish_reason:'length' عشان آلية الاستئناف التلقائي
+          //    (Auto-Resume) تكمل بقية الرد من نفس النقطة بدل ما تبدأ من الصفر ──
+          if (isAbortError(streamErr)) throw streamErr;
+          console.warn("Groq stream interrupted mid-way, resuming from partial text", streamErr);
+          if (full){ finishReason = 'length'; }
+          else throw streamErr;
         }
         GroqKeyPool.report(key, true);
         if (round === 0){ round0TriedAny = true; round0AllWere429 = false; }
@@ -729,11 +839,11 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
   async function attempt(key, withThinking){
     const genCfg = { temperature: 0.4, maxOutputTokens: 8192 };
     if (withThinking) genCfg.thinkingConfig = { includeThoughts: true };
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+    const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg }),
-      signal: currentAbortController ? currentAbortController.signal : undefined
+      signal: requestSignal(30000)
     });
     const data = await res.json();
     return { ok: res.ok, status: res.status, data };
@@ -781,7 +891,7 @@ let orFreeModelsCache = { list: [], key: null, at: 0 };
 async function getFreeOpenRouterModels(key){
   if (orFreeModelsCache.key === key && orFreeModelsCache.list.length && (Date.now()-orFreeModelsCache.at) < 1800000) return orFreeModelsCache.list;
   try{
-    const r = await fetch("https://openrouter.ai/api/v1/models", { headers: { "Authorization": "Bearer " + key }, signal: currentAbortController ? currentAbortController.signal : undefined });
+    const r = await fetchWithRetry("https://openrouter.ai/api/v1/models", { headers: { "Authorization": "Bearer " + key }, signal: requestSignal(30000) });
     const d = await r.json();
     const list = (d && d.data ? d.data : []).filter(m => m && m.pricing && Number(m.pricing.prompt)===0 && Number(m.pricing.completion)===0).map(m=>m.id).slice(0,3);
     if (list.length){ orFreeModelsCache = { list, key, at: Date.now() }; return list; }
@@ -804,11 +914,11 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
         let messages = baseMessages.slice();
         let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
-          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          const r = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
             body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' }, usage: { include: true } }),
-            signal: currentAbortController ? currentAbortController.signal : undefined
+            signal: requestSignal(60000)
           });
           if (!r.ok || !r.body){
             OpenRouterKeyPool.report(key, r.status !== 429);
@@ -819,29 +929,36 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
           const reader = r.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
-          while (true){
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            for (const line of lines){
-              if (!line.startsWith('data: ')) continue;
-              const payload = line.slice(6).trim();
-              if (payload === '[DONE]') continue;
-              try{
-                const evt = JSON.parse(payload);
-                if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
-                const choice = evt.choices && evt.choices[0];
-                if (!choice) continue;
-                if (choice.finish_reason) finishReason = choice.finish_reason;
-                const delta = choice.delta;
-                if (!delta) continue;
-                if (delta.content) txt += delta.content;
-                const rPiece = delta.reasoning || delta.reasoning_content;
-                if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
-              } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+          try{
+            while (true){
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop();
+              for (const line of lines){
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') continue;
+                try{
+                  const evt = JSON.parse(payload);
+                  if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
+                  const choice = evt.choices && evt.choices[0];
+                  if (!choice) continue;
+                  if (choice.finish_reason) finishReason = choice.finish_reason;
+                  const delta = choice.delta;
+                  if (!delta) continue;
+                  if (delta.content) txt += delta.content;
+                  const rPiece = delta.reasoning || delta.reasoning_content;
+                  if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+                } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+              }
             }
+          } catch(streamErr){
+            // ── نفس مبدأ الاستئناف التلقائي: لو النص اتقطع فعلاً هنكمله من نفس النقطة ──
+            if (isAbortError(streamErr)) throw streamErr;
+            console.warn("OpenRouter stream interrupted mid-way, resuming from partial text", streamErr);
+            if (txt) finishReason = 'length'; else throw streamErr;
           }
           OpenRouterKeyPool.report(key, true);
           triedAny = true; allWere429 = false;
@@ -880,11 +997,11 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
         let messages = baseMessages.slice();
         let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
-          const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
+          const r = await fetchWithRetry("https://ai-gateway.vercel.sh/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
             body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, stream_options: { include_usage: true } }),
-            signal: currentAbortController ? currentAbortController.signal : undefined
+            signal: requestSignal(60000)
           });
           if (!r.ok || !r.body){
             VercelGatewayKeyPool.report(key, r.status !== 429);
@@ -895,29 +1012,35 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
           const reader = r.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
-          while (true){
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            for (const line of lines){
-              if (!line.startsWith('data: ')) continue;
-              const payload = line.slice(6).trim();
-              if (payload === '[DONE]') continue;
-              try{
-                const evt = JSON.parse(payload);
-                if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
-                const choice = evt.choices && evt.choices[0];
-                if (!choice) continue;
-                if (choice.finish_reason) finishReason = choice.finish_reason;
-                const delta = choice.delta;
-                if (!delta) continue;
-                if (delta.content) txt += delta.content;
-                const rPiece = delta.reasoning || delta.reasoning_content;
-                if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
-              } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+          try{
+            while (true){
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop();
+              for (const line of lines){
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') continue;
+                try{
+                  const evt = JSON.parse(payload);
+                  if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
+                  const choice = evt.choices && evt.choices[0];
+                  if (!choice) continue;
+                  if (choice.finish_reason) finishReason = choice.finish_reason;
+                  const delta = choice.delta;
+                  if (!delta) continue;
+                  if (delta.content) txt += delta.content;
+                  const rPiece = delta.reasoning || delta.reasoning_content;
+                  if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+                } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+              }
             }
+          } catch(streamErr){
+            if (isAbortError(streamErr)) throw streamErr;
+            console.warn("Vercel stream interrupted mid-way, resuming from partial text", streamErr);
+            if (txt) finishReason = 'length'; else throw streamErr;
           }
           VercelGatewayKeyPool.report(key, true);
           triedAny = true; allWere429 = false;
@@ -1054,11 +1177,11 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
     const key = GeminiKeyPool.next();
     if (!key) break;
     try{
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+      const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify({ contents: [{ parts }] }),
-        signal: currentAbortController ? currentAbortController.signal : undefined
+        signal: requestSignal(30000)
       });
       const data = await res.json();
       const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
@@ -1149,7 +1272,7 @@ function readFileAsArrayBuffer(file){
 }
 
 async function extractPdfText(file){
-  if (!window.pdfjsLib) throw new Error('مكتبة قراءة PDF مش محمّلة');
+  await loadScriptOnce(LIB_URLS.pdfjs);
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   const buf = await readFileAsArrayBuffer(file);
   const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
@@ -1165,23 +1288,51 @@ async function extractPdfText(file){
 }
 
 async function extractDocxText(file){
-  if (!window.mammoth) throw new Error('مكتبة قراءة Word مش محمّلة');
+  await loadScriptOnce(LIB_URLS.mammoth);
   const buf = await readFileAsArrayBuffer(file);
   const result = await window.mammoth.extractRawText({ arrayBuffer: buf });
   return (result.value || '').trim();
 }
 
+// ── معالجة Excel بتتم جوه Web Worker مستقل (بدل الـ Thread الرئيسي) عشان ملف
+//    كبير ميجمّدش واجهة المستخدم أثناء التحليل. المكتبة نفسها بتتحمّل جوه الـ
+//    Worker عن طريق importScripts، والنتيجة (نص CSV لكل شيت) بترجع بـ postMessage ──
+let __xlsxWorker = null;
+function getXlsxWorker(){
+  if (__xlsxWorker) return __xlsxWorker;
+  const workerSrc = `
+    self.onmessage = async function(e){
+      try{
+        importScripts('${LIB_URLS.xlsx}');
+        const wb = XLSX.read(e.data.buffer, { type:'array' });
+        let out = '';
+        wb.SheetNames.forEach(function(sheetName){
+          out += '--- شيت: ' + sheetName + ' ---\\n';
+          out += XLSX.utils.sheet_to_csv(wb.Sheets[sheetName]);
+          out += '\\n\\n';
+        });
+        self.postMessage({ ok:true, text: out.trim() });
+      } catch(err){
+        self.postMessage({ ok:false, error: (err && err.message) || 'فشل تحليل ملف Excel' });
+      }
+    };
+  `;
+  const blob = new Blob([workerSrc], { type: 'application/javascript' });
+  __xlsxWorker = new Worker(URL.createObjectURL(blob));
+  return __xlsxWorker;
+}
 async function extractExcelText(file){
-  if (!window.XLSX) throw new Error('مكتبة قراءة Excel مش محمّلة');
   const buf = await readFileAsArrayBuffer(file);
-  const wb = window.XLSX.read(buf, { type:'array' });
-  let out = '';
-  wb.SheetNames.forEach(sheetName=>{
-    out += '--- شيت: ' + sheetName + ' ---\n';
-    out += window.XLSX.utils.sheet_to_csv(wb.Sheets[sheetName]);
-    out += '\n\n';
+  const worker = getXlsxWorker();
+  return new Promise((resolve, reject)=>{
+    const onMsg = (e)=>{
+      worker.removeEventListener('message', onMsg);
+      if (e.data && e.data.ok) resolve(e.data.text);
+      else reject(new Error(e.data && e.data.error || 'فشل تحليل ملف Excel'));
+    };
+    worker.addEventListener('message', onMsg);
+    worker.postMessage({ buffer: buf }, [buf]);
   });
-  return out.trim();
 }
 
 async function transcribeAudio(file){
@@ -1191,7 +1342,7 @@ async function transcribeAudio(file){
   form.append('file', file);
   form.append('model', 'whisper-large-v3');
   form.append('language', 'ar');
-  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+  const res = await fetchWithRetry('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + key },
     body: form
@@ -1205,7 +1356,7 @@ async function transcribeAudio(file){
 // ── ZIP: لو extract=true بنفك الضغط ونقرا كل ملف نصي جواه (بتخطي الملفات الثنائية/الكبيرة)،
 //    ولو extract=false بنسيبه مضغوط ونكتفي بعرض قائمة الملفات اللي جواه للذكاء ──
 async function readZipFile(file, extract){
-  if (!window.JSZip) throw new Error('مكتبة ZIP مش محمّلة');
+  await loadScriptOnce(LIB_URLS.jszip);
   const zip = await window.JSZip.loadAsync(file);
   const entries = Object.keys(zip.files).filter(n => !zip.files[n].dir);
   if (!extract){
@@ -1706,6 +1857,16 @@ document.addEventListener('keydown', (e)=>{
     closeContextMenu();
     closeRenameModal();
     closeDeleteModal();
+    // إغلاق أي نافذة كود مفتوحة كمان (دعم Esc للإغلاق زي المطلوب في الوصولية)
+    document.querySelectorAll('.code-modal-overlay').forEach(el=>{
+      const gid = el.getAttribute('data-gid');
+      if (gid) closeCodeModal(gid);
+    });
+  }
+  // Ctrl+Enter (أو Cmd+Enter على ماك) = إرسال الرسالة من أي مكان في التطبيق طول ما التركيز داخل صندوق الكتابة
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.activeElement === composerInput){
+    e.preventDefault();
+    composer.requestSubmit ? composer.requestSubmit() : composer.dispatchEvent(new Event('submit', {cancelable:true}));
   }
 });
 
@@ -1849,7 +2010,8 @@ function formatAnswer(raw){
 
   for (var bi=0; bi<codeBlocks.length; bi++){
     var blk = codeBlocks[bi];
-    s = s.split('\u0000CB' + bi + '\u0000').join(buildCodeFileCard(blk.lang, blk.code));
+    var cardHtml = isSmallSnippet(blk.code) ? buildCodeSnippetCard(blk.lang, blk.code) : buildCodeFileCard(blk.lang, blk.code);
+    s = s.split('\u0000CB' + bi + '\u0000').join(cardHtml);
   }
 
   for (var lki=0; lki<linkBlocks.length; lki++){
@@ -1919,6 +2081,7 @@ function maybeAddZipAllButton(wrap){
     const originalHtml = btn.innerHTML;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>بيضغط...</span>';
     try{
+      await loadScriptOnce(LIB_URLS.jszip);
       const zip = new JSZip();
       gids.forEach(gid=>{
         const code = window.__codeGroups[gid];
@@ -1931,7 +2094,7 @@ function maybeAddZipAllButton(wrap){
       a.href = url; a.download = 'digital-mind-files.zip';
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
-    } catch(e){ console.error(e); showToast('❌ مقدرتش أضغط الملفات'); }
+    } catch(e){ console.error(e); showToast('❌ مقدرتش أضغط الملفات', 'error'); }
     finally { btn.disabled = false; btn.innerHTML = originalHtml; }
   });
   wrap.appendChild(btn);
@@ -2248,7 +2411,7 @@ attachInput.addEventListener('change', async ()=>{
         const dataUrl = await compressImage(file);
         pendingAttachments.push({ id, type:'image', dataUrl });
         renderAttachPreview();
-      } catch(e){ console.error(e); showToast('⚠️ مقدرتش أقرا الصورة دي'); }
+      } catch(e){ console.error(e); showToast('⚠️ مقدرتش أقرا الصورة دي', 'unsupported'); }
       continue;
     }
 
@@ -2272,7 +2435,7 @@ attachInput.addEventListener('change', async ()=>{
       renderAttachPreview();
     } catch(e){
       console.error(e);
-      showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''));
+      showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''), 'unsupported');
       removeAttachmentById(id);
     }
   }
@@ -2301,6 +2464,20 @@ composer.addEventListener('submit', async (e)=>{
   const images = attachmentsSnapshot.filter(a=>a.type==='image');
   const files = attachmentsSnapshot.filter(a=>a.type==='file');
   if((!text && !images.length && !files.length) || !currentConvId) return;
+
+  // ── فحص مسبق لحجم الطلب (Pre-request Validation): قبل ما نبعت طلب ضخم
+  //    (دمج ملفات كتير/نص طويل جدًا) ونفاجئ المستخدم بانقطاع السيرفر، ننبهه
+  //    وندّيله فرصة يقسّم الطلب أو يختار تنزيل ZIP بدل الإرسال دفعة واحدة ──
+  const totalAttachChars = files.reduce((sum,f)=> sum + (f.extractedText ? f.extractedText.length : 0), 0);
+  const HUGE_FILE_COUNT = 12, HUGE_CHAR_COUNT = 60000;
+  if (files.length > HUGE_FILE_COUNT || totalAttachChars > HUGE_CHAR_COUNT){
+    const ok = confirm(
+      'الطلب ده كبير (' + files.length + ' ملف تقريبًا ' + Math.round(totalAttachChars/1000) + ' ألف حرف)، وطلبات بالحجم ده ممكن تفصل قبل ما تخلص.\n\n' +
+      'تحب تكمل وتبعته زي ما هو؟ (لو عايز تتجنب الانقطاع، اضغط "إلغاء" وقسّم الملفات على أكتر من رسالة، أو نزّلها ZIP بدل ما تبعتها كلها مرة واحدة).'
+    );
+    if (!ok) return;
+  }
+
   composerInput.value='';
   composerInput.style.height='auto';
   clearAttachPreview();
