@@ -136,7 +136,13 @@ function buildReasoningRoomBlock(){
     'ملاحظة مهمة: النظام بيفصل تفكيرك (reasoning) عن ردك النهائي (content) تلقائيًا ويعرض تفكيرك في صندوق منفصل قابل للفتح للمستخدم — يعني اكتب تفكيرك بحرية وبالتفصيل هنا، ومتقلقش إنه هيظهر في الرد النهائي لأنه مش هيظهر فيه.\n---';
 }
 
-/* ============ غرفة 3: بناء بلوكات الدروس والردود الكويسة من الذاكرة الدائمة ============ */
+/* ============ قاعدة تلوين النص + منع اللاتكس الخام (نفس فلك بالظبط) ============ */
+function buildColorPolicyBlock(){
+  return '\n\nقاعدة تلوين النص: عندك إمكانية تلوّن أجزاء من ردك النصي (مش الكود) بنفسك وقت ما تحس إن اللون هيفيد فعلاً — زي تحذير مهم بالأحمر، أو نقطة إيجابية/نجاح بالأخضر، أو معلومة مميزة بلون مختلف. استخدم الصيغة دي بالظبط حوالين الجزء اللي عايز تلوّنه: [[color:الاسم]]النص هنا[[/color]] — والاسم لازم يكون واحد من دول بالظبط: red, green, blue, yellow, orange, purple, pink, cyan, teal, gold. متستخدمش الصيغة دي إلا لو فعلاً محتاجها، ومتلوّنش الرد كله ولا كل سطر.';
+}
+function buildNoRawLatexBlock(){
+  return '\n\nقاعدة إلزامية: ممنوع تستخدم صيغة LaTeX الخام (زي \\frac{}{} أو \\sqrt{} أو \\gamma أو \\times) في أي معادلة رياضية، لأن واجهة المحادثة دي مفيهاش عارض LaTeX وهتظهر للمستخدم كرموز خام غريبة بدل معادلة واضحة. اكتب المعادلات بصيغة نصية عادية ومقروءة بس (زي x^2 أو (a+b)/c أو √x أو a/b أو γ = 1/√(1-v²/c²)).';
+}
 function buildLessonsBlock(){
   if (!lessonsList.length) return '';
   const list = lessonsList.map(l => '- سؤال: ' + (l.question||'') + '\n  رد اتقيّم سلبيًا: ' + (l.answer||'').slice(0,300)).join('\n');
@@ -153,6 +159,8 @@ function buildGoodAnswersBlock(){
 function buildSystemPrompt(searchResultsBlock){
   return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
     + buildReasoningRoomBlock()
+    + buildColorPolicyBlock()
+    + buildNoRawLatexBlock()
     + buildLessonsBlock()
     + buildGoodAnswersBlock()
     + (searchResultsBlock || '')
@@ -232,7 +240,7 @@ function buildSearchResultsBlock(results){
 }
 
 /* ============ خط الدفاع 1: Groq — Streaming + غرفة التفكير العميق الحية ============ */
-async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock){
+async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, onContentDelta){
   if (!GroqKeyPool.count()) return null;
   const maxAttempts = Math.min(GroqKeyPool.count(), 3);
   const sys = buildSystemPrompt(searchResultsBlock || '');
@@ -271,7 +279,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock){
             const evt = JSON.parse(payload);
             const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
             if (!delta) continue;
-            if (delta.content){ full += delta.content; }
+            if (delta.content){ full += delta.content; if (onContentDelta) onContentDelta(full); }
             const reasoningPiece = delta.reasoning || delta.reasoning_content;
             if (reasoningPiece){ fullReasoning += reasoningPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning); }
           } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
@@ -380,7 +388,7 @@ async function callVercelChat(historyMsgs){
 }
 
 /* ============ الموزّع الرئيسي: بحث عبر الإنترنت لو محتاج، بعدين يجرب كل خط دفاع بالترتيب ============ */
-async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart){
+async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, onContentDelta){
   const lastUserText = (messageHistory[messageHistory.length-1] && messageHistory[messageHistory.length-1].text) || '';
   const messages = messageHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
 
@@ -398,7 +406,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart){
   }
 
   const providers = [
-    { id:'groq', label:'Groq', fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock) },
+    { id:'groq', label:'Groq', fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock, onContentDelta) },
     { id:'gemini', label:'Gemini', fn: callGeminiChat },
     { id:'openrouter', label:'OpenRouter', fn: callOpenRouterChat },
     { id:'vercel', label:'Vercel Gateway', fn: callVercelChat }
@@ -655,6 +663,66 @@ function escapeHtml(s){
   return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// ── نفس فكرة formatAIAnswer بتاع فلك: تلوين مخصص، كتل كود، خطوط عريضة، عناوين،
+//    صفوف جداول (بما إن مفيش عارض جداول حقيقي، بنحولها لسطر بنقط فاصلة زي فلك بالظبط) ──
+function formatAnswer(raw){
+  if (!raw) return '';
+  var s = String(raw);
+
+  var colorBlocks = [];
+  var allowedColors = /^(red|green|blue|yellow|orange|purple|pink|cyan|teal|gold)$/i;
+  s = s.replace(/\[\[color:([a-zA-Z]+)\]\]([\s\S]*?)\[\[\/color\]\]/g, function(m, name, inner){
+    if (!allowedColors.test(name.trim())) return inner;
+    var idx = colorBlocks.length;
+    colorBlocks.push({ color: name.trim().toLowerCase(), text: inner });
+    return '\u0000CL' + idx + '\u0000';
+  });
+
+  var codeBlocks = [];
+  s = s.replace(/```([a-zA-Z0-9]*)\n?([\s\S]*?)```/g, function(m, lang, code){
+    var idx = codeBlocks.length;
+    codeBlocks.push({ lang: (lang||'').trim(), code: code.replace(/\n$/,'') });
+    return '\u0000CB' + idx + '\u0000';
+  });
+
+  s = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  var lines = s.split('\n'), out = [];
+  for (var i=0;i<lines.length;i++){
+    var line = lines[i];
+    if (/\u0000CB\d+\u0000/.test(line)) { out.push(line); continue; }
+    var t = line.trim();
+    if (/^[-=_]{3,}$/.test(t)) continue;
+    if (/^\|?[\s:|-]{3,}\|?$/.test(t) && t.indexOf('-') > -1 && t.indexOf('|') > -1) continue;
+    var hMatch = t.match(/^#{1,6}\s*(.+)$/);
+    if (hMatch) { out.push('<b>' + hMatch[1].trim() + '</b>'); continue; }
+    if (t.indexOf('|') > -1 && t.indexOf('|') !== t.lastIndexOf('|')) {
+      var cells = t.split('|').map(c=>c.trim()).filter(c=>c.length);
+      if (cells.length) { out.push(cells.join('  •  ')); continue; }
+    }
+    line = line.replace(/^(\s*)[-*]\s+/, '$1• ');
+    out.push(line);
+  }
+  s = out.join('\n');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  s = s.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,.08);padding:.1rem .3rem;border-radius:4px;direction:ltr;display:inline-block">$1</code>');
+  s = s.replace(/\n{3,}/g, '\n\n').replace(/\n/g, '<br>');
+
+  for (var ci=0; ci<colorBlocks.length; ci++){
+    var cb = colorBlocks[ci];
+    var esc = cb.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    esc = esc.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+    s = s.split('\u0000CL' + ci + '\u0000').join('<span style="color:'+cb.color+'">'+esc+'</span>');
+  }
+
+  for (var bi=0; bi<codeBlocks.length; bi++){
+    var blk = codeBlocks[bi];
+    var codeHtml = '<pre style="background:var(--panel-raised);border:1px solid var(--border);border-radius:10px;padding:.7rem .85rem;overflow-x:auto;direction:ltr;text-align:left;margin:.4rem 0"><code>'+escapeHtml(blk.code)+'</code></pre>';
+    s = s.split('\u0000CB' + bi + '\u0000').join(codeHtml);
+  }
+  return s;
+}
+
 // ── نفس شريط فلك بالظبط: نسخ / 👎 / 👍 — بيغذي غرفة 3 (الذاكرة الدائمة) ──
 function buildActionBar(questionText, answerText){
   const bar = document.createElement('div');
@@ -734,7 +802,11 @@ function appendMessageBubble(msg){
   if(msg.text){
     const bubble = document.createElement('div');
     bubble.className = 'msg ' + (msg.role==='user' ? 'user' : 'assistant');
-    bubble.textContent = msg.text;
+    if (msg.role==='user'){
+      bubble.textContent = msg.text;
+    } else {
+      bubble.innerHTML = formatAnswer(msg.text);
+    }
     wrap.appendChild(bubble);
   }
 
@@ -775,6 +847,7 @@ function appendThinkingIndicator(stages){
   wrap._setSearching = ()=>{ stageOverridden = true; if(stageEl.isConnected) stageEl.textContent = 'بيبحث عبر الإنترنت 🔎...'; };
   // ── لما غرفة التفكير العميق تبدأ تيجي حية من الموديل — بيستبدل نقط "بيفكر" بصندوق تفكير حي ──
   wrap._startLiveReasoning = ()=>{
+    if (wrap._contentStarted) return null; // الرد الحقيقي بدأ يوصل، متعرضش تفكير بعد كده
     if (wrap.querySelector('.cosmos-deep-think-live')) return wrap.querySelector('.cosmos-deep-think-live-text');
     stageOverridden = true;
     clearInterval(wrap._stageTimer);
@@ -787,6 +860,23 @@ function appendThinkingIndicator(stages){
     wrap.appendChild(liveBox);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return liveBox.querySelector('.cosmos-deep-think-live-text');
+  };
+  // ── لما الرد النهائي (content) يبدأ يوصل — بنشيل صندوق التفكير الحي ونعرض الرد وهو بيتكتب،
+  //    حرف بحرف، نفس إحساس فلك بالظبط (نص حر من غير مستطيل/فقاعة، مع مؤشر كتابة نابض) ──
+  wrap._startLiveContent = ()=>{
+    if (wrap._contentStarted) return wrap.querySelector('.cosmos-live-stream-text');
+    wrap._contentStarted = true;
+    stageOverridden = true;
+    clearInterval(wrap._stageTimer);
+    wrap.querySelector('.thinking-dots')?.remove();
+    stageEl.remove();
+    wrap.querySelector('.cosmos-deep-think-live')?.remove();
+    const liveMsg = document.createElement('div');
+    liveMsg.className = 'msg assistant cosmos-live-stream';
+    liveMsg.innerHTML = '<span class="cosmos-live-stream-text"></span><span class="cosmos-stream-cursor">▍</span>';
+    wrap.appendChild(liveMsg);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return liveMsg.querySelector('.cosmos-live-stream-text');
   };
   return wrap;
 }
@@ -871,8 +961,17 @@ composer.addEventListener('submit', async (e)=>{
         }
       };
       const onSearchStart = ()=> thinkingEl._setSearching();
+      let liveContentEl = null;
+      const onContentDelta = (fullText)=>{
+        if (!liveContentEl) liveContentEl = thinkingEl._startLiveContent();
+        if (liveContentEl){
+          const shown = fullText.length > 6000 ? fullText.slice(-6000) : fullText;
+          liveContentEl.textContent = shown; // نص خام أثناء الكتابة (بدون تنسيق) — زي فلك بالظبط
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+      };
 
-      const reply = await getAIResponse(history, onReasoningDelta, onSearchStart);
+      const reply = await getAIResponse(history, onReasoningDelta, onSearchStart, onContentDelta);
       thinkingEl._clearStage(); thinkingEl.remove();
       const replyTs = Date.now();
       const assistantMsg = { role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs, question: text };

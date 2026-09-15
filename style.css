@@ -144,7 +144,7 @@ body{
 }
 .msg-wrap{display:flex;flex-direction:column;max-width:70%;}
 .msg-wrap.user{align-self:flex-end;align-items:flex-end;}
-.msg-wrap.assistant{align-self:flex-start;align-items:flex-start;}
+.msg-wrap.assistant{align-self:flex-start;align-items:flex-start;max-width:92%;}
 
 .msg-header{display:flex;align-items:center;gap:6px;margin-bottom:5px;padding:0 3px;}
 .msg-avatar{
@@ -154,10 +154,13 @@ body{
 .msg-sender-name{font-size:12.5px;font-weight:700;color:var(--text-dim);}
 .msg-time{font-size:11px;color:var(--text-dim);margin-top:4px;padding:0 3px;}
 
-.msg{padding:11px 15px;border-radius:14px;font-size:15px;line-height:1.6;white-space:pre-wrap;}
-.msg.user{background:var(--accent);color:#1b1a17;border-bottom-left-radius:4px;}
-.msg.assistant{background:var(--panel);border:1px solid var(--border);border-bottom-right-radius:4px;}
-.msg.error-msg{color:var(--error);border-color:var(--error);}
+.msg{font-size:15px;line-height:1.7;white-space:pre-wrap;}
+.msg.user{background:var(--accent);color:#1b1a17;padding:11px 15px;border-radius:14px;border-bottom-left-radius:4px;}
+/* ردود الذكاء الاصطناعي: نص حر بلا مستطيل ولا حدود — نفس فلك بالظبط */
+.msg.assistant{background:none;border:none;padding:2px 3px;color:var(--text);}
+.msg.error-msg{color:var(--error);}
+.msg.cosmos-live-stream{color:var(--text-dim);}
+.cosmos-live-stream-text{white-space:pre-wrap;}
 
 .msg-image{max-width:100%;max-height:280px;border-radius:12px;margin-bottom:6px;display:block;}
 
