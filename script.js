@@ -160,28 +160,50 @@ function buildCodeFileCard(lang, code){
   const l = (lang||'').toLowerCase().trim();
   const ext = CODE_EXT_MAP[l] || 'txt';
   const label = CODE_LABEL_MAP[l] || (l ? l.toUpperCase() : 'TXT');
-  const filename = (CODE_NAME_MAP[l] || 'file') + '.' + ext;
-  const hljsLang = CODE_HLJS_MAP[l] || l || 'plaintext';
-  const lineCount = (code.match(/\n/g) || []).length + 1;
-  return '<div class="code-file-card" data-gid="'+gid+'">'
-    + '<div class="code-file-header" onclick="toggleCodeFileBody(\''+gid+'\')">'
-    + '<div class="code-file-icon code-lang-'+ext+'"><i class="fas fa-code"></i></div>'
-    + '<div class="code-file-meta"><div class="code-file-name" dir="ltr">'+filename+'</div>'
-    + '<div class="code-file-sub">'+label+' · '+lineCount+' سطر</div></div>'
-    + '<button type="button" class="code-file-btn" title="نسخ" onclick="event.stopPropagation();copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
-    + '<button type="button" class="code-file-btn" title="تنزيل" onclick="event.stopPropagation();downloadCodeFile(\''+gid+'\',\''+filename+'\')"><i class="fas fa-download"></i></button>'
-    + '<i class="fas fa-chevron-down code-file-chevron"></i>'
-    + '</div>'
-    + '<div class="code-file-body"><pre><code class="hljs language-'+hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
+  const baseName = CODE_NAME_MAP[l] || 'file';
+  const filename = baseName + '.' + ext;
+  const title = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+  window.__codeMeta = window.__codeMeta || {};
+  window.__codeMeta[gid] = { filename, title, label, hljsLang: CODE_HLJS_MAP[l] || l || 'plaintext' };
+  // ── بطاقة بمقاس ثابت دايمًا (نفس الشكل/الطول/العرض) بغض النظر عن طول الكود —
+  //    الضغط عليها بيفتح الكود كامل في نافذة منفصلة، مش بيوسّع جوه الشات ──
+  return '<div class="code-file-card" data-gid="'+gid+'" onclick="openCodeFileModal(\''+gid+'\')">'
+    + '<div class="code-file-icon"><i class="fas fa-code"></i></div>'
+    + '<div class="code-file-meta"><div class="code-file-name" dir="ltr">'+title+'</div>'
+    + '<div class="code-file-sub" dir="ltr">كود · '+label+'</div></div>'
+    + '<i class="fas fa-chevron-left code-file-arrow"></i>'
+    + '</div>';
+}
+
+window.openCodeFileModal = function(gid){
+  const code = window.__codeGroups[gid];
+  const meta = (window.__codeMeta || {})[gid];
+  if (!code || !meta) return;
+  document.querySelectorAll('.code-modal-overlay').forEach(el=>el.remove());
+  const overlay = document.createElement('div');
+  overlay.className = 'code-modal-overlay';
+  overlay.setAttribute('data-gid', gid);
+  overlay.innerHTML =
+    '<div class="code-modal">'
+    + '<div class="code-modal-header">'
+    + '<div class="code-modal-title" dir="ltr">'+meta.filename+'</div>'
+    + '<div class="code-modal-actions">'
+    + '<button type="button" class="code-modal-btn" title="نسخ" onclick="copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
+    + '<button type="button" class="code-modal-btn" title="تنزيل" onclick="downloadCodeFile(\''+gid+'\',\''+meta.filename+'\')"><i class="fas fa-download"></i></button>'
+    + '<button type="button" class="code-modal-btn" title="إغلاق" onclick="closeCodeModal(\''+gid+'\')"><i class="fas fa-times"></i></button>'
+    + '</div></div>'
+    + '<div class="code-modal-body"><pre><code class="hljs language-'+meta.hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
     + '<div class="code-rate-bar"><span class="code-rate-label">الكود ده عجبك؟</span>'
     + '<button type="button" class="code-rate-btn code-rate-good" onclick="rateCodeGood(\''+gid+'\',this)"><i class="fas fa-thumbs-up"></i></button>'
     + '<button type="button" class="code-rate-btn code-rate-bad" onclick="rateCodeBad(\''+gid+'\',this)"><i class="fas fa-thumbs-down"></i></button>'
     + '</div></div>';
-}
-
-window.toggleCodeFileBody = function(gid){
-  const card = document.querySelector('.code-file-card[data-gid="'+gid+'"]');
-  if (card) card.classList.toggle('open');
+  overlay.addEventListener('click', (e)=>{ if (e.target === overlay) closeCodeModal(gid); });
+  document.body.appendChild(overlay);
+  if (window.hljs){ overlay.querySelectorAll('pre code').forEach(b=> hljs.highlightElement(b)); }
+};
+window.closeCodeModal = function(gid){
+  const overlay = document.querySelector('.code-modal-overlay[data-gid="'+gid+'"]');
+  if (overlay) overlay.remove();
 };
 window.copyCodeFile = function(gid, btnEl){
   const code = window.__codeGroups[gid];
@@ -357,7 +379,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
         method: "POST",
         headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "openai/gpt-oss-120b", messages, max_tokens: 1500, temperature: 0.4,
+          model: "openai/gpt-oss-120b", messages, max_tokens: 8192, temperature: 0.4,
           stream: true, reasoning_effort: 'high', reasoning_format: 'parsed'
         })
       });
@@ -408,7 +430,7 @@ async function callGeminiChat(historyMsgs){
       const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: { temperature: 0.4, maxOutputTokens: 1500 } })
+        body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: { temperature: 0.4, maxOutputTokens: 8192 } })
       });
       const data = await res.json();
       const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
@@ -448,7 +470,7 @@ async function callOpenRouterChat(historyMsgs){
         const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
           headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
-          body: JSON.stringify({ model, messages, max_tokens: 1200, temperature: 0.4 })
+          body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4 })
         });
         const d = await r.json();
         const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
@@ -477,7 +499,7 @@ async function callVercelChat(historyMsgs){
         const r = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
           method: "POST",
           headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages, max_tokens: 1200, temperature: 0.4, stream: false })
+          body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: false })
         });
         const d = await r.json();
         const txt = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;

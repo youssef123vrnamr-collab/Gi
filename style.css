@@ -285,43 +285,56 @@ body{
 .cosmos-source-chip img{width:14px;height:14px;border-radius:3px;flex-shrink:0;}
 .cosmos-source-chip:hover{border-color:var(--accent-dim);color:var(--text);}
 
-/* ============ نظام كتابة الأكواد الذكي — بطاقة ملف حديثة لكل كود ============ */
+/* ============ نظام كتابة الأكواد الذكي — بطاقة ملف بمقاس ثابت (نفس شكل/طول/عرض بطاقات
+   الأرتيفاكت)، مهما كان الكود طويل. الضغط عليها بيفتح الكود كامل في نافذة منفصلة ============ */
 .code-file-card{
-  margin:.5rem 0;border:1px solid var(--border);border-radius:12px;
-  overflow:hidden;background:#161512;
+  display:flex;align-items:center;gap:.7rem;
+  margin:.5rem 0;padding:.75rem .85rem;height:64px;box-sizing:border-box;
+  border:1px solid var(--border);border-radius:14px;
+  background:var(--panel-raised);cursor:pointer;user-select:none;
+  transition:background .15s,border-color .15s;
 }
-.code-file-header{
-  display:flex;align-items:center;gap:.6rem;padding:.6rem .7rem;cursor:pointer;
-  background:var(--panel-raised);user-select:none;
-}
+.code-file-card:hover{background:var(--panel);border-color:var(--accent-dim);}
 .code-file-icon{
-  width:32px;height:32px;border-radius:9px;flex-shrink:0;
-  display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;
-  background:linear-gradient(135deg,var(--accent-dim),var(--accent));
+  width:44px;height:44px;border-radius:11px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;color:#4a463a;font-size:16px;
+  background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);
 }
-.code-lang-js,.code-lang-jsx{background:linear-gradient(135deg,#8a6d1e,#f0c040);}
-.code-lang-html{background:linear-gradient(135deg,#8a4a2a,#e2703a);}
-.code-lang-css,.code-lang-scss{background:linear-gradient(135deg,#2a5d8a,#4ba3e2);}
-.code-lang-py{background:linear-gradient(135deg,#1e6b5c,#3fb89e);}
-.code-lang-json{background:linear-gradient(135deg,#5a5540,#c9bf7e);}
 .code-file-meta{flex:1;min-width:0;}
-.code-file-name{font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.code-file-sub{font-size:11px;color:var(--text-dim);margin-top:1px;}
-.code-file-btn{
-  width:30px;height:30px;border-radius:8px;border:none;background:transparent;
-  color:var(--text-dim);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+.code-file-name{font-size:14px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.code-file-sub{font-size:12px;color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.code-file-arrow{color:var(--text-dim);font-size:13px;flex-shrink:0;}
+
+/* ── نافذة عرض الكود الكامل ── */
+.code-modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:999;
+  display:flex;align-items:flex-end;justify-content:center;
+}
+.code-modal{
+  width:100%;max-width:720px;max-height:82vh;
+  background:#161512;border-radius:16px 16px 0 0;border:1px solid var(--border);border-bottom:none;
+  display:flex;flex-direction:column;overflow:hidden;
+  animation:codeModalUp .18s ease;
+}
+@keyframes codeModalUp{from{transform:translateY(24px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+.code-modal-header{
+  display:flex;align-items:center;gap:.5rem;padding:.7rem .85rem;
+  border-bottom:1px solid var(--border);background:var(--panel-raised);flex-shrink:0;
+}
+.code-modal-title{flex:1;font-size:13px;font-weight:700;color:var(--text);text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.code-modal-actions{display:flex;gap:.3rem;flex-shrink:0;}
+.code-modal-btn{
+  width:32px;height:32px;border-radius:8px;border:none;background:transparent;
+  color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;
   transition:background .15s,color .15s;
 }
-.code-file-btn:hover{background:var(--panel);color:var(--text);}
-.code-file-chevron{color:var(--text-dim);font-size:12px;transition:transform .2s ease;flex-shrink:0;}
-.code-file-card.open .code-file-chevron{transform:rotate(180deg);}
-.code-file-body{max-height:0;overflow:hidden;transition:max-height .25s ease;}
-.code-file-card.open .code-file-body{max-height:460px;overflow:auto;}
-.code-file-body pre{margin:0;padding:.8rem;direction:ltr;text-align:left;background:#0d0c0a !important;}
-.code-file-body code{font-family:'Consolas','Courier New',monospace;font-size:13px;line-height:1.6;}
+.code-modal-btn:hover{background:var(--panel);color:var(--text);}
+.code-modal-body{overflow:auto;flex:1;}
+.code-modal-body pre{margin:0;padding:.9rem;direction:ltr;text-align:left;background:#0d0c0a !important;}
+.code-modal-body code{font-family:'Consolas','Courier New',monospace;font-size:13px;line-height:1.6;}
 .code-rate-bar{
-  display:flex;align-items:center;gap:.4rem;padding:.4rem .7rem;
-  border-top:1px solid var(--border);background:var(--panel-raised);
+  display:flex;align-items:center;gap:.4rem;padding:.5rem .85rem;
+  border-top:1px solid var(--border);background:var(--panel-raised);flex-shrink:0;
 }
 .code-rate-label{font-size:12px;color:var(--text-dim);flex:1;}
 .code-rate-btn{
