@@ -815,10 +815,14 @@ async function callVercelChat(historyMsgs){
   return null;
 }
 
-/* ============ الموزّع الرئيسي: بحث عبر الإنترنت لو محتاج، بعدين يجرب كل خط دفاع بالترتيب ============ */
-async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, onContentDelta){
+/* ============ الموزّع الرئيسي: بحث عبر الإنترنت لو محتاج، بعدين يجرب كل خط دفاع بالترتيب ============
+   onStep(text) بتتنادى عند كل خطوة حقيقية بتحصل هنا، عشان تتعرض للمستخدم
+   لحظة بلحظة في مؤشر "بيشتغل دلوقتي" (مش نصوص وهمية — دي هي نفس الخطوات
+   اللي الكود فعلاً بيمر بيها). */
+async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContentDelta){
   const lastUserText = (messageHistory[messageHistory.length-1] && messageHistory[messageHistory.length-1].text) || '';
   const messages = messageHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
+  const step = (text)=>{ if (onStep) onStep(text); };
 
   let searchResultsBlock = '';
   const tavilyReady = !!getTavilyApiKey();
@@ -826,7 +830,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, on
   // ── لو المستخدم بعت رابط صريح، ندخله ونقرا محتواه فعليًا بدل ما نعمل بحث عام ──
   const explicitUrl = extractFirstUrl(lastUserText);
   if (tavilyReady && explicitUrl){
-    if (onSearchStart) onSearchStart();
+    step('بيفتح الرابط اللي بعته ويقرا محتواه...');
     const extracted = await performUrlExtract(explicitUrl);
     searchResultsBlock = buildUrlContentBlock(extracted);
   }
@@ -834,9 +838,13 @@ async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, on
   // ── قرار البحث العام: كلمة صريحة الأول، وإلا نسأل الموديل نفسه (لو مفيش رابط اتقرا فعلاً) ──
   if (tavilyReady && !searchResultsBlock){
     const explicitNeed = shouldWebSearch(lastUserText);
-    const needsSearch = explicitNeed || await classifyNeedsSearch(lastUserText);
+    let needsSearch = explicitNeed;
+    if (!needsSearch){
+      step('بيقرر لو الرسالة محتاجة بحث في الإنترنت ولا لأ...');
+      needsSearch = await classifyNeedsSearch(lastUserText);
+    }
     if (needsSearch){
-      if (onSearchStart) onSearchStart();
+      step('بيبحث في الإنترنت 🔎...');
       const results = await performWebSearch(lastUserText);
       searchResultsBlock = buildSearchResultsBlock(results);
     }
@@ -848,11 +856,13 @@ async function getAIResponse(messageHistory, onReasoningDelta, onSearchStart, on
     { id:'openrouter', label:'OpenRouter', fn: callOpenRouterChat },
     { id:'vercel', label:'Vercel Gateway', fn: callVercelChat }
   ];
-  // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين
-  // بالترتيب الافتراضي زي ما هو، وأول واحد يرجّع رد بنستخدمه.
+  // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين بالترتيب
+  // الافتراضي زي ما هو، وكل محاولة بتتعرض كخطوة حقيقية للمستخدم أول ما تبدأ.
   for (const p of providers){
+    step('بيجهّز الرد عن طريق ' + p.label + '...');
     const result = await p.fn(messages);
     if (result && result.text) return { text: result.text, reasoning: result.reasoning || '', provider: p.label };
+    step(p.label + ' مردّش، بيجرب مزوّد تاني...');
   }
 
   if (!GroqKeyPool.count() && !GeminiKeyPool.count() && !OpenRouterKeyPool.count() && !VercelGatewayKeyPool.count()){
@@ -1731,8 +1741,7 @@ function typewriterReveal(container, html, onDone){
 // ── بتحوّل صندوق "بيفكر/بيتكتب حي" لنفس الرسالة النهائية، وتعمل عليها أنيميشن الكتابة
 //    التدريجي فوق النص المنسّق والملوّن الكامل (مش النص الخام) — دي الخطوة اللي كانت ناقصة ──
 function renderFinalAssistantMessage(wrap, msg){
-  wrap.querySelector('.thinking-dots')?.remove();
-  wrap.querySelector('.thinking-stage')?.remove();
+  wrap.querySelector('.thinking-steps')?.remove();
   wrap.querySelector('.cosmos-deep-think-live')?.remove();
   wrap.querySelector('.code-building-row')?.remove();
   wrap.querySelector('.cosmos-live-stream')?.remove();
@@ -1830,34 +1839,39 @@ function appendMessageBubble(msg){
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function appendThinkingIndicator(stages){
+/* ============ مؤشر "بيشتغل دلوقتي" — خطوات حقيقية بتتحدّث لحظة بلحظة، مش نصوص وهمية بتلف ============
+   قبل كده كان في نصوص جاهزة بتتلف كل 1.4 ثانية من غير أي علاقة باللي بيحصل فعليًا.
+   دلوقتي كل خطوة بتتضاف هنا هي خطوة حقيقية حصلت فعلاً في المنطق (getAIResponse،
+   processAttachedFile، analyzeImagesWithGemini...): الخطوة اللي قبلها بتتعلّم
+   "خلصت" (✓) والخطوة الجديدة بتتحط "شغالة دلوقتي" (نقط متحركة)، بالظبط زي أي
+   نظام خطوات شفاف بيوضح للمستخدم النظام بيعمل إيه لحظة بلحظة. */
+function appendThinkingIndicator(firstStepLabel){
   const wrap = document.createElement('div');
   wrap.className = 'msg-wrap assistant';
   wrap.innerHTML =
     '<div class="msg-header"><span class="msg-avatar">✦</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
-    '<div class="thinking-dots"><span></span><span></span><span></span></div>'+
-    '<div class="thinking-stage"></div>';
+    '<div class="thinking-steps"></div>';
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  const stageEl = wrap.querySelector('.thinking-stage');
-  const list = (stages && stages.length) ? stages : ['بيفكر...'];
-  let idx = 0;
-  let stageOverridden = false;
-  stageEl.textContent = list[0];
-  wrap._stageTimer = setInterval(()=>{
-    if (stageOverridden) return;
-    idx = (idx+1) % list.length;
-    if (stageEl.isConnected) stageEl.textContent = list[idx];
-  }, 1400);
-  wrap._clearStage = ()=> clearInterval(wrap._stageTimer);
-  // ── لما البحث يبدأ فعليًا ──
-  wrap._setSearching = ()=>{ stageOverridden = true; if(stageEl.isConnected) stageEl.textContent = 'بيبحث عبر الإنترنت 🔎...'; };
-  // ── التفكير (reasoning) وكتابة الرد وكتابة الكود كلها بتتم في الخلفية دلوقتي —
-  //    من غير ما نعرض للمستخدم أي نص خام وهو لسه بيتكتب. المستخدم بيشوف بس نقط
-  //    "بيفكر..." لحد ما الرد الكامل والمنسّق يجهز، وبعدين بنعرضه دفعة واحدة —
-  //    وصندوق "غرفة التفكير العميق" القابل للفتح بيفضل موجود جوه الرسالة النهائية زي ما هو ──
-  wrap._setBuildingCode = ()=>{
-    if (stageEl.isConnected) stageEl.textContent = 'بيجهّز الكود...';
+  const stepsEl = wrap.querySelector('.thinking-steps');
+
+  function renderStep(text){
+    const prevActive = stepsEl.querySelector('.thinking-step.active');
+    if (prevActive) prevActive.classList.replace('active','done');
+    const step = document.createElement('div');
+    step.className = 'thinking-step active';
+    step.innerHTML = '<span class="thinking-step-dot"></span><span class="thinking-step-text"></span>';
+    step.querySelector('.thinking-step-text').textContent = text;
+    stepsEl.appendChild(step);
+    if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  renderStep(firstStepLabel || 'بيقرا رسالتك...');
+  // ── دالة عامة: أي جزء من المنطق يقدر يضيف خطوة جديدة حقيقية بيها ──
+  wrap._addStep = (text)=>{ if (stepsEl.isConnected) renderStep(text); };
+  wrap._clearStage = ()=>{
+    const lastActive = stepsEl.querySelector('.thinking-step.active');
+    if (lastActive) lastActive.classList.replace('active','done');
   };
   return wrap;
 }
@@ -2003,9 +2017,8 @@ composer.addEventListener('submit', async (e)=>{
   }
 
   const thinkingEl = appendThinkingIndicator(images.length
-    ? ['بيفتح الصور...', 'بيحلل التفاصيل...', 'بيصيغ الوصف...']
-    : (files.length ? ['بيقرا الملفات المرفقة...', 'بيحلل المحتوى...', 'بيصيغ الإجابة...']
-      : ['بيقرا رسالتك...', 'بيفكر في الرد...', 'بيصيغ الإجابة...']));
+    ? 'بيفتح الصور ويحللها...'
+    : (files.length ? 'بيقرا محتوى الملفات المرفقة...' : 'بيقرا رسالتك...'));
 
   try{
     if(images.length){
@@ -2040,20 +2053,22 @@ composer.addEventListener('submit', async (e)=>{
         });
 
       // ── التفكير وكتابة الرد بيحصلوا في الخلفية بالكامل — من غير ما نعرض أي نص خام
-      //    للمستخدم وهو لسه بيتكتب. أول ما فيه كود جوه الرد، بنبدّل مؤشر "بيفكر" بـ
-      //    "بيجهّز الكود..."، وبعدين الرد الكامل النظيف بيظهر مرة واحدة مع صندوق
+      //    للمستخدم وهو لسه بيتكتب. كل خطوة حقيقية بتحصل جوه getAIResponse (قراءة
+      //    رابط، قرار البحث، البحث نفسه، محاولة كل مزوّد) بتتضاف فورًا لمؤشر
+      //    الخطوات عن طريق onStep، وأول ما فيه كود جوه الرد بنضيف خطوة "بيجهّز
+      //    الكود..." كمان، وبعدين الرد الكامل النظيف بيظهر مرة واحدة مع صندوق
       //    "غرفة التفكير العميق" القابل للفتح جواه ──
       const onReasoningDelta = ()=>{};
-      const onSearchStart = ()=> thinkingEl._setSearching();
+      const onStep = (text)=> thinkingEl._addStep(text);
       let codeStageShown = false;
       const onContentDelta = (fullText)=>{
         if (!codeStageShown && fullText.indexOf('```') > -1){
           codeStageShown = true;
-          thinkingEl._setBuildingCode();
+          thinkingEl._addStep('بيجهّز الكود...');
         }
       };
 
-      const reply = await getAIResponse(history, onReasoningDelta, onSearchStart, onContentDelta);
+      const reply = await getAIResponse(history, onReasoningDelta, onStep, onContentDelta);
       thinkingEl._clearStage();
       const replyTs = Date.now();
       const assistantMsg = { role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs, question: text };
@@ -2066,10 +2081,9 @@ composer.addEventListener('submit', async (e)=>{
     }
   } catch(err){
     thinkingEl._clearStage();
-    thinkingEl.querySelector('.thinking-dots')?.replaceWith(
+    thinkingEl.querySelector('.thinking-steps')?.replaceWith(
       Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' })
     );
-    thinkingEl.querySelector('.thinking-stage')?.remove();
     console.error(err);
   } finally {
     clearTimeout(window.__sendWatchdog);
