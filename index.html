@@ -111,10 +111,15 @@
     <div id="composer-area" class="composer-area">
       <form id="composer" class="composer">
         <input type="file" id="attach-input" hidden multiple>
-        <div class="composer-inner">
-          <button type="button" id="attach-btn" class="composer-icon-btn attach-btn" aria-label="إرفاق ملف"><i class="fas fa-paperclip"></i></button>
+        <div class="composer-card">
           <textarea id="composer-input" rows="1" placeholder="اكتب رسالتك..."></textarea>
-          <button type="submit" class="send-btn" aria-label="إرسال"><i id="send-btn-icon" class="fas fa-arrow-up"></i></button>
+          <div class="composer-toolbar">
+            <div class="composer-toolbar-left">
+              <button type="button" id="attach-btn" class="composer-icon-btn attach-btn" aria-label="إرفاق ملف"><i class="fas fa-plus"></i></button>
+              <span class="model-pill" id="model-pill">AlalaGyGyAgha V1.6</span>
+            </div>
+            <button type="submit" class="send-btn" aria-label="إرسال"><i id="send-btn-icon" class="fas fa-arrow-up"></i></button>
+          </div>
         </div>
       </form>
     </div>

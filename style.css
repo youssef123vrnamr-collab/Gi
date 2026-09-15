@@ -451,39 +451,53 @@ button:focus,button:focus-visible{outline:none;}
 /* ============ زرار القراءة الصوتية (نطق رد الذكاء) ============ */
 .cosmos-action-btn.speaking{color:var(--accent);}
 
-/* ============ COMPOSER (نفس تصميم فلك — صندوق كبسولة واحد لف حوله كل الأزرار، بألوان محفوظات) ============ */
+/* ============ COMPOSER (بطاقة مستطيلة: التكست بوكس فوق، وصف تحكم تحته — زي تصميم Claude) ============ */
 .composer-area{
   flex-shrink:0;padding:1.5rem 18px;background:rgba(0,0,0,.15);border-top:1px solid var(--border);
 }
 .composer{ display:flex; }
-.composer-inner{
-  flex:1;display:flex;align-items:center;gap:.5rem;
+.composer-card{
+  flex:1;display:flex;flex-direction:column;gap:.35rem;
   background:var(--panel);border:1px solid var(--border);
-  border-radius:30px;padding:.5rem;
+  border-radius:22px;padding:.7rem .7rem .55rem;
   transition:border-color .2s,box-shadow .2s;
 }
-.composer-inner:focus-within{
+.composer-card:focus-within{
   border-color:var(--accent-dim);
   box-shadow:0 0 0 3px rgba(216,163,76,.15);
 }
+.composer-toolbar{
+  display:flex;align-items:center;justify-content:space-between;gap:.5rem;
+}
+.composer-toolbar-left{
+  display:flex;align-items:center;gap:.4rem;min-width:0;
+}
 .composer-icon-btn{
   display:flex !important;align-items:center;justify-content:center;
-  width:40px;height:40px;border-radius:50%;border:none;
-  background:transparent;color:var(--text-dim);flex-shrink:0;font-size:16px;
+  width:36px;height:36px;border-radius:50%;border:none;
+  background:transparent;color:var(--text-dim);flex-shrink:0;font-size:15px;
   cursor:pointer;transition:background .2s,color .2s;
 }
 .composer-icon-btn:hover{background:var(--panel-raised);color:var(--text);}
+.model-pill{
+  display:inline-flex;align-items:center;
+  padding:.4rem .9rem;border-radius:20px;
+  background:var(--panel-raised);border:1px solid var(--border);
+  color:var(--text-dim);font-family:'Tajawal',sans-serif;font-size:13px;font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;
+  user-select:none;
+}
 .composer textarea{
-  flex:1;resize:none;max-height:140px;min-height:22px;padding:.5rem .3rem;border:none;
+  width:100%;resize:none;max-height:140px;min-height:24px;padding:.3rem .4rem;border:none;
   background:transparent;color:var(--text);
   font-family:'Tajawal',sans-serif;font-size:15px;outline:none;line-height:1.5;
 }
 .composer textarea:disabled{opacity:.45;cursor:not-allowed;}
 .composer-icon-btn:disabled{opacity:.35;cursor:not-allowed;}
 .send-btn{
-  width:40px;height:40px;border-radius:50%;border:none;
+  width:36px;height:36px;border-radius:50%;border:none;
   background:var(--accent);
-  color:#1b1a17;font-size:16px;cursor:pointer;flex-shrink:0;
+  color:#1b1a17;font-size:15px;cursor:pointer;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;
   transition:transform .2s,box-shadow .2s;
   box-shadow:0 4px 14px -4px rgba(216,163,76,.55);
@@ -495,6 +509,7 @@ button:focus,button:focus-visible{outline:none;}
 .send-btn.sending i{animation:none;}
 @keyframes sendSpin{to{transform:rotate(360deg);}}
 .send-btn:disabled:not(.sending){opacity:.5;cursor:default;transform:none;}
+
 
 /* ============ غرفة التفكير العميق (Deep Thinking Room) — نفس تصميم فلك، بألوان محفوظات ============ */
 .cosmos-deep-think-live{
