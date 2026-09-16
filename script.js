@@ -1260,18 +1260,29 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   //    غالبًا الزحمة بتزول خلال ثواني وبيرجع يشتغل عادي ──
   async function tryAllProviders(){
     let configuredCount = 0, quotaExhaustedCount = 0;
+    const failLog = [];
     for (const p of providers){
-      if (p.pool.count()) configuredCount++;
+      if (!p.pool.count()){ failLog.push(p.label + ': مفيش مفتاح'); continue; }
+      configuredCount++;
       step('بيجهّز الرد...');
-      const result = await p.fn(messages);
+      let result = null, thrown = null;
+      try{ result = await p.fn(messages); }
+      catch(e){ if (isAbortError(e)) throw e; thrown = e; }
       if (result && result.text){
         if (result.usedTokens) addTokensUsed(result.usedTokens);
         return { ok:true, text: result.text, reasoning: result.reasoning || '', provider: p.label };
       }
-      if (result && result.quotaExhausted) quotaExhaustedCount++;
+      if (result && result.quotaExhausted){
+        quotaExhaustedCount++;
+        failLog.push(p.label + ': Rate Limit (429)');
+      } else if (thrown){
+        failLog.push(p.label + ': ' + (thrown.message || thrown.name || 'خطأ غير معروف'));
+      } else {
+        failLog.push(p.label + ': رجع رد فاضي (مفيش نص)');
+      }
       step('بيجرب طريقة تانية...');
     }
-    return { ok:false, configuredCount, quotaExhaustedCount };
+    return { ok:false, configuredCount, quotaExhaustedCount, failLog };
   }
 
   let attempt = await tryAllProviders();
@@ -1298,7 +1309,9 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
     err.serviceDown = 'خدمة الكتابة';
     throw err;
   }
-  throw new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
+  const err = new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
+  err.providerDetails = attempt.failLog || [];
+  throw err;
 }
 
 /* ============ المراجعة الذاتية: بيشغّل الكود اللي كتبه فعليًا ويصلّح لوحده ============
@@ -2965,10 +2978,16 @@ composer.addEventListener('submit', async (e)=>{
         Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'❌ ' + err.serviceDown + ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.' })
       );
     } else {
+      // ── بدل رسالة عامة معماهاش أي تفاصيل، بنعرض السبب الحقيقي لكل مزوّد
+      //    لو متوفر (providerDetails)، عشان المستخدم/المطوّر يعرف يشخّص
+      //    المشكلة من غير ما يفتح Console أصلاً (مهم خصوصًا على الموبايل) ──
+      const details = (err && err.providerDetails && err.providerDetails.length)
+        ? '\n\n' + err.providerDetails.join('\n')
+        : '';
       thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' })
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' + details })
       );
-      console.error(err);
+      console.error(err, err && err.providerDetails);
     }
   } finally {
     clearTimeout(window.__sendWatchdog);
