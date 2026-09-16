@@ -3210,6 +3210,71 @@ function getDeviceId(){
     return 'dev-fallback';
   }
 }
+/* ============ بصمة جهاز (مش بصمة صباع) — Device/Browser Fingerprint ============
+   ده مش بيانات بيومترية شخصية، وميعرفش يتعرّف على شخص المستخدم — هو مجرد
+   توقيع تقني لخصائص الجهاز/المتصفح نفسه (كرت الرسومات، دقة الشاشة، عدد
+   أنوية المعالج، المنطقة الزمنية...) بيتحسب برضه ولو المستخدم مسح
+   localStorage، عكس mhz_device_id اللي بيروح لو البيانات اتمسحت. بنستخدمه
+   كطبقة تانية أقوى بجانب معرّف الجهاز العادي، مش بديل عن نظام WebAuthn نفسه. */
+function getCanvasFingerprint(){
+  try{
+    const canvas = document.createElement('canvas');
+    canvas.width = 220; canvas.height = 40;
+    const ctx = canvas.getContext('2d');
+    ctx.textBaseline = 'top';
+    ctx.font = "14px 'Tajawal', Arial";
+    ctx.fillStyle = '#f60';
+    ctx.fillRect(0, 0, 60, 20);
+    ctx.fillStyle = '#069';
+    ctx.fillText('Digital-Mind-FP 😀 محفوظات', 2, 15);
+    ctx.strokeStyle = 'rgba(102,204,0,0.7)';
+    ctx.beginPath(); ctx.arc(50, 20, 15, 0, Math.PI*2); ctx.stroke();
+    return canvas.toDataURL();
+  } catch(e){ return 'canvas-unsupported'; }
+}
+function getWebglFingerprint(){
+  try{
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (!gl) return 'no-webgl';
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+    const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    return vendor + '|' + renderer;
+  } catch(e){ return 'webgl-error'; }
+}
+async function computeDeviceFingerprint(){
+  const parts = [
+    navigator.userAgent || '',
+    navigator.platform || '',
+    navigator.language || '',
+    (navigator.languages || []).join(','),
+    String(navigator.hardwareConcurrency || ''),
+    String(navigator.deviceMemory || ''),
+    String(screen.width) + 'x' + String(screen.height) + 'x' + String(screen.colorDepth),
+    String(window.devicePixelRatio || ''),
+    Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+    String('ontouchstart' in window),
+    getWebglFingerprint(),
+    getCanvasFingerprint()
+  ].join('###');
+  try{
+    const buf = new TextEncoder().encode(parts);
+    const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+    return arrayBufferToBase64(hashBuf).replace(/[+/=]/g, '');
+  } catch(e){
+    // ── fallback بسيط لو SubtleCrypto مش متاح (سياق غير آمن مثلاً) ──
+    let h = 0;
+    for (let i=0;i<parts.length;i++){ h = ((h<<5)-h+parts.charCodeAt(i))|0; }
+    return 'fp' + Math.abs(h);
+  }
+}
+let __cachedFingerprint = null;
+async function getDeviceFingerprint(){
+  if (__cachedFingerprint) return __cachedFingerprint;
+  __cachedFingerprint = await computeDeviceFingerprint();
+  return __cachedFingerprint;
+}
 function arrayBufferToBase64(buf){
   const bytes = new Uint8Array(buf);
   let bin = '';
@@ -3243,27 +3308,38 @@ async function registerBiometricCredential(){
   });
   return arrayBufferToBase64(cred.rawId);
 }
-// بيفحص لو معرّف الجهاز ده اتسجّل قبل كده وحرق رصيده على حساب تاني، وبيحدّث
-// سجل الجهاز بآخر حساب استخدمه (deviceRegistry/{deviceId} في الـ Realtime DB)
+// بيفحص لو معرّف الجهاز أو بصمة الجهاز (fingerprint) دول اتسجّلوا قبل كده
+// وحرقوا رصيدهم على حساب تاني، وبيحدّث السجلين بآخر حساب استخدمهم
 async function checkDeviceAbuse(){
   const deviceId = getDeviceId();
-  const ref = db.ref('deviceRegistry/'+deviceId);
-  const snap = await ref.once('value');
-  const data = snap.val();
-  const blocked = !!(data && data.tokensExhausted && data.uid !== currentUser.uid);
-  await ref.update({
-    uid: currentUser.uid,
-    lastSeen: Date.now(),
-    biometricRegistered: true
-  }).catch(()=>{});
-  // ── الربط العكسي: بنسجّل معرّف الجهاز ده جوه حساب المستخدم نفسه كمان
-  //    (users/{uid}/security/devices/{deviceId})، مش بس العكس (deviceRegistry
-  //    اللي بيشاور من الجهاز للحساب). كده كل حساب عنده قايمة بكل الأجهزة
-  //    اللي استُخدم منها فعليًا، وممكن نتأكد إن الجهاز الحالي فعلاً من ضمن
-  //    الأجهزة المعروفة للحساب ده، مش بس إن الجهاز شايف uid معيّن ──
+  const fingerprint = await getDeviceFingerprint();
+
+  const deviceRef = db.ref('deviceRegistry/'+deviceId);
+  const fpRef = db.ref('deviceFingerprints/'+fingerprint);
+  const [deviceSnap, fpSnap] = await Promise.all([
+    deviceRef.once('value'),
+    fpRef.once('value')
+  ]);
+  const deviceData = deviceSnap.val();
+  const fpData = fpSnap.val();
+  const blockedByDeviceId = !!(deviceData && deviceData.tokensExhausted && deviceData.uid !== currentUser.uid);
+  // ── لو الـ localStorage اتمسح (deviceId جديد) بس بصمة الجهاز (هاردوير/
+  //    متصفح) لسه نفسها زي جهاز حرق توكناته قبل كده، برضه بنرفض — ده اللي
+  //    بيمنع الالتفاف بمسح بيانات المتصفح بس ──
+  const blockedByFingerprint = !!(fpData && fpData.tokensExhausted && fpData.uid !== currentUser.uid);
+  const blocked = blockedByDeviceId || blockedByFingerprint;
+
+  await Promise.all([
+    deviceRef.update({ uid: currentUser.uid, lastSeen: Date.now(), biometricRegistered: true, fingerprint }).catch(()=>{}),
+    fpRef.update({ uid: currentUser.uid, lastSeen: Date.now() }).catch(()=>{})
+  ]);
+  // ── الربط العكسي: بنسجّل معرّف الجهاز وبصمة الجهاز جوه حساب المستخدم نفسه
+  //    كمان (users/{uid}/security/devices/{deviceId})، مش بس العكس
+  //    (deviceRegistry/deviceFingerprints اللي بيشاورا من الجهاز للحساب).
+  //    كده كل حساب عنده قايمة بكل الأجهزة اللي استُخدم منها فعليًا ──
   const userDeviceRef = db.ref('users/'+currentUser.uid+'/security/devices/'+deviceId);
   userDeviceRef.transaction(existing=>{
-    return { firstSeen: (existing && existing.firstSeen) || Date.now(), lastSeen: Date.now() };
+    return { firstSeen: (existing && existing.firstSeen) || Date.now(), lastSeen: Date.now(), fingerprint };
   }).catch(()=>{});
   return blocked;
 }
@@ -3274,9 +3350,16 @@ async function isDeviceLinkedToCurrentAccount(){
   const snap = await db.ref('users/'+currentUser.uid+'/security/devices/'+getDeviceId()).once('value');
   return snap.exists();
 }
-function markDeviceTokensExhausted(){
+async function markDeviceTokensExhausted(){
   if (!currentUser) return;
-  db.ref('deviceRegistry/'+getDeviceId()).update({
+  const deviceId = getDeviceId();
+  const fingerprint = await getDeviceFingerprint();
+  db.ref('deviceRegistry/'+deviceId).update({
+    tokensExhausted: true,
+    uid: currentUser.uid,
+    exhaustedAt: Date.now()
+  }).catch(()=>{});
+  db.ref('deviceFingerprints/'+fingerprint).update({
     tokensExhausted: true,
     uid: currentUser.uid,
     exhaustedAt: Date.now()

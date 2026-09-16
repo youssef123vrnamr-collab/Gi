@@ -18,6 +18,28 @@
         "exhaustedAt": { ".validate": "newData.isNumber()" },
         "lastSeen": { ".validate": "newData.isNumber()" },
         "biometricRegistered": { ".validate": "newData.val() === true" },
+        "fingerprint": { ".validate": "newData.isString()" },
+
+        "$other": { ".validate": false }
+      }
+    },
+
+    "deviceFingerprints": {
+      "$fingerprint": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".validate": "newData.hasChildren(['uid','lastSeen'])",
+
+        "uid": {
+          ".validate": "newData.isString() && newData.val() === auth.uid"
+        },
+
+        "tokensExhausted": {
+          ".validate": "newData.val() === true || (!data.exists() || data.val() != true)"
+        },
+
+        "exhaustedAt": { ".validate": "newData.isNumber()" },
+        "lastSeen": { ".validate": "newData.isNumber()" },
 
         "$other": { ".validate": false }
       }
@@ -45,7 +67,8 @@
               "firstSeen": {
                 ".validate": "newData.isNumber() && (!data.exists() || newData.val() === data.val())"
               },
-              "lastSeen": { ".validate": "newData.isNumber()" }
+              "lastSeen": { ".validate": "newData.isNumber()" },
+              "fingerprint": { ".validate": "newData.isString()" }
             }
           }
         }
