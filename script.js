@@ -1745,6 +1745,12 @@ function chunkText(text, maxLen){
 async function processAttachedFile(file, opts){
   const kind = getFileKind(file);
   const result = { kind, name: file.name, extractedText: '', note: '', chunks: null };
+  // ── حجم الملف بصيغة مقروءة (كيلوبايت أو ميجابايت حسب الحجم)، بنضيفه
+  //    لكل نوع ملف بشكل موحّد عشان المستخدم يعرف حجم أي مرفق مهما كان نوعه ──
+  function fileSizeLabel(){
+    const kb = file.size / 1024;
+    return kb < 1024 ? Math.round(kb) + ' كيلوبايت' : (kb/1024).toFixed(1) + ' ميجابايت';
+  }
   function applyChunking(fullText, baseNote){
     const chunks = chunkText(fullText, MAX_FILE_CONTEXT_CHARS);
     result.extractedText = chunks[0] || '';
@@ -1756,22 +1762,22 @@ async function processAttachedFile(file, opts){
     }
   }
   if (kind === 'pdf'){
-    applyChunking(await extractPdfText(file), 'ملف PDF (' + Math.round(file.size/1024) + ' كيلوبايت)');
+    applyChunking(await extractPdfText(file), 'ملف PDF (' + fileSizeLabel() + ')');
   } else if (kind === 'docx'){
-    applyChunking(await extractDocxText(file), 'ملف Word');
+    applyChunking(await extractDocxText(file), 'ملف Word (' + fileSizeLabel() + ')');
   } else if (kind === 'excel'){
-    applyChunking(await extractExcelText(file), 'ملف Excel');
+    applyChunking(await extractExcelText(file), 'ملف Excel (' + fileSizeLabel() + ')');
   } else if (kind === 'audio'){
     result.extractedText = await transcribeAudio(file);
-    result.note = 'ملف صوتي (تم تفريغه لنص)';
+    result.note = 'ملف صوتي (' + fileSizeLabel() + ' — تم تفريغه لنص)';
   } else if (kind === 'zip'){
     const zr = await readZipFile(file, !!(opts && opts.extractZip));
     result.extractedText = zr.note;
-    result.note = (opts && opts.extractZip) ? 'ملف مضغوط (اتفك وقُريت محتوياته)' : 'ملف مضغوط (سايبه زي ما هو)';
+    result.note = 'ملف مضغوط (' + fileSizeLabel() + ') — ' + ((opts && opts.extractZip) ? 'اتفك وقُريت محتوياته' : 'سايبه زي ما هو');
   } else if (kind === 'text'){
-    applyChunking(await readFileAsText(file), 'ملف نصي/كود');
+    applyChunking(await readFileAsText(file), 'ملف نصي/كود (' + fileSizeLabel() + ')');
   } else {
-    result.note = 'ملف (' + (file.type || 'نوع غير معروف') + ') — متقروش محتواه نصيًا، بس اسمه اتبعت للذكاء';
+    result.note = 'ملف (' + (file.type || 'نوع غير معروف') + '، ' + fileSizeLabel() + ') — متقروش محتواه نصيًا، بس اسمه اتبعت للذكاء';
   }
   return result;
 }
