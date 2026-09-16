@@ -332,6 +332,106 @@ function buildNoRawLatexBlock(){
 function buildCodeCompletenessBlock(){
   return '\n\nقاعدة إلزامية بخصوص الأكواد: لما تكتب كود جوه ```، لازم يكون الكود كامل 100% وشغّال من الأول للآخر، من غير أي اختصار أو حذف. ممنوع تماما تستخدم أي حاجة زي "// باقي الكود زي ما هو"، "// rest of the code"، "// ...", "/* نفس الكود اللي فات */"، أو أي جملة تلخيصية بدل ما تكتب الكود فعليًا — حتى لو الملف طويل. لو الكود طويل جدًا ومحتاج مساحة أكبر من اللي قدامك، اكتب أكبر قدر ممكن منه وسيبه بدون علامة إغلاق ``` في نهاية ردك (يعني متقفلش الكود الفاضي)، عشان النظام هيطلب منك تكمل تلقائيًا من نفس النقطة؛ أما لو خلصت الكود فعلاً، اقفله بـ ``` عادي. الأولوية دايمًا لكود كامل وصحيح، حتى لو ده معناه إجابة أطول.';
 }
+/* ============ محرك تشغيل الكود (أي لغة) — أساس زر "المعاينة/التشغيل" وحلقة التصحيح الذاتي ============
+   1) HTML/XML (أو JS لوحده أو أي كود فيه <html>) → بيتحط جوه iframe (sandbox) حقيقي،
+      وبيتقرا فيه أي خطأ فعلي عن طريق جسر بسيط (window.onerror + console.error) بيبعت
+      الأخطاء لبره الـ iframe. لو visible=true، الـ iframe نفسه بيترجع عشان يتعرض
+      كمعاينة حقيقية للمستخدم (مش بس فحص خلفي).
+   2) أي لغة تانية (Python/C/C++/Java/PHP/Ruby/Go/Bash/SQL...) → بتتبعت لـ Piston
+      (emkc.org) وهي API عامة ومجانية لتشغيل كود حقيقي بأمان على السيرفر بتاعها،
+      وبترجع stdout/stderr فعليين — مش تخمين — عشان نعرضهم في "معاينة ترمنال".
+   لغات زي CSS/JSON/YAML/Markdown مالهاش معنى "تشغيل" فعلي، فبترجع ok:null
+   (يعني "مش قابل للتقييم" مش "فيه خطأ"). */
+const PISTON_LANG_MAP = {
+  py:'python', python:'python', ts:'typescript', typescript:'typescript',
+  c:'c', cpp:'cpp', java:'java', php:'php', rb:'ruby', ruby:'ruby', go:'go',
+  sh:'bash', bash:'bash', shell:'bash', sql:'sqlite3'
+};
+const PISTON_VERSION_HINT = { python:'3.10.0', typescript:'5.0.3', c:'10.2.0', cpp:'10.2.0', java:'15.0.2', php:'8.2.3', ruby:'3.0.1', go:'1.16.2', bash:'5.2.0', sqlite3:'3.36.0' };
+
+async function runViaPiston(pistonLang, code){
+  try{
+    const res = await fetchWithRetry('https://emkc.org/api/v2/piston/execute', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ language: pistonLang, version: PISTON_VERSION_HINT[pistonLang] || '*', files:[{ content: code }] }),
+      signal: requestSignal(20000)
+    }, 1);
+    const data = await res.json();
+    const run = (data && data.run) || {};
+    const compile = data && data.compile;
+    const stderr = ((compile && compile.stderr) || '') + (run.stderr || '');
+    const ok = !stderr.trim() && (run.code === 0 || run.code == null);
+    return { ok, stdout: run.stdout || '', stderr: stderr.trim() || (run.signal ? ('العملية اتقفلت بإشارة: '+run.signal) : '') };
+  } catch(e){
+    if (isAbortError(e)) throw e;
+    return { ok:null, stdout:'', stderr:'تعذّر الاتصال بخدمة تشغيل الأكواد دلوقتي (' + (e.message||e) + ')' };
+  }
+}
+
+// ── اختبار/معاينة HTML أو JS جوه iframe معزول (sandbox)، بجسر بسيط بيوصّل أي خطأ فعلي
+//    (onerror / console.error) من جوه الـ iframe لبرّه. لو visible=true بيرجع الـ iframe
+//    نفسه عشان يتحط في الصفحة كمعاينة حقيقية شغالة (مش بس فحص)، ولو false بيتشال فورًا
+//    بعد الاختبار (ده اللي بيستخدمه التصحيح التلقائي في الخلفية) ──
+function runHtmlInIframe(htmlDoc, opts){
+  opts = opts || {};
+  return new Promise((resolve)=>{
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts allow-modals allow-forms');
+    if (opts.visible){
+      iframe.className = 'code-preview-iframe';
+    } else {
+      iframe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:800px;height:600px;';
+    }
+    const errors = [];
+    let settled = false;
+    window.__iframeErrorSink = window.__iframeErrorSink || {};
+    const sinkId = 'sink' + Date.now() + Math.random().toString(36).slice(2);
+    window.__iframeErrorSink[sinkId] = (msg)=> errors.push(msg);
+    const bridge = '<script>window.onerror=function(m,s,l){try{parent.__iframeErrorSink["'+sinkId+'"]("خطأ: "+m+" (سطر "+l+")");}catch(e){}};'
+      + 'var _ce=console.error;console.error=function(){try{_ce.apply(console,arguments);}catch(e){}try{parent.__iframeErrorSink["'+sinkId+'"](Array.prototype.slice.call(arguments).join(" "));}catch(e){}};</'+'script>';
+    iframe.srcdoc = bridge + htmlDoc;
+    document.body.appendChild(iframe);
+    const finish = ()=>{
+      if (settled) return; settled = true;
+      delete window.__iframeErrorSink[sinkId];
+      if (!opts.visible) iframe.remove();
+      resolve({ ok: errors.length===0, stdout:'', stderr: errors.join('\n'), iframeEl: opts.visible ? iframe : null });
+    };
+    setTimeout(finish, opts.visible ? 2500 : 1800);
+  });
+}
+
+function isWebLang(l){ return l==='html' || l==='htm' || l==='xml'; }
+function isSkippedLang(l){ return l==='css' || l==='scss' || l==='json' || l==='yaml' || l==='yml' || l==='md' || l===''; }
+function wrapCodeAsHtmlDoc(lang, code){
+  const isFullPage = /<html[\s>]/i.test(code);
+  if (isFullPage) return code;
+  if (lang==='js' || lang==='javascript') return '<!DOCTYPE html><html><head></head><body><script>'+code+'</'+'script></body></html>';
+  return '<!DOCTYPE html><html><head></head><body>'+code+'</body></html>';
+}
+
+// ── نقطة الدخول الموحّدة (فحص خلفي، مش معاينة مرئية): بتاخد اللغة والكود وترجع
+//    { ok, stdout, stderr }. ok=true (شغال صح) / ok=false (فيه خطأ فعلي) / ok=null
+//    (اللغة دي مالهاش معنى "تشغيل"، أو تعذّر الاختبار — منعتبرهاش خطأ في الحالتين) ──
+async function runAnyCode(lang, code, visible){
+  const l = (lang||'').toLowerCase().trim();
+  if (isSkippedLang(l)) return { ok:null, stdout:'', stderr:'' };
+  if (isWebLang(l) || l==='js' || l==='javascript' || /<html[\s>]/i.test(code)){
+    return runHtmlInIframe(wrapCodeAsHtmlDoc(l, code), { visible: !!visible });
+  }
+  const pistonLang = PISTON_LANG_MAP[l];
+  if (!pistonLang) return { ok:null, stdout:'', stderr:'' };
+  return runViaPiston(pistonLang, code);
+}
+function extractCodeBlocksFromText(text){
+  const blocks = [];
+  const re = /```([a-zA-Z0-9]*)\n?([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text||''))) blocks.push({ lang:(m[1]||'').trim(), code:m[2].replace(/\n$/,'') });
+  return blocks;
+}
+
+
 /* ============ نظام كتابة الأكواد الذكي — بطاقة ملف لكل كتلة كود ============
    هيدر فيه أيقونة/اسم ملف/لغة/عدد أسطر + تلوين كود احترافي (highlight.js) + نسخ/تنزيل + تقييم 👍👎
    يغذي "غرفة كود دائمة" منفصلة عن غرفة النصوص، بنفس فكرة فلك بالظبط. */
@@ -353,7 +453,7 @@ function buildCodeFileCard(lang, code){
   const filename = baseName + '.' + ext;
   const title = baseName.charAt(0).toUpperCase() + baseName.slice(1);
   window.__codeMeta = window.__codeMeta || {};
-  window.__codeMeta[gid] = { filename, title, label, hljsLang: CODE_HLJS_MAP[l] || l || 'plaintext' };
+  window.__codeMeta[gid] = { filename, title, label, hljsLang: CODE_HLJS_MAP[l] || l || 'plaintext', origLang: l };
   // ── بطاقة بمقاس ثابت دايمًا (نفس الشكل/الطول/العرض) بغض النظر عن طول الكود —
   //    الضغط عليها بيفتح الكود كامل في نافذة منفصلة، مش بيوسّع جوه الشات ──
   return '<div class="code-file-card" data-gid="'+gid+'" onclick="openCodeFileModal(\''+gid+'\')" '
@@ -402,6 +502,7 @@ window.openCodeFileModal = function(gid){
   overlay.innerHTML =
     '<div class="code-modal">'
     + '<div class="code-modal-header">'
+    + '<button type="button" class="code-run-btn" title="تشغيل / معاينة" onclick="previewCodeFile(\''+gid+'\',this)"><i class="fas fa-play"></i></button>'
     + '<div class="code-modal-title" dir="ltr">'+meta.filename+'</div>'
     + '<div class="code-modal-actions">'
     + '<button type="button" class="code-modal-btn" title="نسخ" onclick="copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
@@ -409,6 +510,7 @@ window.openCodeFileModal = function(gid){
     + '<button type="button" class="code-modal-btn" title="إغلاق" onclick="closeCodeModal(\''+gid+'\')"><i class="fas fa-times"></i></button>'
     + '</div></div>'
     + '<div class="code-modal-body"><pre><code class="hljs language-'+meta.hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
+    + '<div class="code-preview-slot"></div>'
     + '<div class="code-rate-bar"><span class="code-rate-label">الكود ده عجبك؟</span>'
     + '<button type="button" class="code-rate-btn code-rate-good" onclick="rateCodeGood(\''+gid+'\',this)"><i class="fas fa-thumbs-up"></i></button>'
     + '<button type="button" class="code-rate-btn code-rate-bad" onclick="rateCodeBad(\''+gid+'\',this)"><i class="fas fa-thumbs-down"></i></button>'
@@ -416,6 +518,80 @@ window.openCodeFileModal = function(gid){
   overlay.addEventListener('click', (e)=>{ if (e.target === overlay) closeCodeModal(gid); });
   document.body.appendChild(overlay);
   if (window.hljs){ overlay.querySelectorAll('pre code').forEach(b=> hljs.highlightElement(b)); }
+};
+
+// ── زرار "تشغيل/معاينة" جنب اسم الملف مباشرة: بيشغّل الكود فعليًا (مش تخمين) —
+//    كود ويب (HTML/JS/كود فيه <html>) بيتعرض في iframe حي جوه المودال، وأي
+//    لغة تانية (Python/C/Java/PHP/Bash/SQL...) بتتشغّل عبر Piston وبيتعرض
+//    ناتجها (stdout/stderr) في صندوق شكله ترمنال حقيقي. ضغطة تانية على نفس
+//    الزرار بتقفل المعاينة (toggle) ──
+window.previewCodeFile = async function(gid, btnEl){
+  const overlay = document.querySelector('.code-modal-overlay[data-gid="'+gid+'"]');
+  if (!overlay) return;
+  const slot = overlay.querySelector('.code-preview-slot');
+  const code = window.__codeGroups[gid];
+  const meta = (window.__codeMeta || {})[gid];
+  if (!slot || !code || !meta) return;
+
+  // ── لو المعاينة فاتحة بالفعل، الضغطة دي بتقفلها ──
+  if (slot.dataset.open === '1'){
+    slot.innerHTML = '';
+    slot.dataset.open = '0';
+    btnEl.innerHTML = '<i class="fas fa-play"></i>';
+    btnEl.classList.remove('running');
+    return;
+  }
+
+  btnEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  btnEl.classList.add('running');
+  slot.dataset.open = '1';
+  slot.innerHTML = '<div class="code-preview-loading"><i class="fas fa-spinner fa-spin"></i> بيشغّل الكود دلوقتي...</div>';
+
+  try{
+    const l = meta.origLang || '';
+    if (isSkippedLang(l)){
+      slot.innerHTML = '<div class="code-preview-note">اللغة دي (' + (meta.label||l) + ') مالهاش معنى "تشغيل" مباشر — هي بتوصف/تنسّق كود تاني مش بتتنفّذ لوحدها.</div>';
+    } else {
+      const result = await runAnyCode(l, code, true);
+      if (result.iframeEl){
+        // ── معاينة ويب حية: نفس الـ iframe اللي فعلاً اشتغل بيه الكود ──
+        slot.innerHTML = '';
+        const frameWrap = document.createElement('div');
+        frameWrap.className = 'code-preview-frame-wrap';
+        frameWrap.appendChild(result.iframeEl);
+        slot.appendChild(frameWrap);
+        if (result.stderr){
+          const errBox = document.createElement('div');
+          errBox.className = 'code-preview-terminal has-error';
+          errBox.innerHTML = '<div class="code-preview-terminal-dots"><span></span><span></span><span></span></div>'
+            + '<pre class="code-preview-terminal-body"></pre>';
+          errBox.querySelector('.code-preview-terminal-body').textContent = result.stderr;
+          slot.appendChild(errBox);
+        }
+      } else {
+        // ── معاينة ترمنال: ناتج حقيقي من Piston (stdout/stderr) ──
+        const term = document.createElement('div');
+        term.className = 'code-preview-terminal' + (result.ok===false ? ' has-error' : '');
+        term.innerHTML = '<div class="code-preview-terminal-dots"><span></span><span></span><span></span></div>'
+          + '<pre class="code-preview-terminal-body"></pre>';
+        const body = term.querySelector('.code-preview-terminal-body');
+        const lines = [];
+        if (result.stdout) lines.push(result.stdout.replace(/\n$/, ''));
+        if (result.stderr) lines.push(result.stderr.replace(/\n$/, ''));
+        if (!lines.length) lines.push(result.ok===null ? '(مفيش ناتج نصي لعرضه)' : '(اشتغل من غير أي ناتج)');
+        body.textContent = lines.join('\n');
+        slot.innerHTML = '';
+        slot.appendChild(term);
+      }
+    }
+  } catch(e){
+    if (isAbortError(e)) return;
+    slot.innerHTML = '<div class="code-preview-note code-preview-error">حصل خطأ وهو بيحاول يشغّل الكود: ' + escapeHtml(e.message||String(e)) + '</div>';
+  } finally {
+    btnEl.innerHTML = '<i class="fas fa-stop"></i>';
+    btnEl.classList.remove('running');
+    slot.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }
 };
 window.closeCodeModal = function(gid){
   const overlay = document.querySelector('.code-modal-overlay[data-gid="'+gid+'"]');
@@ -1118,18 +1294,29 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   //    غالبًا الزحمة بتزول خلال ثواني وبيرجع يشتغل عادي ──
   async function tryAllProviders(){
     let configuredCount = 0, quotaExhaustedCount = 0;
+    const failLog = [];
     for (const p of providers){
-      if (p.pool.count()) configuredCount++;
+      if (!p.pool.count()){ failLog.push(p.label + ': مفيش مفتاح'); continue; }
+      configuredCount++;
       step('بيجهّز الرد...');
-      const result = await p.fn(messages);
+      let result = null, thrown = null;
+      try{ result = await p.fn(messages); }
+      catch(e){ if (isAbortError(e)) throw e; thrown = e; }
       if (result && result.text){
         if (result.usedTokens) addTokensUsed(result.usedTokens);
         return { ok:true, text: result.text, reasoning: result.reasoning || '', provider: p.label };
       }
-      if (result && result.quotaExhausted) quotaExhaustedCount++;
+      if (result && result.quotaExhausted){
+        quotaExhaustedCount++;
+        failLog.push(p.label + ': Rate Limit (429)');
+      } else if (thrown){
+        failLog.push(p.label + ': ' + (thrown.message || thrown.name || 'خطأ غير معروف'));
+      } else {
+        failLog.push(p.label + ': رجع رد فاضي (مفيش نص)');
+      }
       step('بيجرب طريقة تانية...');
     }
-    return { ok:false, configuredCount, quotaExhaustedCount };
+    return { ok:false, configuredCount, quotaExhaustedCount, failLog };
   }
 
   let attempt = await tryAllProviders();
@@ -1156,7 +1343,62 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
     err.serviceDown = 'خدمة الكتابة';
     throw err;
   }
-  throw new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
+  throw (function(){
+    const err = new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
+    err.providerDetails = attempt.failLog || [];
+    return err;
+  })();
+}
+
+/* ============ المراجعة الذاتية: بيشغّل كل كود كتبه فعليًا ويصلّح لوحده لحد ما يشتغل كامل ============
+   بعد ما الموديل يكتب الرد، لو فيه كود جواه، بنشغّل كل كتلة كود فعليًا (iframe
+   حقيقي للـ HTML/JS، Piston API لأي لغة تانية زي Python/C/Java/PHP...) من غير ما
+   المستخدم يشوف حاجة. لو فيه أي خطأ حقيقي في أي كتلة، بنجمع كل الأخطاء مع
+   بعض ونبعتها للموديل مرة واحدة ونطلب منه يصلّح الكود كله ويرجعه كامل تاني،
+   ونكرر العملية من الأول (تشغيل + فحص) لحد ما كل كتل الكود تشتغل صح من غير
+   أي خطأ — القاعدة: الرد ما يوصلش للمستخدم إلا لما كل الكود يبقى شغّال فعلاً
+   زي ما هو مطلوب بالظبط، مش بس "شكله كويس". فيه سقف أمان عالي جدًا
+   (MAX_SELF_FIX_ATTEMPTS) بس هو للحماية من حلقة تانية للأبد لو الكود محتاج
+   حاجة مش قادرين نوفرها فعليًا (زي ملف خارجي أو اتصال إنترنت خاص)، مش سقف
+   "بيستسلم بسرعة". */
+const MAX_SELF_FIX_ATTEMPTS = 20;
+async function selfCheckAndFixCode(reply, history, onReasoningDelta, onStep, onContentDelta){
+  let current = reply;
+  let runningHistory = history;
+  for (let i = 0; i < MAX_SELF_FIX_ATTEMPTS; i++){
+    const blocks = extractCodeBlocksFromText(current.text);
+    if (!blocks.length) return current; // مفيش كود أصلاً، مفيش داعي لأي اختبار
+
+    if (onStep) onStep('🧪 بيشغّل الكود فعليًا عشان يتأكد إنه شغّال صح...');
+    const failures = [];
+    for (const b of blocks){
+      const result = await runAnyCode(b.lang, b.code, false);
+      if (result.ok === false){
+        failures.push({ block: b, result });
+      }
+    }
+    if (!failures.length) return current; // كل الكود اللي اتقدر يتفحص شغال صح 100%
+
+    if (onStep) onStep('🔧 لقى ' + failures.length + ' خطأ فعلي، بيصلّح الكود... (محاولة ' + (i+2) + ')');
+
+    // ── بنجمع كل الأخطاء الحقيقية اللي طلعت من كل كتل الكود مع بعض في
+    //    رسالة واحدة، عشان الموديل يصلّحهم كلهم مرة واحدة بدل ما نلف
+    //    كتلة كتلة ونستهلك محاولات على الفاضي ──
+    const errorsText = failures.map((f, idx)=>
+      'الكود رقم ' + (idx+1) + ' (' + (f.block.lang || 'كود') + '):\n' + (f.result.stderr || 'خطأ غير محدد').slice(0, 2000)
+    ).join('\n\n---\n\n');
+
+    runningHistory = runningHistory.concat([
+      { role:'assistant', text: current.text },
+      { role:'user', text: 'شغّلت الكود ده فعليًا وطلعت الأخطاء دي:\n\n' + errorsText
+          + '\n\nصلّح كل الأخطاء دي وابعت الكود كامل تاني من غير أي اختصار أو حذف (ماتلخصش، اكتب كل ملف/كتلة كود من الأول للآخر بعد التصحيح). لازم كل الكود يشتغل من غير أي خطأ.' }
+    ]);
+    current = await getAIResponse(runningHistory, onReasoningDelta, onStep, onContentDelta);
+  }
+  // ── خلصت المحاولات المسموحة (سقف أمان بس، مش استسلام مبكر) — بنرجّع آخر
+  //    نسخة اتصلحت مع تنبيه واضح إن فيه خطأ مستحيل الظروف الحالية تحله ──
+  if (onStep) onStep('⚠️ حاول يصلّح الكود عدد كبير من المرات، هيبعت آخر نسخة وصلها');
+  return current;
 }
 
 /* ============ تحليل الصور عبر Gemini Vision (زي فلك بالظبط) ============
@@ -2285,24 +2527,34 @@ function typewriterReveal(container, html, onDone){
   let idx = 0;
   function tick(){
     const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
-    let n = 3;
-    while (n-- > 0 && idx < ops.length){
-      const op = ops[idx++];
-      const top = stack[stack.length-1];
-      if (op.type === 'char'){
-        if (top.lastChild && top.lastChild.nodeType === 3) top.lastChild.nodeValue += op.ch;
-        else top.insertBefore(document.createTextNode(op.ch), top===container?caret:null);
-      } else if (op.type === 'open'){
-        const el = document.createElement(op.tag);
-        if (op.attrs) for (let a=0;a<op.attrs.length;a++) el.setAttribute(op.attrs[a].name, op.attrs[a].value);
-        top.insertBefore(el, top===container?caret:null);
-        stack.push(el);
-      } else if (op.type === 'block'){
-        top.insertBefore(op.node, top===container?caret:null);
-        if (window.hljs) op.node.querySelectorAll('pre code').forEach(el=>{ try{ window.hljs.highlightElement(el); }catch(e){} });
-      } else {
-        stack.pop();
+    try{
+      let n = 3;
+      while (n-- > 0 && idx < ops.length){
+        const op = ops[idx++];
+        const top = stack[stack.length-1];
+        if (op.type === 'char'){
+          if (top.lastChild && top.lastChild.nodeType === 3) top.lastChild.nodeValue += op.ch;
+          else top.insertBefore(document.createTextNode(op.ch), top===container?caret:null);
+        } else if (op.type === 'open'){
+          const el = document.createElement(op.tag);
+          if (op.attrs) for (let a=0;a<op.attrs.length;a++) el.setAttribute(op.attrs[a].name, op.attrs[a].value);
+          top.insertBefore(el, top===container?caret:null);
+          stack.push(el);
+        } else if (op.type === 'block'){
+          top.insertBefore(op.node, top===container?caret:null);
+          if (window.hljs) op.node.querySelectorAll('pre code').forEach(el=>{ try{ window.hljs.highlightElement(el); }catch(e){} });
+        } else {
+          stack.pop();
+        }
       }
+    } catch(tickErr){
+      // ── دي بتشتغل جوه setTimeout، فمفيش try/catch بره يقدر يمسكها — لو
+      //    سبناها كده هتقف الأنيميشن في نص الطريق للأبد. بدل كده، بنقفلها
+      //    فورًا ونعتبر الرسالة خلصت ──
+      console.error('typewriterReveal: توقف نص الطريق، هنكمّل من غير أنيميشن', tickErr);
+      caret.remove();
+      if (onDone) onDone();
+      return;
     }
     if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
     if (idx < ops.length) setTimeout(tick, 10);
@@ -2319,13 +2571,11 @@ function renderFinalAssistantMessage(wrap, msg){
   wrap.querySelector('.code-building-row')?.remove();
   wrap.querySelector('.cosmos-live-stream')?.remove();
 
-  if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning));
-
-  const bubble = document.createElement('div');
-  bubble.className = 'msg assistant';
-  wrap.appendChild(bubble);
-
-  typewriterReveal(bubble, formatAnswer(msg.text), ()=>{
+  // ── شبكة أمان: لو حصل أي خطأ جوه التنسيق/الأنيميشن (formatAnswer أو
+  //    typewriterReveal)، الرد الحقيقي اللي جاله فعلاً من الذكاء الاصطناعي
+  //    ما يتضاعش — بنعرضه كنص عادي فورًا من غير تنسيق أو أنيميشن، بدل ما
+  //    نرمي كل حاجة ونطلع "حصل خطأ في الرد" ورد صحيح موجود فعلاً معانا ──
+  function finishBubbleChrome(){
     wrap.appendChild(buildActionBar(msg.question || '', msg.text));
     maybeAddZipAllButton(wrap);
     const time = document.createElement('div');
@@ -2333,7 +2583,23 @@ function renderFinalAssistantMessage(wrap, msg){
     time.textContent = formatTime(msg.ts);
     wrap.appendChild(time);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-  });
+  }
+
+  try{
+    if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning));
+    const bubble = document.createElement('div');
+    bubble.className = 'msg assistant';
+    wrap.appendChild(bubble);
+    typewriterReveal(bubble, formatAnswer(msg.text), finishBubbleChrome);
+  } catch(renderErr){
+    console.error('renderFinalAssistantMessage: التنسيق فشل، هنعرض نص عادي بدل ما نضيّع الرد', renderErr);
+    wrap.querySelectorAll('.msg.assistant, .cosmos-deep-think').forEach(el=>el.remove());
+    const bubble = document.createElement('div');
+    bubble.className = 'msg assistant';
+    bubble.textContent = msg.text || '';
+    wrap.appendChild(bubble);
+    finishBubbleChrome();
+  }
 }
 
 function appendMessageBubble(msg, opts){
@@ -2435,6 +2701,8 @@ function appendMessageBubble(msg, opts){
 function stepKind(text){
   if (/🔎|الإنترنت/.test(text)) return 'search';
   if (/رابط/.test(text)) return 'link';
+  if (/🧪|بيشغّل الكود فعليًا/.test(text)) return 'run';
+  if (/🔧|⚠️|بيصلّح الكود/.test(text)) return 'fix';
   if (/كود/.test(text)) return 'code';
   if (/طريقة تانية/.test(text)) return 'retry';
   if (/بيجهّز الرد/.test(text)) return 'prepare';
@@ -2756,7 +3024,8 @@ composer.addEventListener('submit', async (e)=>{
         }
       };
 
-      const reply = await getAIResponse(history, onReasoningDelta, onStep, onContentDelta);
+      let reply = await getAIResponse(history, onReasoningDelta, onStep, onContentDelta);
+      reply = await selfCheckAndFixCode(reply, history, onReasoningDelta, onStep, onContentDelta);
       thinkingEl._clearStage();
       const replyTs = Date.now();
       const assistantMsg = { role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs, question: text };
@@ -2785,10 +3054,13 @@ composer.addEventListener('submit', async (e)=>{
         Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'❌ ' + err.serviceDown + ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.' })
       );
     } else {
+      const details = (err && err.providerDetails && err.providerDetails.length)
+        ? '\n\n' + err.providerDetails.join('\n')
+        : '';
       thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' })
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' + details })
       );
-      console.error(err);
+      console.error(err, err && err.providerDetails);
     }
   } finally {
     clearTimeout(window.__sendWatchdog);

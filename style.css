@@ -346,11 +346,14 @@ button:focus,button:focus-visible{outline:none;}
   100%{box-shadow:0 0 0 0 rgba(216,163,76,0);}
 }
 
-/* ============ كل نوع خطوة له لون وطريقة حركة مختلفة لعلامة ما لا نهاية ============
+/* ============ كل نوع خطوة له لون + شكل حركة + اتجاه مختلف تمامًا لعلامة ما لا نهاية ============
    بحث = نبض سريع أزرق (زي مسح/سكان) | رابط = دوران بطيء تركوازي (زي اتصال)
-   كود = فليكر بنفسجي سريع (زي وميض شاشة) | إعادة محاولة = دوران سريع برتقالي
-   تجهيز الرد = تدرج لوني كامل ذهبي (الحالة العامة الافتراضية)
-   صور = تمايل وردي (wave) | ملفات = تلاشي/ظهور أخضر (زي قلب صفحة) ============ */
+   كود = فليكر بنفسجي سريع (زي وميض شاشة) | إعادة محاولة = دوران سريع برتقالي عكسي
+   تشغيل/اختبار الكود = نطّة سيان لفوق وتحت (زي شريط تحميل) | تصحيح الأخطاء = اهتزاز
+   أحمر-برتقالي سريع (زي تنبيه) | تجهيز الرد = تدرج لوني دافئ مع نبض خفيف
+   الحالة العامة = تدرج لوني بارد مع دوران بطيء (نفس فكرة تجهيز الرد بس شكل وسرعة مختلفين)
+   صور = تمايل وردي (wave) | ملفات = تلاشي/ظهور أخضر (زي قلب صفحة)
+   كل حركة دي animation:...infinite — يعني بتلف من غير ما توقف طول ما الخطوة شغالة ==== */
 .infinity-search{animation:infinitySearchPulse 1s ease-in-out infinite;}
 @keyframes infinitySearchPulse{
   0%,100%{color:#4a90d9;transform:scale(1);}
@@ -371,7 +374,17 @@ button:focus,button:focus-visible{outline:none;}
   0%{transform:rotate(0deg);}
   100%{transform:rotate(360deg);}
 }
-.infinity-prepare{animation:infinityColorCycle 1.6s ease-in-out infinite;}
+.infinity-run{animation:infinityRunBounce .9s cubic-bezier(.5,0,.5,1) infinite;color:#4fc3c9;}
+@keyframes infinityRunBounce{
+  0%,100%{transform:translateY(0) scale(1);}
+  50%{transform:translateY(-3px) scale(1.15);}
+}
+.infinity-fix{animation:infinityFixShake .45s ease-in-out infinite;color:#e0616f;}
+@keyframes infinityFixShake{
+  0%,100%{transform:rotate(0deg);}
+  25%{transform:rotate(-16deg);}
+  75%{transform:rotate(16deg);}
+}
 .infinity-image{animation:infinityImageWave 1.4s ease-in-out infinite;color:#d66f96;}
 @keyframes infinityImageWave{
   0%,100%{transform:skewX(0deg) scale(1);}
@@ -382,12 +395,61 @@ button:focus,button:focus-visible{outline:none;}
   0%,100%{opacity:1;transform:translateY(0);}
   50%{opacity:.4;transform:translateY(-2px);}
 }
-.infinity-general{animation:infinityColorCycle 2.4s ease-in-out infinite;}
-@keyframes infinityColorCycle{
-  0%,100%{color:#1b1a17;}
-  33%{color:#5b3a86;}
-  66%{color:#2f6f5e;}
+.infinity-prepare{animation:infinityColorCycleWarm 1.6s ease-in-out infinite;}
+@keyframes infinityColorCycleWarm{
+  0%,100%{color:#1b1a17;transform:scale(1);}
+  33%{color:#d8a34c;transform:scale(1.12);}
+  66%{color:#e0916d;transform:scale(1.12);}
 }
+.infinity-general{animation:infinityColorCycleCool 2.4s linear infinite;}
+@keyframes infinityColorCycleCool{
+  0%{color:#1b1a17;transform:rotate(0deg);}
+  33%{color:#5b3a86;transform:rotate(120deg);}
+  66%{color:#2f6f5e;transform:rotate(240deg);}
+  100%{color:#1b1a17;transform:rotate(360deg);}
+}
+
+/* ============ معاينة/تشغيل الكود جوه مودال الملف ============
+   زرار واحد بس ▶ جنب اسم الملف: بيشغّل الكود فعليًا ويعرض ناتجه. كود ويب
+   بيتعرض في iframe حي، وأي لغة تانية بتتعرض في صندوق شكله ترمنال حقيقي
+   (نقط ملوّنة زي ماك + نص مونوسبيس أخضر/أبيض). ============ */
+.code-run-btn{
+  width:30px;height:30px;border-radius:50%;flex-shrink:0;border:none;cursor:pointer;
+  background:var(--accent);color:#1b1a17;font-size:12px;
+  display:flex;align-items:center;justify-content:center;transition:transform .15s,background .2s;
+}
+.code-run-btn:hover{transform:scale(1.08);}
+.code-run-btn.running{background:var(--panel-raised);color:var(--accent);}
+.code-preview-slot:empty{display:none;}
+.code-preview-slot{padding:0 .9rem;}
+.code-preview-loading{
+  padding:.9rem;color:var(--text-dim);font-size:12.5px;display:flex;align-items:center;gap:8px;
+}
+.code-preview-note{
+  padding:.8rem .9rem;margin:.3rem 0 .8rem;background:var(--panel-raised);border:1px solid var(--border);
+  border-radius:10px;color:var(--text-dim);font-size:12.5px;line-height:1.6;
+}
+.code-preview-note.code-preview-error{color:#e0616f;border-color:rgba(224,97,111,.4);}
+.code-preview-frame-wrap{
+  margin:.3rem 0 .6rem;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;
+}
+.code-preview-iframe{width:100%;height:320px;border:0;display:block;}
+.code-preview-terminal{
+  margin:.3rem 0 .8rem;background:#0d0c0a;border:1px solid var(--border);border-radius:10px;overflow:hidden;
+}
+.code-preview-terminal.has-error{border-color:rgba(224,97,111,.5);}
+.code-preview-terminal-dots{display:flex;gap:6px;padding:.6rem .7rem;background:#161512;}
+.code-preview-terminal-dots span{width:9px;height:9px;border-radius:50%;background:#3a3833;display:inline-block;}
+.code-preview-terminal-dots span:nth-child(1){background:#e0616f;}
+.code-preview-terminal-dots span:nth-child(2){background:#e0b768;}
+.code-preview-terminal-dots span:nth-child(3){background:#7fc4ad;}
+.code-preview-terminal-body{
+  margin:0;padding:.8rem .9rem;max-height:260px;overflow:auto;direction:ltr;text-align:left;
+  font-family:'Consolas','Courier New',monospace;font-size:12.5px;line-height:1.6;
+  color:#c9e8d8;white-space:pre-wrap;word-break:break-word;
+}
+.code-preview-terminal.has-error .code-preview-terminal-body{color:#f0a3ab;}
+
 
 /* ============ صف المرفقات: كل ملف في صندوقه الخاص، جنب بعض مش فوق بعض ============
    صف واحد ثابت الارتفاع (flex-wrap:nowrap) وممكن تتسحب يمين وشمال
