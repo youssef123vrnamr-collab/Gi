@@ -21,6 +21,9 @@ const db = firebase.database();
 //    بيتربط بنفس الـ signal بتاعه، عشان ضغطة "إيقاف" توقف كل حاجة فورًا ──
 let currentAbortController = null;
 function isAbortError(e){ return e && e.name === 'AbortError'; }
+// ── بنفرّق بين إيقاف يدوي (المستخدم دوس زرار الإيقاف) وبين إلغاء تلقائي
+//    (واتشدوج/تايم آوت)، عشان الرسالة اللي بتظهر تكون واضحة وصح في الحالتين ──
+let __manualStopRequested = false;
 
 // ── تحميل كسول (Lazy Loading) للمكتبات الثقيلة (pdf.js / mammoth / xlsx / jszip):
 //    كل مكتبة بتتحمّل من الـ CDN مرة واحدة بس، وبس لما المستخدم فعلاً يرفع ملف
@@ -318,7 +321,7 @@ function buildColorPolicyBlock(){
     + '- sky → معلومة أو ملاحظة\n'
     + '- lavender → حاجة مميزة أو غير عادية\n'
     + '- sand أو slate → تفاصيل ثانوية أقل أهمية\n'
-    + 'وممكن تضيف مع اللون (أو من غيره) أي من دول: bold, italic, underline, strike, highlight — و highlight بتحط خلفية خفيفة شفافة بنفس اللون حوالين النص زي شارة (badge). مثال: [[fmt:rose,bold]]تحذير مهم[[/fmt]] أو [[fmt:gold,highlight]]نقطة مميزة[[/fmt]]. ممنوع تماما تستخدم أي لون تاني غير القائمة دي، وممنوع تكتب كود hex أو أسماء ألوان عادية زي red أو blue أو green مباشرة — استخدم الأسماء المتناسقة دي بس عشان تفضل شكل التطبيق موحّد وحلو. ومتلوّنش أو تنسّق الرد كله ولا كل سطر، استخدمها بس لما فعلاً تفيد.';
+    + 'وممكن تضيف مع اللون (أو من غيره) أي من دول: bold, italic, underline, strike, highlight — و highlight بتحط خلفية خفيفة شفافة بنفس اللون حوالين النص زي شارة (badge). مثال: [[fmt:rose,bold]]تحذير مهم[[/fmt]] أو [[fmt:gold,highlight]]نقطة مميزة[[/fmt]]. ممنوع تماما تستخدم أي لون تاني غير القائمة دي، وممنوع تكتب كود hex أو أسماء ألوان عادية زي red أو blue أو green مباشرة — استخدم الأسماء المتناسقة دي بس عشان تفضل شكل التطبيق موحّد وحلو. ومتلوّنش أو تنسّق الرد كله ولا كل سطر، استخدمها بس لما فعلاً تفيد. مهم جدًا: اكتب علامة الإغلاق بالظبط [[/fmt]] من غير أي مسافة جوه القوسين (يعني ممنوع [[ /fmt]] أو [[/ fmt]])، لأن أي مسافة زيادة ممكن تمنع التنسيق من الظهور صح.';
 }
 function buildNoRawLatexBlock(){
   return '\n\nقاعدة إلزامية: ممنوع تستخدم صيغة LaTeX الخام (زي \\frac{}{} أو \\sqrt{} أو \\gamma أو \\times) في أي معادلة رياضية، لأن واجهة المحادثة دي مفيهاش عارض LaTeX وهتظهر للمستخدم كرموز خام غريبة بدل معادلة واضحة. اكتب المعادلات بصيغة نصية عادية ومقروءة بس (زي x^2 أو (a+b)/c أو √x أو a/b أو γ = 1/√(1-v²/c²)).';
@@ -1108,26 +1111,48 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   // الافتراضي زي ما هو، وكل محاولة بتتعرض كخطوة حقيقية للمستخدم أول ما تبدأ.
   // كل مزوّد هنا بديل للي قبله في نفس "خدمة الكتابة" — أي فشل بيتعدّى بصمت
   // للمزوّد اللي بعده، من غير ما المستخدم يعرف أو يتقال له اسم مزوّد بعينه.
-  let configuredCount = 0, quotaExhaustedCount = 0;
-  for (const p of providers){
-    if (p.pool.count()) configuredCount++;
-    step('بيجهّز الرد...');
-    const result = await p.fn(messages);
-    if (result && result.text){
-      if (result.usedTokens) addTokensUsed(result.usedTokens);
-      return { text: result.text, reasoning: result.reasoning || '', provider: p.label };
+  // ── المفاتيح دي مشتركة مع منصة فلك بالكامل (نفس الـ Firestore)، فلو فلك
+  //    بتستهلكها بكثافة في نفس اللحظة، ممكن كل المفاتيح ترجع 429 (Rate
+  //    Limit) وقتيًا من غير ما يبقى فيه أي توكن "خلص" فعليًا. عشان كده،
+  //    بدل ما نستسلم من أول جولة، بنجرب جولة تانية كاملة بعد تأخير بسيط —
+  //    غالبًا الزحمة بتزول خلال ثواني وبيرجع يشتغل عادي ──
+  async function tryAllProviders(){
+    let configuredCount = 0, quotaExhaustedCount = 0;
+    for (const p of providers){
+      if (p.pool.count()) configuredCount++;
+      step('بيجهّز الرد...');
+      const result = await p.fn(messages);
+      if (result && result.text){
+        if (result.usedTokens) addTokensUsed(result.usedTokens);
+        return { ok:true, text: result.text, reasoning: result.reasoning || '', provider: p.label };
+      }
+      if (result && result.quotaExhausted) quotaExhaustedCount++;
+      step('بيجرب طريقة تانية...');
     }
-    if (result && result.quotaExhausted) quotaExhaustedCount++;
-    step('بيجرب طريقة تانية...');
+    return { ok:false, configuredCount, quotaExhaustedCount };
   }
 
-  if (!configuredCount){
+  let attempt = await tryAllProviders();
+  if (attempt.ok) return { text: attempt.text, reasoning: attempt.reasoning, provider: attempt.provider };
+
+  if (!attempt.configuredCount){
     return { text: "لسه بجيب مفاتيح الذكاء الاصطناعي... جرب تاني بعد ثانية.", provider: null, reasoning: '' };
   }
-  // مفيش أي بديل شغال خالص — كل المزوّدين اللي متظبطين فعليًا خلص توكنهم،
-  // فهنا بس بنقول للمستخدم صراحة إن "خدمة الكتابة" (مش اسم مزوّد بعينه) معطلة.
-  if (quotaExhaustedCount === configuredCount){
-    const err = new Error('كل مزوّدي خدمة الكتابة خلص توكنهم');
+
+  const allWereQuota = attempt.quotaExhaustedCount === attempt.configuredCount;
+  if (allWereQuota){
+    // محاولة تانية بعد تأخير بسيط — لو الزحمة مؤقتة هترد عادي من غير ما
+    // المستخدم يحس بأي مشكلة أصلاً.
+    step('الخدمة مزدحمة شوية، بيعيد المحاولة...');
+    await new Promise(r=>setTimeout(r, 4000));
+    attempt = await tryAllProviders();
+    if (attempt.ok) return { text: attempt.text, reasoning: attempt.reasoning, provider: attempt.provider };
+  }
+
+  if (attempt.quotaExhaustedCount === attempt.configuredCount){
+    // ده رايت-ليميت مؤقت على المفاتيح المشتركة، مش توكن "خلص" فعليًا —
+    // فالرسالة بتوصف الحالة الحقيقية بدل ما توهم إن الرصيد انتهى.
+    const err = new Error('كل مزوّدي خدمة الكتابة مزدحمين دلوقتي (Rate Limit)');
     err.serviceDown = 'خدمة الكتابة';
     throw err;
   }
@@ -1380,19 +1405,51 @@ async function readZipFile(file, extract){
   return { note: out.trim(), zipEntries: entries };
 }
 
-// ── الموزّع الرئيسي: بياخد ملف ويرجع { kind, name, extractedText, note } جاهزة للإرفاق ──
+// ── تقسيم النصوص الطويلة لأجزاء (Text Chunking): بدل ما نقطع المستند فجأة عند
+//    18000 حرف من غير ما نقول للمستخدم أو الذكاء إن فيه بقية، بنقسمه لأجزاء
+//    مرتبة (على حدود فقرات لو أمكن) ونسيب باقي الأجزاء متاحة يتبعتوا مرحليًا
+//    في رسائل تانية بدل ما يضيعوا خالص ──
+function chunkText(text, maxLen){
+  maxLen = maxLen || MAX_FILE_CONTEXT_CHARS;
+  if (!text || text.length <= maxLen) return [text || ''];
+  const paras = text.split(/\n{2,}/);
+  const chunks = [];
+  let cur = '';
+  for (const p of paras){
+    const piece = (cur ? cur + '\n\n' : '') + p;
+    if (piece.length > maxLen){
+      if (cur) { chunks.push(cur); cur = ''; }
+      // فقرة واحدة أكبر من الحد نفسه: نقطعها بالحرف كملاذ أخير
+      for (let i=0; i<p.length; i+=maxLen) chunks.push(p.slice(i, i+maxLen));
+    } else {
+      cur = piece;
+      if (cur.length >= maxLen){ chunks.push(cur); cur = ''; }
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks.length ? chunks : [text.slice(0, maxLen)];
+}
+
+// ── الموزّع الرئيسي: بياخد ملف ويرجع { kind, name, extractedText, note, chunks } جاهزة للإرفاق ──
 async function processAttachedFile(file, opts){
   const kind = getFileKind(file);
-  const result = { kind, name: file.name, extractedText: '', note: '' };
+  const result = { kind, name: file.name, extractedText: '', note: '', chunks: null };
+  function applyChunking(fullText, baseNote){
+    const chunks = chunkText(fullText, MAX_FILE_CONTEXT_CHARS);
+    result.extractedText = chunks[0] || '';
+    if (chunks.length > 1){
+      result.chunks = chunks;
+      result.note = baseNote + ' — الملف طويل واتقسّم لـ ' + chunks.length + ' أجزاء، الجزء 1/' + chunks.length + ' هو اللي هيتبعت دلوقتي (استخدم أسهم التنقل في المرفق لاختيار جزء تاني قبل الإرسال)';
+    } else {
+      result.note = baseNote;
+    }
+  }
   if (kind === 'pdf'){
-    result.extractedText = (await extractPdfText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
-    result.note = 'ملف PDF (' + Math.round(file.size/1024) + ' كيلوبايت)';
+    applyChunking(await extractPdfText(file), 'ملف PDF (' + Math.round(file.size/1024) + ' كيلوبايت)');
   } else if (kind === 'docx'){
-    result.extractedText = (await extractDocxText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
-    result.note = 'ملف Word';
+    applyChunking(await extractDocxText(file), 'ملف Word');
   } else if (kind === 'excel'){
-    result.extractedText = (await extractExcelText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
-    result.note = 'ملف Excel';
+    applyChunking(await extractExcelText(file), 'ملف Excel');
   } else if (kind === 'audio'){
     result.extractedText = await transcribeAudio(file);
     result.note = 'ملف صوتي (تم تفريغه لنص)';
@@ -1401,8 +1458,7 @@ async function processAttachedFile(file, opts){
     result.extractedText = zr.note;
     result.note = (opts && opts.extractZip) ? 'ملف مضغوط (اتفك وقُريت محتوياته)' : 'ملف مضغوط (سايبه زي ما هو)';
   } else if (kind === 'text'){
-    result.extractedText = (await readFileAsText(file)).slice(0, MAX_FILE_CONTEXT_CHARS);
-    result.note = 'ملف نصي/كود';
+    applyChunking(await readFileAsText(file), 'ملف نصي/كود');
   } else {
     result.note = 'ملف (' + (file.type || 'نوع غير معروف') + ') — متقروش محتواه نصيًا، بس اسمه اتبعت للذكاء';
   }
@@ -1877,21 +1933,99 @@ function startNewConversation(){
 }
 newChatBtn.addEventListener('click', startNewConversation);
 
+// ── Virtual Scrolling / تقسيم الرسائل (Pagination) لتخفيف عبء الـ DOM في
+//    المحادثات الطويلة: أول ما نفتح محادثة، منحمّلش كل الرسائل التاريخية —
+//    بنحمّل بس آخر MESSAGES_PAGE_SIZE رسالة، وبنسيب زرار "تحميل رسائل أقدم"
+//    فوق يجيب دفعة زيادة عند الطلب (أو لو المستخدم سكرول لفوق) بدل ما الشاشة
+//    كلها تتحمّل بمحتواها من أول رسالة اتبعتت في المحادثة ──
+const MESSAGES_PAGE_SIZE = 40;
+let oldestLoadedMsgKey = null;
+let newestLoadedMsgKey = null;
+let allOlderMessagesLoaded = false;
+let loadOlderBtn = null;
+
+function ensureLoadOlderBtn(){
+  if (loadOlderBtn && loadOlderBtn.isConnected) return loadOlderBtn;
+  loadOlderBtn = document.createElement('button');
+  loadOlderBtn.type = 'button';
+  loadOlderBtn.className = 'load-older-messages-btn';
+  loadOlderBtn.innerHTML = '<i class="fas fa-clock-rotate-left"></i><span>تحميل رسائل أقدم</span>';
+  loadOlderBtn.addEventListener('click', loadOlderMessages);
+  messagesEl.insertBefore(loadOlderBtn, messagesEl.firstChild);
+  return loadOlderBtn;
+}
+
+async function loadOlderMessages(){
+  if (allOlderMessagesLoaded || !oldestLoadedMsgKey || !currentConvId) return;
+  const btn = ensureLoadOlderBtn();
+  btn.disabled = true;
+  const originalHtml = btn.innerHTML;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>بيحمّل...</span>';
+  try{
+    const ref = db.ref('users/'+currentUser.uid+'/conversations/'+currentConvId+'/messages');
+    const snap = await ref.orderByKey().endBefore(oldestLoadedMsgKey).limitToLast(MESSAGES_PAGE_SIZE).once('value');
+    const data = snap.val() || {};
+    const keys = Object.keys(data);
+    if (!keys.length){
+      allOlderMessagesLoaded = true;
+      btn.remove();
+      return;
+    }
+    // بنحافظ على مكان السكرول عشان الشاشة متقفزش لحظة ما نضيف رسائل فوق ──
+    const prevScrollHeight = messagesEl.scrollHeight;
+    const prevScrollTop = messagesEl.scrollTop;
+    keys.forEach(k=> appendMessageBubble(data[k], { prepend:true, skipScroll:true }));
+    oldestLoadedMsgKey = keys[0];
+    messagesEl.scrollTop = prevScrollTop + (messagesEl.scrollHeight - prevScrollHeight);
+    if (keys.length < MESSAGES_PAGE_SIZE){ allOlderMessagesLoaded = true; btn.remove(); }
+    else { btn.disabled = false; btn.innerHTML = originalHtml; }
+  } catch(e){
+    console.warn('loadOlderMessages failed', e);
+    btn.disabled = false; btn.innerHTML = originalHtml;
+    showToast('⚠️ مقدرتش أحمّل رسائل أقدم', 'network');
+  }
+}
+
 let messagesRef = null;
 function openConversation(convId){
   if(messagesRef) messagesRef.off();
   currentConvId = convId;
   conversationTitle.textContent = (conversationsCache[convId] && conversationsCache[convId].title) || 'محادثة جديدة';
   messagesEl.innerHTML='';
-  messagesRef = db.ref('users/'+currentUser.uid+'/conversations/'+convId+'/messages');
-  messagesRef.on('child_added', snap=>{
-    const msg = snap.val();
-    if (msg && msg.ts && window.__locallyRendered && window.__locallyRendered.has(msg.ts)){
-      window.__locallyRendered.delete(msg.ts);
-      return;
+  oldestLoadedMsgKey = null; newestLoadedMsgKey = null; allOlderMessagesLoaded = false; loadOlderBtn = null;
+
+  const convMessagesRef = db.ref('users/'+currentUser.uid+'/conversations/'+convId+'/messages');
+  messagesRef = convMessagesRef;
+
+  // ── أول تحميل: آخر MESSAGES_PAGE_SIZE رسالة بس (مش كل تاريخ المحادثة) ──
+  convMessagesRef.orderByKey().limitToLast(MESSAGES_PAGE_SIZE).once('value').then(snap=>{
+    if (currentConvId !== convId) return; // المستخدم فتح محادثة تانية قبل ما الطلب يخلص
+    const data = snap.val() || {};
+    const keys = Object.keys(data);
+    keys.forEach(k=> appendMessageBubble(data[k], { skipScroll:true }));
+    if (keys.length){
+      oldestLoadedMsgKey = keys[0];
+      newestLoadedMsgKey = keys[keys.length-1];
     }
-    appendMessageBubble(msg);
+    if (keys.length < MESSAGES_PAGE_SIZE) allOlderMessagesLoaded = true;
+    else ensureLoadOlderBtn();
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    // ── من هنا وبعدين: بث حي بس للرسائل الجديدة اللي بتتضاف فعليًا بعد آخر
+    //    رسالة حمّلناها، عشان مانكررش نفس الرسائل القديمة تاني ──
+    let startAfterKey = newestLoadedMsgKey;
+    const liveQuery = startAfterKey ? convMessagesRef.orderByKey().startAfter(startAfterKey) : convMessagesRef;
+    liveQuery.on('child_added', liveSnap=>{
+      const msg = liveSnap.val();
+      if (msg && msg.ts && window.__locallyRendered && window.__locallyRendered.has(msg.ts)){
+        window.__locallyRendered.delete(msg.ts);
+        return;
+      }
+      appendMessageBubble(msg);
+    });
+    messagesRef = liveQuery; // عشان .off() في الفتح الجاي يقفل نفس الاستماع الصح
   });
+
   document.querySelectorAll('.conv-item').forEach(el=> el.classList.toggle('active', el.dataset.convId === convId));
   if(window.innerWidth <= 760) sidebar.classList.add('collapsed');
 }
@@ -1930,8 +2064,10 @@ function formatAnswer(raw){
 
   var styleBlocks = [];
   // ── بيتقبل الصيغة الجديدة [[fmt:خصائص]]...[[/fmt]] (لون + bold/italic/underline/strike/highlight)
-  //    وكمان الصيغة القديمة [[color:اسم]]...[[/color]] للتوافق مع رسائل اتخزنت قبل كده ──
-  s = s.replace(/\[\[(fmt|color):([a-zA-Z, ]+)\]\]([\s\S]*?)\[\[\/\1\]\]/g, function(m, tag, tokensRaw, inner){
+  //    وكمان الصيغة القديمة [[color:اسم]]...[[/color]] للتوافق مع رسائل اتخزنت قبل كده —
+  //    وبيتسامح مع مسافات زيادة جوه الأقواس (زي [[ /fmt ]] بدل [[/fmt]]) عشان لو النموذج
+  //    كتبها بمسافة زيادة بالغلط، الرد يفضل يتنسّق صح بدل ما الأقواس تبان خام قدام المستخدم ──
+  s = s.replace(/\[\[\s*(fmt|color)\s*:\s*([a-zA-Z, ]+?)\s*\]\]([\s\S]*?)\[\[\s*\/\s*\1\s*\]\]/g, function(m, tag, tokensRaw, inner){
     var tokens = tokensRaw.split(',').map(function(t){ return t.trim().toLowerCase(); }).filter(Boolean);
     var colorToken = tokens.filter(function(t){ return STYLE_COLOR_PALETTE[t]; })[0];
     var mods = {
@@ -2200,7 +2336,8 @@ function renderFinalAssistantMessage(wrap, msg){
   });
 }
 
-function appendMessageBubble(msg){
+function appendMessageBubble(msg, opts){
+  opts = opts || {};
   const wrap = document.createElement('div');
   wrap.className = 'msg-wrap ' + (msg.role==='user' ? 'user' : 'assistant');
 
@@ -2272,8 +2409,14 @@ function appendMessageBubble(msg){
   time.textContent = formatTime(msg.ts);
   wrap.appendChild(time);
 
-  messagesEl.appendChild(wrap);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (opts.prepend){
+    // بيتحط بعد زرار "تحميل رسائل أقدم" (لو موجود) وقبل أول رسالة كانت متحمّلة ──
+    const anchor = (loadOlderBtn && loadOlderBtn.isConnected) ? loadOlderBtn.nextSibling : messagesEl.firstChild;
+    messagesEl.insertBefore(wrap, anchor);
+  } else {
+    messagesEl.appendChild(wrap);
+  }
+  if (!opts.skipScroll) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 /* ============ مؤشر "بيشتغل دلوقتي" — خطوات حقيقية بتتحدّث لحظة بلحظة، مش نصوص وهمية بتلف ============
@@ -2335,20 +2478,32 @@ function appendThinkingIndicator(firstStepLabel){
     }
   };
   // ── غرفة التفكير العميق اللايف: بتتبني أول ما أول جزء من التفكير الفعلي
-  //    يوصل، وبتفضل بتتحدّث بالنص كامل أول بأول لحد ما الرد يخلص ──
+  //    يوصل، وبتفضل بتتحدّث بالنص كامل أول بأول لحد ما الرد يخلص. الستريم
+  //    ممكن يبعت عشرات الـ deltas في الثانية، فبدل ما نعمل تحديث DOM +
+  //    scroll على كل واحدة فيهم (وده اللي كان بيسبب إحساس بالتجمد على
+  //    الموبايل)، بنجمّع آخر نص وصل ونطبّقه مرة واحدة بس في كل
+  //    requestAnimationFrame (أقصى تحديث ممكن ~ كل فريم شاشة) ──
+  let __pendingReasoningText = null;
   wrap._setLiveReasoning = (fullReasoningText)=>{
     if (!fullReasoningText) return;
-    let liveBox = wrap.querySelector('.cosmos-deep-think-live');
-    if (!liveBox){
-      liveBox = document.createElement('div');
-      liveBox.className = 'cosmos-deep-think-live';
-      liveBox.innerHTML =
-        '<div class="cosmos-deep-think-live-label"><i class="fas fa-brain"></i><span>بيفكر دلوقتي...</span></div>'+
-        '<div class="cosmos-deep-think-live-text"></div>';
-      wrap.appendChild(liveBox);
-    }
-    liveBox.querySelector('.cosmos-deep-think-live-text').textContent = fullReasoningText;
-    if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+    const isFirstFrame = __pendingReasoningText === null;
+    __pendingReasoningText = fullReasoningText;
+    if (!isFirstFrame) return; // فيه فريم متجدول بالفعل هياخد آخر نص وقت ما يشتغل
+    requestAnimationFrame(()=>{
+      const textToRender = __pendingReasoningText;
+      __pendingReasoningText = null;
+      let liveBox = wrap.querySelector('.cosmos-deep-think-live');
+      if (!liveBox){
+        liveBox = document.createElement('div');
+        liveBox.className = 'cosmos-deep-think-live';
+        liveBox.innerHTML =
+          '<div class="cosmos-deep-think-live-label"><i class="fas fa-brain"></i><span>بيفكر دلوقتي...</span></div>'+
+          '<div class="cosmos-deep-think-live-text"></div>';
+        wrap.appendChild(liveBox);
+      }
+      liveBox.querySelector('.cosmos-deep-think-live-text').textContent = textToRender;
+      if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
   };
   return wrap;
 }
@@ -2381,16 +2536,40 @@ function renderAttachPreview(){
       return '<div class="attach-item" data-attach-id="'+a.id+'"><img src="'+a.dataUrl+'">'+removeBtn+'</div>';
     }
     const icon = FILE_KIND_ICON[a.kind] || 'fa-file';
+    // ── لو الملف طويل واتقسّم لأجزاء (Text Chunking)، بنضيف أسهم تنقل صغيرة
+    //    (‹ 1/3 ›) تحت اسم الملف عشان تختار أنهي جزء يتبعت في الرسالة دي ──
+    let chunkNav = '';
+    if (a.chunks && a.chunks.length > 1){
+      chunkNav = '<div class="attach-chunk-nav" data-chunk-id="'+a.id+'">'+
+        '<button type="button" class="attach-chunk-btn" data-chunk-dir="-1" '+((a.chunkIndex||0)<=0?'disabled':'')+'><i class="fas fa-chevron-right"></i></button>'+
+        '<span>جزء '+((a.chunkIndex||0)+1)+'/'+a.chunks.length+'</span>'+
+        '<button type="button" class="attach-chunk-btn" data-chunk-dir="1" '+((a.chunkIndex||0)>=a.chunks.length-1?'disabled':'')+'><i class="fas fa-chevron-left"></i></button>'+
+        '</div>';
+    }
     return '<div class="attach-item" data-attach-id="'+a.id+'">'+
       '<div class="attach-file-chip'+(a.processing?' processing':'')+'">'+
       '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
       '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(a.name)+'</div>'+
-      '<div class="attach-file-status">'+escapeHtml(a.processing ? 'بيتقرا...' : (a.note||'جاهز'))+'</div></div></div>'+
+      '<div class="attach-file-status">'+escapeHtml(a.processing ? 'بيتقرا...' : (a.note||'جاهز'))+'</div>'+
+      chunkNav+
+      '</div></div>'+
       removeBtn+'</div>';
   }).join('');
   attachPreview.style.display = 'flex';
   attachPreview.querySelectorAll('.attach-remove-btn').forEach(btn=>{
     btn.addEventListener('click', ()=> removeAttachmentById(btn.dataset.removeId));
+  });
+  attachPreview.querySelectorAll('.attach-chunk-btn').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const navEl = btn.closest('.attach-chunk-nav');
+      const item = pendingAttachments.find(a=>a.id === navEl.dataset.chunkId);
+      if (!item || !item.chunks) return;
+      const dir = parseInt(btn.dataset.chunkDir, 10);
+      item.chunkIndex = Math.max(0, Math.min(item.chunks.length-1, (item.chunkIndex||0) + dir));
+      item.extractedText = item.chunks[item.chunkIndex];
+      renderAttachPreview();
+    });
   });
 }
 
@@ -2431,6 +2610,8 @@ attachInput.addEventListener('change', async ()=>{
         item.processing = false;
         item.note = result.note || 'جاهز';
         item.extractedText = result.extractedText;
+        item.chunks = result.chunks || null;
+        item.chunkIndex = 0;
       }
       renderAttachPreview();
     } catch(e){
@@ -2456,6 +2637,7 @@ composer.addEventListener('submit', async (e)=>{
   // ── لو الزرار دلوقتي في وضع "إيقاف" (رد شغال)، ضغطة تانية عليه بتوقف
   //    الرد فورًا من غير ما تبعت رسالة جديدة ──
   if (sendBtn.classList.contains('sending')){
+    __manualStopRequested = true;
     if (currentAbortController) currentAbortController.abort();
     return;
   }
@@ -2481,19 +2663,25 @@ composer.addEventListener('submit', async (e)=>{
   composerInput.value='';
   composerInput.style.height='auto';
   clearAttachPreview();
+  __manualStopRequested = false;
   currentAbortController = new AbortController();
   sendBtn.classList.add('sending');
   const sendBtnIcon = document.getElementById('send-btn-icon');
   sendBtnIcon.className = 'fas fa-stop';
   // مؤقت أمان: لو لأي سبب غير متوقع الرد اتعلّق (شبكة واقفة، تبويب اتجمّد،
-  // إلخ) ومكملش لحد الـ finally بتاعت الطلب، الزرار برضه هيرجع شغّال بعد
-  // 45 ثانية بدل ما يفضل عالق "بيبعت" للأبد.
+  // إلخ) ومكملش لحد الـ finally بتاعت الطلب، الزرار برضه هيرجع شغّال بدل
+  // ما يفضل عالق "بيبعت" للأبد. المهلة اتزوّدت لـ 120 ثانية (بدل 45) عشان
+  // reasoning_effort:'high' + الاستكمال التلقائي (Auto-Resume) ممكن ياخدوا
+  // وقت طبيعي أطول من 45 ثانية من غير ما يبقى فيه أي مشكلة فعلية.
   clearTimeout(window.__sendWatchdog);
   window.__sendWatchdog = setTimeout(()=>{
+    // ده إلغاء تلقائي بسبب طول الوقت، مش إيقاف يدوي من المستخدم — فبنسيب
+    // __manualStopRequested زي ما هي (false) عشان الرسالة اللي هتظهر تبقى
+    // "الرد بياخد وقت أطول من المعتاد" مش "تم إيقاف الرد".
     if (currentAbortController) currentAbortController.abort();
     sendBtn.classList.remove('sending');
     sendBtnIcon.className = 'fas fa-arrow-up';
-  }, 45000);
+  }, 120000);
   refreshGeoContext(); // مجرد محاولة تحديث في الخلفية لو لسه معندناش بيانات موقع/صلاة اليوم
 
   const convRef = db.ref('users/'+currentUser.uid+'/conversations/'+currentConvId);
@@ -2583,14 +2771,18 @@ composer.addEventListener('submit', async (e)=>{
     thinkingEl._clearStage();
     thinkingEl.querySelector('.cosmos-deep-think-live')?.remove();
     if (isAbortError(err)){
+      const stopMsg = __manualStopRequested
+        ? 'تم إيقاف الرد.'
+        : 'الرد أخد وقت أطول من المعتاد فاتلغى تلقائيًا. جرب تاني، أو ابعت رسالة أقصر لو ممكن.';
       thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'تم إيقاف الرد.' })
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent: stopMsg })
       );
     } else if (err && err.serviceDown){
-      // مفيش أي بديل شغال لـ err.serviceDown دي تحديدًا، فبنقول للمستخدم
-      // صراحة إن الخدمة دي معطلة عشان التوكن خلص — من غير ما نسمّي مزوّد بعينه.
+      // مفيش أي بديل شغال دلوقتي — بعد ما جربنا كل المزوّدين مرتين (مع تأخير
+      // بينهم). ده غالبًا رايت-ليميت مؤقت على المفاتيح المشتركة مع فلك،
+      // مش إن رصيد التوكن بتاعك خلص فعليًا — فبنوصف الحالة صح للمستخدم.
       thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'❌ ' + err.serviceDown + ' معطلة عشان التوكن خلص.' })
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'❌ ' + err.serviceDown + ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.' })
       );
     } else {
       thinkingEl.querySelector('.thinking-steps')?.replaceWith(
