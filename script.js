@@ -2471,24 +2471,34 @@ function typewriterReveal(container, html, onDone){
   let idx = 0;
   function tick(){
     const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
-    let n = 3;
-    while (n-- > 0 && idx < ops.length){
-      const op = ops[idx++];
-      const top = stack[stack.length-1];
-      if (op.type === 'char'){
-        if (top.lastChild && top.lastChild.nodeType === 3) top.lastChild.nodeValue += op.ch;
-        else top.insertBefore(document.createTextNode(op.ch), top===container?caret:null);
-      } else if (op.type === 'open'){
-        const el = document.createElement(op.tag);
-        if (op.attrs) for (let a=0;a<op.attrs.length;a++) el.setAttribute(op.attrs[a].name, op.attrs[a].value);
-        top.insertBefore(el, top===container?caret:null);
-        stack.push(el);
-      } else if (op.type === 'block'){
-        top.insertBefore(op.node, top===container?caret:null);
-        if (window.hljs) op.node.querySelectorAll('pre code').forEach(el=>{ try{ window.hljs.highlightElement(el); }catch(e){} });
-      } else {
-        stack.pop();
+    try{
+      let n = 3;
+      while (n-- > 0 && idx < ops.length){
+        const op = ops[idx++];
+        const top = stack[stack.length-1];
+        if (op.type === 'char'){
+          if (top.lastChild && top.lastChild.nodeType === 3) top.lastChild.nodeValue += op.ch;
+          else top.insertBefore(document.createTextNode(op.ch), top===container?caret:null);
+        } else if (op.type === 'open'){
+          const el = document.createElement(op.tag);
+          if (op.attrs) for (let a=0;a<op.attrs.length;a++) el.setAttribute(op.attrs[a].name, op.attrs[a].value);
+          top.insertBefore(el, top===container?caret:null);
+          stack.push(el);
+        } else if (op.type === 'block'){
+          top.insertBefore(op.node, top===container?caret:null);
+          if (window.hljs) op.node.querySelectorAll('pre code').forEach(el=>{ try{ window.hljs.highlightElement(el); }catch(e){} });
+        } else {
+          stack.pop();
+        }
       }
+    } catch(tickErr){
+      // ── دي بتشتغل جوه setTimeout، يعني أي throw هنا معندهوش try/catch
+      //    بره يمسكه — لو سبناها كده هتقف الأنيميشن في نص الطريق للأبد.
+      //    بدل كده، بنقفل الأنيميشن فورًا ونكمّل زي ما هي عادي ──
+      console.error('typewriterReveal: توقف نص الطريق، هنكمّل من غير أنيميشن', tickErr);
+      caret.remove();
+      if (onDone) onDone();
+      return;
     }
     if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
     if (idx < ops.length) setTimeout(tick, 10);
@@ -2505,13 +2515,11 @@ function renderFinalAssistantMessage(wrap, msg){
   wrap.querySelector('.code-building-row')?.remove();
   wrap.querySelector('.cosmos-live-stream')?.remove();
 
-  if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning));
-
-  const bubble = document.createElement('div');
-  bubble.className = 'msg assistant';
-  wrap.appendChild(bubble);
-
-  typewriterReveal(bubble, formatAnswer(msg.text), ()=>{
+  // ── شبكة أمان: لو حصل أي خطأ جوه التنسيق/الأنيميشن (formatAnswer أو
+  //    typewriterReveal)، الرد الحقيقي اللي جاله فعلاً من الذكاء الاصطناعي
+  //    ما يتضاعش — بنعرضه كنص عادي فورًا من غير تنسيق أو أنيميشن، بدل ما
+  //    نرمي كل حاجة ونطلع "حصل خطأ في الرد" ورد صحيح موجود فعلاً معانا ──
+  function finishBubbleChrome(){
     wrap.appendChild(buildActionBar(msg.question || '', msg.text));
     maybeAddZipAllButton(wrap);
     const time = document.createElement('div');
@@ -2519,7 +2527,23 @@ function renderFinalAssistantMessage(wrap, msg){
     time.textContent = formatTime(msg.ts);
     wrap.appendChild(time);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-  });
+  }
+
+  try{
+    if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning));
+    const bubble = document.createElement('div');
+    bubble.className = 'msg assistant';
+    wrap.appendChild(bubble);
+    typewriterReveal(bubble, formatAnswer(msg.text), finishBubbleChrome);
+  } catch(renderErr){
+    console.error('renderFinalAssistantMessage: التنسيق فشل، هنعرض نص عادي بدل ما نضيّع الرد', renderErr);
+    wrap.querySelectorAll('.msg.assistant, .cosmos-deep-think').forEach(el=>el.remove());
+    const bubble = document.createElement('div');
+    bubble.className = 'msg assistant';
+    bubble.textContent = msg.text || '';
+    wrap.appendChild(bubble);
+    finishBubbleChrome();
+  }
 }
 
 function appendMessageBubble(msg, opts){
