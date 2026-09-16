@@ -1813,6 +1813,38 @@ messagesEl.addEventListener('click', (e)=>{
   e.preventDefault();
   window.open(link.href, '_blank', 'noopener,noreferrer');
 });
+
+// ============ سكرول تلقائي "لايف" وراء رد الذكاء + زرار "روح لتحت" ============
+// autoFollowActive: لما مفعّل، الشاشة بتتابع نمو الرد (خطوات التفكير/الكتابة)
+// تدريجيًا وهي بتكبر، لكن سايبة هامش فاضي بسيط تحت (SCROLL_FOLLOW_GAP) عشان
+// يبان فيه خلفية الشاشة تحت غرفة التفكير بدل ما يلزق بالظبط في آخر سطر —
+// ولو المستخدم سحب بإيده لفوق قاصدًا (عشان يقرا حاجة قديمة)، بنوقف المتابعة
+// التلقائية فورًا ونوريله زرار عائم يرجّعه لتحت لما يحب.
+const SCROLL_FOLLOW_GAP = 90;
+let autoFollowActive = false;
+const scrollBottomBtn = document.createElement('button');
+scrollBottomBtn.type = 'button';
+scrollBottomBtn.id = 'scroll-bottom-btn';
+scrollBottomBtn.className = 'scroll-bottom-btn';
+scrollBottomBtn.setAttribute('aria-label', 'روح لآخر الشات');
+scrollBottomBtn.innerHTML = '<i class="fas fa-arrow-down"></i>';
+document.getElementById('chat-main').appendChild(scrollBottomBtn);
+
+function isNearChatBottom(){
+  return (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 40;
+}
+function updateScrollBottomBtn(){
+  const farFromBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) > 160;
+  scrollBottomBtn.classList.toggle('visible', farFromBottom);
+}
+messagesEl.addEventListener('scroll', updateScrollBottomBtn, { passive:true });
+// لمسة/سكرول حقيقي من المستخدم (مش من كودنا) = بيقصد يقرا حاجة تانية، فنوقف المتابعة التلقائية
+messagesEl.addEventListener('wheel', ()=>{ autoFollowActive = false; }, { passive:true });
+messagesEl.addEventListener('touchmove', ()=>{ autoFollowActive = false; }, { passive:true });
+scrollBottomBtn.addEventListener('click', ()=>{
+  autoFollowActive = true;
+  messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior:'smooth' });
+});
 const composer = document.getElementById('composer');
 const composerInput = document.getElementById('composer-input');
 const sendBtn = composer.querySelector('.send-btn');
@@ -2619,7 +2651,6 @@ function typewriterReveal(container, html, onDone){
   const stack = [container];
   let idx = 0;
   function tick(){
-    const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
     try{
       let n = 3;
       while (n-- > 0 && idx < ops.length){
@@ -2649,7 +2680,7 @@ function typewriterReveal(container, html, onDone){
       if (onDone) onDone();
       return;
     }
-    if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    smartFollowScroll();
     if (idx < ops.length) setTimeout(tick, 10);
     else { caret.remove(); if (onDone) onDone(); }
   }
@@ -2700,9 +2731,14 @@ function renderFinalAssistantMessage(wrap, msg){
 //    الشات (يعني مش قاعد يقرا حاجة فوق بإيده)، بدل ما يشد الشاشة لتحت
 //    بالقوة كل ما حاجة جديدة تتضاف (وده اللي كان بيخلي رسالة المستخدم
 //    تختفي فوق الشاشة أول ما الرد يبدأ يتولّد تحتها مباشرة) ──
+// ── سكرول ذكي: بيتابع نمو الرد تدريجيًا (خطوة بخطوة) طول ما وضع المتابعة
+//    التلقائية مفعّل، وسايب هامش فاضي بسيط تحت (مش لازق في آخر سطر بالظبط)
+//    عشان يبان إحساس إن الشاشة بتتحرك مع الرد من غير ما "تلزق" في نهايته ──
 function smartFollowScroll(){
-  const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
-  if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (!autoFollowActive) return;
+  const maxScroll = messagesEl.scrollHeight - messagesEl.clientHeight;
+  const target = Math.max(0, maxScroll - SCROLL_FOLLOW_GAP);
+  if (target > messagesEl.scrollTop) messagesEl.scrollTop = target;
 }
 
 function appendMessageBubble(msg, opts){
@@ -2781,7 +2817,9 @@ function appendMessageBubble(msg, opts){
   if (!opts.skipScroll){
     if (msg.role === 'user'){
       // ── لما المستخدم يبعت رسالة، نسكرول عشان رسالته هي اللي تبان فوق
-      //    الشاشة، بدل ما تختفي فوق أول ما خطوات الرد تبدأ تتضاف تحتها ──
+      //    الشاشة، بدل ما تختفي فوق أول ما خطوات الرد تبدأ تتضاف تحتها،
+      //    ونفعّل وضع "المتابعة التلقائية" عشان الشاشة تتابع نمو الرد بعدين ──
+      autoFollowActive = true;
       requestAnimationFrame(()=> wrap.scrollIntoView({ behavior:'smooth', block:'start' }));
     } else {
       smartFollowScroll();

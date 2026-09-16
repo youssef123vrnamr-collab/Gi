@@ -566,6 +566,20 @@ button:focus,button:focus-visible{outline:none;}
    #composer-dock هو اللي بيتحرك لفوق تلقائيًا فوق الكيبورد مباشرة عن طريق
    متغيّر --kb-offset اللي بيتحدّث من script.js بمتابعة window.visualViewport. */
 #chat-main{position:relative;}
+/* ============ زرار عائم "روح لآخر الشات" — بيبان بس لما المستخدم يبعد
+   عن آخر حاجة (سحب لفوق يقرا حاجة قديمة)، وبيختفي تاني لما يرجع تحت. ============ */
+.scroll-bottom-btn{
+  position:absolute;left:50%;bottom:96px;z-index:19;
+  width:38px;height:38px;border-radius:50%;border:1px solid var(--border);
+  background:var(--panel-raised);color:var(--text);font-size:14px;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  box-shadow:0 6px 18px -4px rgba(0,0,0,.4);
+  opacity:0;pointer-events:none;
+  transform:translateX(-50%) translateY(6px);
+  transition:opacity .18s ease,transform .18s ease;
+}
+.scroll-bottom-btn.visible{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0);}
+.scroll-bottom-btn:active{transform:translateX(-50%) scale(.92);}
 .composer-dock{
   position:absolute;left:0;right:0;bottom:0;z-index:20;
   display:flex;flex-direction:column;gap:.5rem;
