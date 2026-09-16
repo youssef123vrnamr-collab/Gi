@@ -210,7 +210,7 @@ function submitAIFeedback(liked, question, answer){
   } catch(e){ console.error("submitAIFeedback err", e); }
 }
 
-const AI_DISPLAY_NAME = "AlalaGyGyAgha V1.6";
+const AI_DISPLAY_NAME = "AlalaGyGyAgha V2.6";
 // النظام تلقائي بس دلوقتي — مفيش اختيار يدوي لموديل معيّن ولا متغيّر بيتفحص
 // قيمته، عشان المستخدم دايمًا ياخد نفس تجربة "خطوط الدفاع"
 // (Groq → Gemini → OpenRouter → Vercel) بالترتيب الثابت في getAIResponse.
@@ -1972,6 +1972,20 @@ function updateUsageWindowUI(){
     lockBanner.style.display = 'none';
     return;
   }
+  // ── لو الجهاز ده معروف إنه "حرق" توكناته قبل كده على حساب تاني (نفس بصمة
+  //    الجهاز)، بنقفل الرصيد فورًا على أي حساب جديد يتسجّل بنفس الجهاز، بغض
+  //    النظر إن الحساب ده لسه صفر — عشان يمنع الالتفاف على النظام بعمل حساب
+  //    جديد كل ما رصيد القديم يخلص ──
+  if (typeof deviceBlockedForThisAccount !== 'undefined' && deviceBlockedForThisAccount){
+    bar.classList.add('locked');
+    fill.style.width = '0%';
+    label.textContent = '0';
+    bar.title = 'التوكنات خلصت على الجهاز ده';
+    lockText.textContent = 'التوكنات بتاعت الجهاز ده خلصت النهارده — عمل حساب جديد مش بيرجّع الرصيد.';
+    lockBanner.style.display = 'flex';
+    composerInput.disabled = true; sendBtn.disabled = true; attachBtn.disabled = true;
+    return;
+  }
   const share = usageShareTokens();
   const remaining = usageRemainingTokens();
   const pct = Math.max(0, Math.min(100, (remaining/share)*100));
@@ -1983,6 +1997,7 @@ function updateUsageWindowUI(){
     lockText.textContent = 'التوكن بتاعك خلص النهارده — هيرجع تاني بكرة.';
     lockBanner.style.display = 'flex';
     composerInput.disabled = true; sendBtn.disabled = true; attachBtn.disabled = true;
+    markDeviceTokensExhausted(); // نسجّل على مستوى الجهاز إن الرصيد خلص، مش بس على الحساب
   } else {
     bar.classList.remove('locked');
     bar.title = 'متبقي ' + formatTokenCount(remaining) + ' توكن من نصيبك النهارده (' + formatTokenCount(share) + ')';
@@ -2010,11 +2025,14 @@ auth.onAuthStateChanged(user=>{
     loadUsageForToday();
     listenToConversations();
     refreshGeoContext(); // بيجيب الموقع/مواعيد الصلاة/القبلة في الخلفية، من غير ما يعطل حاجة
+    enforceBiometricGate(); // بوابة البصمة البيومترية: حسابات جديدة وقديمة على السواء
   } else {
     currentUser = null;
     currentUserGender = null;
     usageUsedTokens = 0; usageDayKey = null; usageLoaded = false;
     currentConvId = null;
+    deviceBlockedForThisAccount = false;
+    closeBiometricModal();
     if(conversationsRef) conversationsRef.off();
     authScreen.style.display='flex';
     appShell.style.display='none';
@@ -2635,6 +2653,7 @@ function typewriterReveal(container, html, onDone){
 // ── بتحوّل صندوق "بيفكر/بيتكتب حي" لنفس الرسالة النهائية، وتعمل عليها أنيميشن الكتابة
 //    التدريجي فوق النص المنسّق والملوّن الكامل (مش النص الخام) — دي الخطوة اللي كانت ناقصة ──
 function renderFinalAssistantMessage(wrap, msg){
+  wrap.classList.remove('thinking-full'); // الرد النهائي يرجع لعرض الرسائل العادي، الاتساع Edge-to-edge لمرحلة التفكير بس
   wrap.querySelector('.thinking-steps')?.remove();
   wrap.querySelector('.cosmos-deep-think-live')?.remove();
   wrap.querySelector('.code-building-row')?.remove();
@@ -2787,7 +2806,9 @@ function stepKind(text){
 }
 function appendThinkingIndicator(firstStepLabel){
   const wrap = document.createElement('div');
-  wrap.className = 'msg-wrap assistant';
+  // ── "thinking-full": تخلي صندوق التفكير يتمدد أفقيًا Edge-to-edge بدل ما
+  //    يتحبس في نفس عرض رسائل المساعد العادية (92%) ──
+  wrap.className = 'msg-wrap assistant thinking-full';
   wrap.innerHTML =
     '<div class="msg-header"><span class="msg-avatar">'+AI_AVATAR_SVG+'</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
     '<div class="thinking-steps"></div>';
@@ -3157,5 +3178,204 @@ composer.addEventListener('submit', async (e)=>{
 
 /* ============ SIDEBAR TOGGLE (mobile) ============ */
 sidebarToggle.addEventListener('click', ()=> sidebar.classList.toggle('collapsed'));
+
+/* ============ نظام الأمان البيومتري (WebAuthn) + مكافحة التحايل على الـ Tokens ============
+   ملاحظة تقنية مهمة: WebAuthn بتصميمه بيمنع أي موقع من مقارنة بصمة نفس الشخص
+   بين حسابين مختلفين (كل عملية تسجيل بتولّد مفتاح جديد كليًا حتى على نفس
+   الجهاز ونفس الإصبع — ده معمول قصدًا لحماية خصوصية المستخدمين في المعيار
+   نفسه). يعني السيرفر مقدرش "يقارن البصمة" حرفيًا زي ما لو كانت صورة. اللي
+   بيحصل فعليًا هنا: WebAuthn بيتأكد إن في إنسان حقيقي (مش بوت) بيوافق ببصمته/
+   Face ID فعلاً وقت التسجيل، وبالتوازي بنستخدم معرّف جهاز ثابت (Device ID)
+   مخزّن في التخزين المحلي للمتصفح، وده اللي بيفضل موجود حتى لو اتعمل حساب
+   جديد بإيميل مختلف على نفس الجهاز — وعليه بيتم رفض إعطاء رصيد توكن جديد.
+   ده حل واقعي جوه حدود متصفح بلا سيرفر خلفي حقيقي، ومش حماية 100% (لو
+   المستخدم مسح بيانات المتصفح هيتغيّر معرّف الجهاز) — لو عايز صرامة أعلى
+   محتاج Cloud Function + توقيع من السيرفر بدل التخزين المحلي وحده. */
+const biometricModal = document.getElementById('biometric-modal');
+const biometricRegisterBtn = document.getElementById('biometric-register-btn');
+const biometricError = document.getElementById('biometric-error');
+const biometricUnsupportedNote = document.getElementById('biometric-unsupported-note');
+const biometricModalText = document.getElementById('biometric-modal-text');
+let deviceBlockedForThisAccount = false;
+
+function getDeviceId(){
+  try{
+    let id = localStorage.getItem('mhz_device_id');
+    if (!id){
+      id = (crypto.randomUUID ? crypto.randomUUID() : ('dev-'+Date.now()+'-'+Math.random().toString(16).slice(2)));
+      localStorage.setItem('mhz_device_id', id);
+    }
+    return id;
+  } catch(e){
+    return 'dev-fallback';
+  }
+}
+function arrayBufferToBase64(buf){
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+async function isBiometricRegistered(uid){
+  const snap = await db.ref('users/'+uid+'/security/biometric').once('value');
+  return !!snap.val();
+}
+async function registerBiometricCredential(){
+  if (!window.PublicKeyCredential){
+    biometricUnsupportedNote.style.display = 'block';
+    throw new Error('unsupported');
+  }
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const cred = await navigator.credentials.create({
+    publicKey: {
+      challenge,
+      rp: { name: 'Digital Mind' },
+      user: {
+        id: new TextEncoder().encode(currentUser.uid),
+        name: currentUser.email || currentUser.uid,
+        displayName: currentUser.displayName || currentUser.email || 'مستخدم'
+      },
+      pubKeyCredParams: [{ alg:-7, type:'public-key' }, { alg:-257, type:'public-key' }],
+      authenticatorSelection: { authenticatorAttachment:'platform', userVerification:'required', residentKey:'preferred' },
+      timeout: 60000,
+      attestation: 'none'
+    }
+  });
+  return arrayBufferToBase64(cred.rawId);
+}
+// بيفحص لو معرّف الجهاز ده اتسجّل قبل كده وحرق رصيده على حساب تاني، وبيحدّث
+// سجل الجهاز بآخر حساب استخدمه (deviceRegistry/{deviceId} في الـ Realtime DB)
+async function checkDeviceAbuse(){
+  const deviceId = getDeviceId();
+  const ref = db.ref('deviceRegistry/'+deviceId);
+  const snap = await ref.once('value');
+  const data = snap.val();
+  const blocked = !!(data && data.tokensExhausted && data.uid !== currentUser.uid);
+  await ref.update({
+    uid: currentUser.uid,
+    lastSeen: Date.now(),
+    biometricRegistered: true
+  }).catch(()=>{});
+  return blocked;
+}
+function markDeviceTokensExhausted(){
+  if (!currentUser) return;
+  db.ref('deviceRegistry/'+getDeviceId()).update({
+    tokensExhausted: true,
+    uid: currentUser.uid,
+    exhaustedAt: Date.now()
+  }).catch(()=>{});
+}
+function openBiometricModal(forced){
+  biometricError.textContent = '';
+  biometricModalText.textContent = forced
+    ? 'الحساب ده لسه مالوش بصمة مسجّلة على السيرفر — لازم تسجّلها دلوقتي عشان تقدر تكمل استخدام التطبيق.'
+    : 'عشان نضمن عدالة استخدام التوكنات اليومية بين كل المستخدمين، لازم تسجّل بصمة إصبعك (أو أي وسيلة تحقق بيومترية على جهازك) قبل ما تكمل.';
+  biometricModal.classList.add('open');
+}
+function closeBiometricModal(){
+  biometricModal.classList.remove('open');
+}
+biometricRegisterBtn.addEventListener('click', async ()=>{
+  biometricError.textContent = '';
+  biometricRegisterBtn.disabled = true;
+  biometricRegisterBtn.classList.add('registering');
+  const icon = biometricRegisterBtn.querySelector('i');
+  const originalIconClass = icon.className;
+  icon.className = 'fas fa-spinner';
+  try{
+    const credId = await registerBiometricCredential();
+    await db.ref('users/'+currentUser.uid+'/security/biometric').set({
+      credentialId: credId,
+      deviceId: getDeviceId(),
+      registeredAt: Date.now()
+    });
+    closeBiometricModal();
+    deviceBlockedForThisAccount = await checkDeviceAbuse().catch(()=>false);
+    updateUsageWindowUI();
+  } catch(err){
+    biometricError.textContent = (err && err.name === 'NotAllowedError')
+      ? 'اتلغى تسجيل البصمة أو رفضته — لازم توافق عليه عشان تكمل.'
+      : 'حصل خطأ أثناء تسجيل البصمة، جرب تاني.';
+  } finally {
+    biometricRegisterBtn.disabled = false;
+    biometricRegisterBtn.classList.remove('registering');
+    icon.className = originalIconClass;
+  }
+});
+// ── الفحص الرئيسي: بيتنادى بعد كل تسجيل دخول ناجح (حساب جديد أو قديم) ──
+async function enforceBiometricGate(){
+  const registered = await isBiometricRegistered(currentUser.uid).catch(()=>false);
+  if (!registered){
+    openBiometricModal(true);
+    return; // المودال بيقفل الواجهة بالكامل (z-index أعلى من أي حاجة) لحد ما يسجّل بصمته
+  }
+  deviceBlockedForThisAccount = await checkDeviceAbuse().catch(()=>false);
+  updateUsageWindowUI();
+}
+
+/* ============ التعامل الذكي مع لوحة المفاتيح (Keyboard Viewport Handling) ============
+   لما لوحة المفاتيح تفتح على الموبايل، visualViewport.height بينقص بمقدار
+   ارتفاعها تقريبًا. بنحوّل الفرق ده لمتغيّر CSS (--kb-offset) على <html>،
+   والـ CSS بيستخدمه يرفع الجزيرة العائمة (composer-dock) فوق الكيبورد
+   مباشرة بلا مسافات فاضية، ويزوّد padding-bottom لمنطقة الرسائل بنفس القيمة
+   عشان آخر رسالة تفضل قابلة للقراءة والتمرير كاملة فوق الكيبورد. */
+(function setupKeyboardViewportHandling(){
+  const root = document.documentElement;
+  const vv = window.visualViewport;
+  if (!vv){ return; } // متصفحات قديمة جدًا: هيفضل الشريط في مكانه العادي تحت من غير أذية
+  let rafPending = false;
+  function applyOffset(){
+    rafPending = false;
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    root.style.setProperty('--kb-offset', kb + 'px');
+    if (messagesEl && messagesEl.isConnected){
+      // نضمن إن المستخدم يفضل شايف آخر رسالة وهو بيكتب حتى لو الكيبورد فتح فجأة
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  }
+  function scheduleApply(){
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(applyOffset);
+  }
+  vv.addEventListener('resize', scheduleApply);
+  vv.addEventListener('scroll', scheduleApply);
+  composerInput.addEventListener('focus', ()=> setTimeout(scheduleApply, 60));
+  composerInput.addEventListener('blur', ()=> setTimeout(scheduleApply, 60));
+})();
+
+/* ============ أزرار اللغات (داخل شريط الجزيرة العائمة) ============
+   تبديل بسيط لاتجاه/لغة الواجهة الأساسية (RTL عربي ↔ LTR إنجليزي) وحفظ
+   الاختيار محليًا. ده أساس خفيف قابل للتوسعة لاحقًا بجدول ترجمة كامل لكل
+   نصوص الواجهة من غير ما يأثر على منطق الشات نفسه. */
+const langSwitch = document.getElementById('lang-switch');
+const UI_STRINGS = {
+  ar: { placeholder: 'اكتب رسالتك...', newChat: 'محادثة جديدة', logout: 'تسجيل الخروج' },
+  en: { placeholder: 'Type your message...', newChat: 'New chat', logout: 'Log out' }
+};
+function applyUiLanguage(lang){
+  const dir = lang === 'en' ? 'ltr' : 'rtl';
+  document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : 'ar');
+  document.documentElement.setAttribute('dir', dir);
+  const strings = UI_STRINGS[lang] || UI_STRINGS.ar;
+  composerInput.placeholder = strings.placeholder;
+  try{ localStorage.setItem('mhz_ui_lang', lang); }catch(e){}
+}
+if (langSwitch){
+  langSwitch.addEventListener('click', (e)=>{
+    const btn = e.target.closest('.lang-btn');
+    if (!btn) return;
+    langSwitch.querySelectorAll('.lang-btn').forEach(b=> b.classList.toggle('active', b===btn));
+    applyUiLanguage(btn.dataset.lang);
+  });
+  try{
+    const savedLang = localStorage.getItem('mhz_ui_lang');
+    if (savedLang && savedLang !== 'ar'){
+      const btn = langSwitch.querySelector('[data-lang="'+savedLang+'"]');
+      if (btn){ langSwitch.querySelectorAll('.lang-btn').forEach(b=> b.classList.toggle('active', b===btn)); applyUiLanguage(savedLang); }
+    }
+  }catch(e){}
+}
 
 })();

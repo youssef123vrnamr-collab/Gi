@@ -28,14 +28,14 @@
   <div class="loader-inner">
     <div class="loader-infinity">∞</div>
     <div class="loader-mark">Digital Mind</div>
-    <div class="loader-model">AlalaGyGyAgha V1.6</div>
+    <div class="loader-model">AlalaGyGyAgha V2.6</div>
   </div>
 </div>
 
 <!-- ============ AUTH SCREEN ============ -->
 <div id="auth-screen" class="screen" style="display:none;">
   <div class="auth-card">
-    <h1 class="brand">Digital Mind<span class="brand-model">AlalaGyGyAgha V1.6</span></h1>
+    <h1 class="brand">Digital Mind<span class="brand-model">AlalaGyGyAgha V2.6</span></h1>
     <p class="brand-sub">مساحتك الخاصة، بتفتكر كل حاجة تقولها.</p>
 
     <div class="tab-switch">
@@ -105,8 +105,8 @@
 
     <div id="messages" class="messages"></div>
 
-    <div id="attach-preview" class="attach-preview"></div>
-    <div id="composer-area" class="composer-area">
+    <div id="composer-dock" class="composer-dock">
+      <div id="attach-preview" class="attach-preview"></div>
       <form id="composer" class="composer">
         <input type="file" id="attach-input" hidden multiple>
         <div class="composer-card">
@@ -114,7 +114,11 @@
           <div class="composer-toolbar">
             <div class="composer-toolbar-left">
               <button type="button" id="attach-btn" class="composer-icon-btn attach-btn" aria-label="إرفاق ملف"><i class="fas fa-plus"></i></button>
-              <span class="model-pill" id="model-pill">AlalaGyGyAgha V1.6</span>
+              <span class="model-pill" id="model-pill">AlalaGyGyAgha V2.6</span>
+              <div class="lang-switch" id="lang-switch" role="group" aria-label="اختيار اللغة">
+                <button type="button" class="lang-btn active" data-lang="ar">AR</button>
+                <button type="button" class="lang-btn" data-lang="en">EN</button>
+              </div>
             </div>
             <button type="submit" class="send-btn" aria-label="إرسال"><i id="send-btn-icon" class="fas fa-arrow-up"></i></button>
           </div>
@@ -153,6 +157,34 @@
       <button type="button" id="delete-cancel-btn" class="app-modal-btn ghost">إلغاء</button>
       <button type="button" id="delete-confirm-btn" class="app-modal-btn danger"><i class="fas fa-trash-can"></i><span>حذف</span></button>
     </div>
+  </div>
+</div>
+
+<!-- ============ BIOMETRIC REGISTRATION MODAL (WebAuthn) ============
+     مودال إجباري: بيتفتح لأي حساب جديد بعد أول تسجيل دخول، وكمان تلقائيًا لأي
+     حساب قديم لسه مالوش بصمة مسجّلة على السيرفر. من غير تسجيل بصمة ناجح
+     المستخدم مش هيقدر يستخدم التطبيق (الواجهة بتتقفل بالكامل ورا المودال). -->
+<div id="biometric-modal" class="app-modal-overlay biometric-overlay" style="display:none;">
+  <div class="app-modal biometric-modal">
+    <div class="app-modal-icon accent"><i class="fas fa-fingerprint"></i></div>
+    <h3 class="app-modal-title">تأمين حسابك ببصمتك</h3>
+    <p class="app-modal-text" id="biometric-modal-text">
+      عشان نضمن عدالة استخدام التوكنات اليومية بين كل المستخدمين، لازم تسجّل بصمة
+      إصبعك (أو أي وسيلة تحقق بيومترية على جهازك) قبل ما تكمل.
+    </p>
+    <div class="biometric-terms">
+      <i class="fas fa-circle-info"></i>
+      <span>تسجيل البصمة يربط حسابك بأمان بجهازك ويُستخدم حصريًا لمنع تكرار الحسابات الوهمية والتحايل على استهلاك الـ Tokens اليومية، لضمان عدالة الاستخدام للجميع. بصمتك بتتخزّن على جهازك بس عن طريق نظام تشغيله (WebAuthn) ومش بتتبعت لأي حد.</span>
+    </div>
+    <div id="biometric-error" class="field-error"></div>
+    <div class="app-modal-actions biometric-actions">
+      <button type="button" id="biometric-register-btn" class="app-modal-btn primary">
+        <i class="fas fa-fingerprint"></i><span>تسجيل البصمة دلوقتي</span>
+      </button>
+    </div>
+    <p class="biometric-fallback-note" id="biometric-unsupported-note" style="display:none;">
+      جهازك أو متصفحك مش داعم تسجيل بصمة (WebAuthn) دلوقتي — جرب متصفح تاني أو حدّث نظام التشغيل عشان تقدر تكمل.
+    </p>
   </div>
 </div>
 
