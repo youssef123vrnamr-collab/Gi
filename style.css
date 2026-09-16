@@ -586,7 +586,7 @@ button:focus,button:focus-visible{outline:none;}
 /* ============ زرار عائم "روح لآخر الشات" — بيبان بس لما المستخدم يبعد
    عن آخر حاجة (سحب لفوق يقرا حاجة قديمة)، وبيختفي تاني لما يرجع تحت. ============ */
 .scroll-bottom-btn{
-  position:absolute;left:50%;bottom:96px;z-index:19;
+  position:absolute;left:50%;bottom:136px;z-index:19;
   width:38px;height:38px;border-radius:50%;border:1px solid var(--border);
   background:var(--panel-raised);color:var(--text);font-size:14px;
   display:flex;align-items:center;justify-content:center;cursor:pointer;
