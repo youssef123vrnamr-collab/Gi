@@ -2676,7 +2676,7 @@ function renderFinalAssistantMessage(wrap, msg){
     time.className = 'msg-time';
     time.textContent = formatTime(msg.ts);
     wrap.appendChild(time);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    smartFollowScroll();
   }
 
   try{
@@ -2694,6 +2694,15 @@ function renderFinalAssistantMessage(wrap, msg){
     wrap.appendChild(bubble);
     finishBubbleChrome();
   }
+}
+
+// ── سكرول ذكي: يتبع لآخر حاجة اتضافت بس لو المستخدم أصلاً قريّب من آخر
+//    الشات (يعني مش قاعد يقرا حاجة فوق بإيده)، بدل ما يشد الشاشة لتحت
+//    بالقوة كل ما حاجة جديدة تتضاف (وده اللي كان بيخلي رسالة المستخدم
+//    تختفي فوق الشاشة أول ما الرد يبدأ يتولّد تحتها مباشرة) ──
+function smartFollowScroll(){
+  const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
+  if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function appendMessageBubble(msg, opts){
@@ -2769,7 +2778,15 @@ function appendMessageBubble(msg, opts){
   } else {
     messagesEl.appendChild(wrap);
   }
-  if (!opts.skipScroll) messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (!opts.skipScroll){
+    if (msg.role === 'user'){
+      // ── لما المستخدم يبعت رسالة، نسكرول عشان رسالته هي اللي تبان فوق
+      //    الشاشة، بدل ما تختفي فوق أول ما خطوات الرد تبدأ تتضاف تحتها ──
+      requestAnimationFrame(()=> wrap.scrollIntoView({ behavior:'smooth', block:'start' }));
+    } else {
+      smartFollowScroll();
+    }
+  }
 }
 
 /* ============ مؤشر "بيشتغل دلوقتي" — خطوات حقيقية بتتحدّث لحظة بلحظة، مش نصوص وهمية بتلف ============
@@ -2812,7 +2829,7 @@ function appendThinkingIndicator(firstStepLabel){
     '<div class="msg-header"><span class="msg-avatar">'+AI_AVATAR_SVG+'</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
     '<div class="thinking-steps"></div>';
   messagesEl.appendChild(wrap);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  smartFollowScroll();
   const stepsEl = wrap.querySelector('.thinking-steps');
 
   function renderStep(text){
@@ -2828,7 +2845,7 @@ function appendThinkingIndicator(firstStepLabel){
     step.querySelector('.thinking-step-text').textContent = text;
     stepsEl.appendChild(step);
     stepsEl.scrollTop = stepsEl.scrollHeight;
-    if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (wrap.isConnected) smartFollowScroll();
   }
 
   renderStep(firstStepLabel || 'بيقرا رسالتك...');
@@ -2884,7 +2901,7 @@ function appendThinkingIndicator(firstStepLabel){
         wrap.appendChild(liveBox);
       }
       liveBox.querySelector('.cosmos-deep-think-live-text').textContent = textToRender;
-      if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (wrap.isConnected) smartFollowScroll();
     });
   };
   return wrap;

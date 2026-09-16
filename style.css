@@ -285,7 +285,7 @@ button:focus,button:focus-visible{outline:none;}
   padding-bottom:calc(96px + var(--kb-offset,0px));
   scroll-padding-bottom:calc(96px + var(--kb-offset,0px));
 }
-.msg-wrap{display:flex;flex-direction:column;max-width:70%;min-width:0;}
+.msg-wrap{display:flex;flex-direction:column;max-width:88%;min-width:0;}
 .msg-wrap.user{align-self:flex-end;align-items:flex-end;}
 .msg-wrap.assistant{align-self:flex-start;align-items:flex-start;max-width:92%;}
 
