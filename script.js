@@ -3256,7 +3256,23 @@ async function checkDeviceAbuse(){
     lastSeen: Date.now(),
     biometricRegistered: true
   }).catch(()=>{});
+  // ── الربط العكسي: بنسجّل معرّف الجهاز ده جوه حساب المستخدم نفسه كمان
+  //    (users/{uid}/security/devices/{deviceId})، مش بس العكس (deviceRegistry
+  //    اللي بيشاور من الجهاز للحساب). كده كل حساب عنده قايمة بكل الأجهزة
+  //    اللي استُخدم منها فعليًا، وممكن نتأكد إن الجهاز الحالي فعلاً من ضمن
+  //    الأجهزة المعروفة للحساب ده، مش بس إن الجهاز شايف uid معيّن ──
+  const userDeviceRef = db.ref('users/'+currentUser.uid+'/security/devices/'+deviceId);
+  userDeviceRef.transaction(existing=>{
+    return { firstSeen: (existing && existing.firstSeen) || Date.now(), lastSeen: Date.now() };
+  }).catch(()=>{});
   return blocked;
+}
+// ── بيرجّع true لو الجهاز الحالي معروف ومربوط فعلاً بحساب المستخدم الحالي
+//    (يعني اتسجّل قبل كده على الأقل مرة واحدة تحت نفس الـ uid) ──
+async function isDeviceLinkedToCurrentAccount(){
+  if (!currentUser) return false;
+  const snap = await db.ref('users/'+currentUser.uid+'/security/devices/'+getDeviceId()).once('value');
+  return snap.exists();
 }
 function markDeviceTokensExhausted(){
   if (!currentUser) return;
@@ -3344,38 +3360,5 @@ async function enforceBiometricGate(){
   composerInput.addEventListener('focus', ()=> setTimeout(scheduleApply, 60));
   composerInput.addEventListener('blur', ()=> setTimeout(scheduleApply, 60));
 })();
-
-/* ============ أزرار اللغات (داخل شريط الجزيرة العائمة) ============
-   تبديل بسيط لاتجاه/لغة الواجهة الأساسية (RTL عربي ↔ LTR إنجليزي) وحفظ
-   الاختيار محليًا. ده أساس خفيف قابل للتوسعة لاحقًا بجدول ترجمة كامل لكل
-   نصوص الواجهة من غير ما يأثر على منطق الشات نفسه. */
-const langSwitch = document.getElementById('lang-switch');
-const UI_STRINGS = {
-  ar: { placeholder: 'اكتب رسالتك...', newChat: 'محادثة جديدة', logout: 'تسجيل الخروج' },
-  en: { placeholder: 'Type your message...', newChat: 'New chat', logout: 'Log out' }
-};
-function applyUiLanguage(lang){
-  const dir = lang === 'en' ? 'ltr' : 'rtl';
-  document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : 'ar');
-  document.documentElement.setAttribute('dir', dir);
-  const strings = UI_STRINGS[lang] || UI_STRINGS.ar;
-  composerInput.placeholder = strings.placeholder;
-  try{ localStorage.setItem('mhz_ui_lang', lang); }catch(e){}
-}
-if (langSwitch){
-  langSwitch.addEventListener('click', (e)=>{
-    const btn = e.target.closest('.lang-btn');
-    if (!btn) return;
-    langSwitch.querySelectorAll('.lang-btn').forEach(b=> b.classList.toggle('active', b===btn));
-    applyUiLanguage(btn.dataset.lang);
-  });
-  try{
-    const savedLang = localStorage.getItem('mhz_ui_lang');
-    if (savedLang && savedLang !== 'ar'){
-      const btn = langSwitch.querySelector('[data-lang="'+savedLang+'"]');
-      if (btn){ langSwitch.querySelectorAll('.lang-btn').forEach(b=> b.classList.toggle('active', b===btn)); applyUiLanguage(savedLang); }
-    }
-  }catch(e){}
-}
 
 })();
