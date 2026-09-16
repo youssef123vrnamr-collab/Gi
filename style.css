@@ -359,6 +359,23 @@ button:focus,button:focus-visible{outline:none;}
 .msg-wrap.assistant.thinking-full .thinking-steps,
 .msg-wrap.assistant.thinking-full .cosmos-deep-think-live,
 .msg-wrap.assistant.thinking-full .cosmos-deep-think{width:100%;max-width:100%;}
+/* ============ "غرفة التفكير" مثبّتة فوق طول ما الرد شغال ============
+   لحد دلوقتي كان الهيدر + خطوات التفكير + التفكير العميق اللايف بيتحطوا
+   جوه نفس صندوق الرسالة اللي بينزل تحته السكرول التلقائي، فلما الرد يطول
+   وسكرول المتابعة يقرّب من آخر حاجة اتكتبت، الغرفة نفسها كانت بتتزحلق
+   لفوق وتختفي من الشاشة زي أي رسالة قديمة. دلوقتي الهيدر + الخطوات +
+   صندوق التفكير اللايف اتلمّوا جوه حاوية واحدة (.thinking-pinned) وبقت
+   ملزّقة (position:sticky) في أول مساحة الرسائل المرئية: طول ما الرد لسه
+   بيتكوّن، الغرفة تفضل واقفة في نفس المكان فوق بالظبط، والمحادثة القديمة
+   اللي فاتت (وحتى رسالة المستخدم الجديدة) بتتزحلق فوقها وتختفي، وتحتها
+   بتفضل مساحة كبيرة فاضية بينزل فيها كلام الرد وهو بيتكتب سلس. أول ما
+   الرد يخلص فعليًا، renderFinalAssistantMessage بيشيل كلاس thinking-full
+   فيرجع كل حاجة سكرول عادي طبيعي زي أي رسالة تانية. */
+.msg-wrap.assistant.thinking-full .thinking-pinned{
+  position:sticky;top:0;z-index:5;background:var(--bg);
+  padding-bottom:10px;margin-bottom:-10px;
+  box-shadow:0 14px 16px -14px rgba(0,0,0,.4);
+}
 .thinking-step{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--text-dim);}
 .thinking-step.done{opacity:.6;}
 .thinking-step.active{color:var(--text);font-weight:600;}

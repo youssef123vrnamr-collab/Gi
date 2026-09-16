@@ -2868,11 +2868,20 @@ function appendThinkingIndicator(firstStepLabel){
   // ── "thinking-full": تخلي صندوق التفكير يتمدد أفقيًا Edge-to-edge بدل ما
   //    يتحبس في نفس عرض رسائل المساعد العادية (92%) ──
   wrap.className = 'msg-wrap assistant thinking-full';
+  // ── الهيدر + خطوات التفكير لفّوا جوه حاوية واحدة (.thinking-pinned) عشان
+  //    يتثبّتوا مع بعض فوق (شوف position:sticky في الـ CSS) طول ما الرد
+  //    شغال، بدل ما يتزحلقوا مع باقي المحادثة القديمة ──
   wrap.innerHTML =
-    '<div class="msg-header"><span class="msg-avatar">'+AI_AVATAR_SVG+'</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
-    '<div class="thinking-steps"></div>';
+    '<div class="thinking-pinned">'+
+      '<div class="msg-header"><span class="msg-avatar">'+AI_AVATAR_SVG+'</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
+      '<div class="thinking-steps"></div>'+
+    '</div>';
   messagesEl.appendChild(wrap);
-  smartFollowScroll();
+  // ── نسكرول فورًا عشان أول ظهور للغرفة يبقى في أول مساحة الرسائل المرئية
+  //    بالظبط (مش نستنى المتابعة التلقائية توصلها بعد شوية)، وده هو المكان
+  //    اللي هتفضل ملزّقة فيه (sticky) طول مدة التفكير والكتابة ──
+  autoFollowActive = true;
+  requestAnimationFrame(()=> wrap.scrollIntoView({ behavior:'smooth', block:'start' }));
   const stepsEl = wrap.querySelector('.thinking-steps');
 
   function renderStep(text){
@@ -2941,7 +2950,9 @@ function appendThinkingIndicator(firstStepLabel){
         };
         labelEl.addEventListener('click', toggleLive);
         labelEl.addEventListener('keydown', (e)=>{ if (e.key==='Enter' || e.key===' '){ e.preventDefault(); toggleLive(); } });
-        wrap.appendChild(liveBox);
+        // ── بيتحط جوه .thinking-pinned مش مباشرة جوه wrap، عشان يفضل جزء من
+        //    نفس الكتلة المثبّتة فوق مع الهيدر وخطوات التفكير ──
+        (wrap.querySelector('.thinking-pinned') || wrap).appendChild(liveBox);
       }
       liveBox.querySelector('.cosmos-deep-think-live-text').textContent = textToRender;
       if (wrap.isConnected) smartFollowScroll();
@@ -3233,6 +3244,9 @@ composer.addEventListener('submit', async (e)=>{
   } catch(err){
     thinkingEl._clearStage();
     thinkingEl.querySelector('.cosmos-deep-think-live')?.remove();
+    // ── الرد "وقف" هنا (خطأ أو إلغاء)، فبنشيل التثبيت فوق (thinking-full)
+    //    وترجع الغرفة سكرول طبيعي زي أي رسالة تانية بدل ما تفضل ملزّقة ──
+    thinkingEl.classList.remove('thinking-full');
     if (isAbortError(err)){
       const stopMsg = __manualStopRequested
         ? 'تم إيقاف الرد.'
