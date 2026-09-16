@@ -3009,6 +3009,9 @@ attachInput.addEventListener('change', async ()=>{
 composerInput.addEventListener('input', ()=>{
   composerInput.style.height='auto';
   composerInput.style.height = Math.min(140, composerInput.scrollHeight)+'px';
+  // بعد ما نغيّر الارتفاع، نجبر الصندوق يعمل scroll لمكان الكيرسور الحالي
+  // عشان الكلام اللي بتكتبه دلوقتي يفضل ظاهر حتى لو النص أطول من 140px
+  composerInput.scrollTop = composerInput.scrollHeight;
 });
 
 composer.addEventListener('submit', async (e)=>{

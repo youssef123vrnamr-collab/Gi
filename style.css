@@ -580,6 +580,7 @@ button:focus,button:focus-visible{outline:none;}
   width:100%;resize:none;max-height:140px;min-height:24px;padding:.3rem .4rem;border:none;
   background:transparent;color:var(--text);
   font-family:'Tajawal',sans-serif;font-size:15px;outline:none;line-height:1.5;
+  overflow-y:auto; /* يضمن ظهور شريط تمرير جوه الصندوق لما النص يعدّي 140px */
 }
 .composer textarea:disabled{opacity:.45;cursor:not-allowed;}
 .composer-icon-btn:disabled{opacity:.35;cursor:not-allowed;}
