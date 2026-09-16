@@ -325,7 +325,7 @@ button:focus,button:focus-visible{outline:none;}
 }
 .msg-files-row::-webkit-scrollbar{height:5px;}
 .msg-files-row::-webkit-scrollbar-thumb{background:var(--border);border-radius:10px;}
-.msg-files-row .attach-file-chip{max-width:220px;flex:0 0 auto;}
+.msg-files-row .attach-file-chip{flex:0 0 auto;}
 
 /* ============ قائمة الخطوات الحقيقية أثناء الانتظار — كل خطوة بتتضاف لحظة حدوثها فعليًا ============
    كل خطوة ليها أيقونة دائرية تعبّر عن نوعها (بحث، رابط، مزوّد ذكاء اصطناعي...)
@@ -474,15 +474,17 @@ button:focus,button:focus-visible{outline:none;}
 .code-preview-terminal.has-error .code-preview-terminal-body{color:#f0a3ab;}
 
 
-/* ============ صف المرفقات: كل ملف في صندوقه الخاص، جنب بعض مش فوق بعض ============
-   صف واحد ثابت الارتفاع (flex-wrap:nowrap) وممكن تتسحب يمين وشمال
-   (overflow-x:auto) لو عدد المرفقات كتير وملهمش مكان يتعرضوا فيه كلهم
-   مرة واحدة — بدل ما يلفوا على أكتر من سطر فوق بعض. */
+/* ============ صف المرفقات: بقت جوّه نفس كارت الكتابة (composer-card) فوق
+   الـ textarea مباشرة، مش طافية في صندوق منفصل فوقه — بالظبط زي شكل
+   المرفقات في تطبيقات الشات المعروفة (الصورة/الملف بيبان جوه نفس الإطار
+   اللي بتكتب فيه). لما مفيش مرفقات، height:0 وmargin:0 يخلّيها تختفي
+   تمامًا من غير ما تسيب فراغ جوه الكارت. ============ */
 .attach-preview{
-  display:none;align-items:flex-start;gap:10px;padding:10px 18px 6px;
+  display:none;align-items:flex-start;gap:8px;padding:0 0 8px;
   flex-wrap:nowrap;flex-direction:row;overflow-x:auto;overflow-y:hidden;
   scrollbar-width:thin;
 }
+.attach-preview:empty{display:none !important;}
 .attach-preview::-webkit-scrollbar{height:5px;}
 .attach-preview::-webkit-scrollbar-thumb{background:var(--border);border-radius:10px;}
 .attach-item{
@@ -497,22 +499,30 @@ button:focus,button:focus-visible{outline:none;}
 }
 .attach-remove-btn:hover{color:var(--text);}
 
-/* ============ بطاقة ملف مرفق (PDF/Word/Excel/صوت/ZIP/كود) في الـ composer ============ */
+/* ============ بطاقة ملف مرفق (PDF/Word/Excel/صوت/ZIP/كود) — شكل مربع صغير
+   زي مربع الصورة بالظبط (52-60px) بدل المستطيل الطويل اللي كان بياخد
+   مساحة أفقية فاضية. الاسم والتفاصيل الكاملة (النوع + الحجم) بقت في
+   الـ title (تظهر بالـ hover في الديسكتوب أو الضغط المطوّل في الموبايل)
+   بدل ما تتكتب كلها جنب الأيقونة. ============ */
 .attach-file-chip{
-  display:flex;align-items:center;gap:10px;background:var(--panel);
-  border:1px solid var(--border);border-radius:14px;padding:8px 12px;max-width:220px;
-  flex:0 0 auto;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:3px;background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  padding:6px 4px;width:60px;height:60px;flex:0 0 auto;box-sizing:border-box;
 }
 .attach-file-chip .attach-file-icon{
-  width:36px;height:36px;border-radius:10px;flex-shrink:0;
+  width:26px;height:26px;border-radius:8px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;
-  background:var(--panel-raised);color:var(--accent);font-size:16px;
+  background:var(--panel-raised);color:var(--accent);font-size:13px;
+}
+.attach-file-chip .attach-file-ext{
+  font-size:9.5px;color:var(--text-dim);max-width:52px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .attach-file-chip.processing .attach-file-icon{animation:attachPulse 1s infinite;}
 @keyframes attachPulse{0%,100%{opacity:1;}50%{opacity:.35;}}
-.attach-file-chip .attach-file-meta{display:flex;flex-direction:column;min-width:0;}
-.attach-file-chip .attach-file-name{font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;}
-.attach-file-chip .attach-file-status{font-size:11px;color:var(--text-dim);}
+/* attach-file-meta/name/status: كلاسات قديمة من الشكل المستطيل، بقت غير
+   مستخدمة بعد التحويل لشكل مربع (attach-file-ext) — متسيبتش عشان ما نلخبطش
+   لو فيه كود قديم بيحطها، بس من غير تنسيق مؤثر على الشكل الجديد. */
 .attach-zip-toggle{
   display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);
   padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-radius:14px;cursor:pointer;user-select:none;

@@ -2732,10 +2732,10 @@ function appendMessageBubble(msg, opts){
     msgFiles.forEach(f=>{
       const chip = document.createElement('div');
       chip.className = 'attach-file-chip';
+      chip.title = f.name + (f.note ? (' — ' + f.note) : '');
       const icon = FILE_KIND_ICON[f.kind] || 'fa-file';
       chip.innerHTML = '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
-        '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(f.name)+'</div>'+
-        '<div class="attach-file-status">'+escapeHtml(f.note||'')+'</div></div>';
+        '<div class="attach-file-ext">'+escapeHtml(fileExtLabel(f.name))+'</div>';
       filesWrap.appendChild(chip);
     });
     wrap.appendChild(filesWrap);
@@ -2911,6 +2911,14 @@ function removeAttachmentById(id){
   renderAttachPreview();
 }
 
+// ── اسم مختصر للملف بس بامتداده (PDF/DOCX/HTML..) عشان يتكتب جوه المربع
+//    الصغير من غير ما ياخد مساحة أفقية؛ الاسم الكامل والتفاصيل بتتحطّ في
+//    title (بيظهر بالـ hover في الديسكتوب، أو بالضغط المطوّل في الموبايل) ──
+function fileExtLabel(name){
+  const m = /\.([a-z0-9]{1,5})$/i.exec(name || '');
+  return m ? m[1].toUpperCase() : 'FILE';
+}
+
 // ── بتعيد رسم كل المرفقات المعلّقة، كل واحد في صندوقه الخاص وزرار الإكس جواه هو نفسه،
 //    وكلهم جنب بعض في صف واحد (flex-wrap) مش فوق بعض ──
 function renderAttachPreview(){
@@ -2925,8 +2933,9 @@ function renderAttachPreview(){
       return '<div class="attach-item" data-attach-id="'+a.id+'"><img src="'+a.dataUrl+'">'+removeBtn+'</div>';
     }
     const icon = FILE_KIND_ICON[a.kind] || 'fa-file';
+    const statusText = a.processing ? 'بيتقرا...' : (a.note || 'جاهز');
     // ── لو الملف طويل واتقسّم لأجزاء (Text Chunking)، بنضيف أسهم تنقل صغيرة
-    //    (‹ 1/3 ›) تحت اسم الملف عشان تختار أنهي جزء يتبعت في الرسالة دي ──
+    //    (‹ 1/3 ›) تحت المربع عشان تختار أنهي جزء يتبعت في الرسالة دي ──
     let chunkNav = '';
     if (a.chunks && a.chunks.length > 1){
       chunkNav = '<div class="attach-chunk-nav" data-chunk-id="'+a.id+'">'+
@@ -2936,12 +2945,11 @@ function renderAttachPreview(){
         '</div>';
     }
     return '<div class="attach-item" data-attach-id="'+a.id+'">'+
-      '<div class="attach-file-chip'+(a.processing?' processing':'')+'">'+
+      '<div class="attach-file-chip'+(a.processing?' processing':'')+'" title="'+escapeHtml(a.name+' — '+statusText)+'">'+
       '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
-      '<div class="attach-file-meta"><div class="attach-file-name">'+escapeHtml(a.name)+'</div>'+
-      '<div class="attach-file-status">'+escapeHtml(a.processing ? 'بيتقرا...' : (a.note||'جاهز'))+'</div>'+
+      '<div class="attach-file-ext">'+escapeHtml(fileExtLabel(a.name))+'</div>'+
+      '</div>'+
       chunkNav+
-      '</div></div>'+
       removeBtn+'</div>';
   }).join('');
   attachPreview.style.display = 'flex';
