@@ -2708,27 +2708,20 @@ function appendMessageBubble(msg, opts){
     wrap.appendChild(header);
   }
 
-  // ── صور الرسالة: بنستحمل رسائل قديمة كانت بتخزّن صورة واحدة (msg.image) وكمان
-  //    الشكل الجديد اللي بيدعم أكتر من صورة مع بعض (msg.images) ──
+  // ── مرفقات الرسالة (صور + ملفات): بقوا في صف واحد جنب بعض بدل ما الصور
+  //    تتحط في بلوك لوحدها فوق بلوك الملفات ──
   const msgImages = msg.images && msg.images.length ? msg.images : (msg.image ? [msg.image] : []);
-  if(msgImages.length){
-    const grid = document.createElement('div');
-    grid.className = 'msg-images-grid';
+  const msgFiles = msg.files && msg.files.length ? msg.files : (msg.fileName ? [{ name: msg.fileName, kind: msg.fileKind, note: msg.fileNote }] : []);
+  if(msgImages.length || msgFiles.length){
+    const attRow = document.createElement('div');
+    attRow.className = 'msg-attachments-row';
     msgImages.forEach(src=>{
       const imgEl = document.createElement('img');
       imgEl.className = 'msg-image';
       imgEl.src = src;
       imgEl.loading = 'lazy';
-      grid.appendChild(imgEl);
+      attRow.appendChild(imgEl);
     });
-    wrap.appendChild(grid);
-  }
-
-  // ── نفس الفكرة لملفات الرسالة: msg.files (جديد، أكتر من ملف) أو msg.fileName (قديم) ──
-  const msgFiles = msg.files && msg.files.length ? msg.files : (msg.fileName ? [{ name: msg.fileName, kind: msg.fileKind, note: msg.fileNote }] : []);
-  if(msgFiles.length){
-    const filesWrap = document.createElement('div');
-    filesWrap.className = 'msg-files-row';
     msgFiles.forEach(f=>{
       const chip = document.createElement('div');
       chip.className = 'attach-file-chip';
@@ -2736,9 +2729,9 @@ function appendMessageBubble(msg, opts){
       const icon = FILE_KIND_ICON[f.kind] || 'fa-file';
       chip.innerHTML = '<div class="attach-file-icon"><i class="fas '+icon+'"></i></div>'+
         '<div class="attach-file-ext">'+escapeHtml(fileExtLabel(f.name))+'</div>';
-      filesWrap.appendChild(chip);
+      attRow.appendChild(chip);
     });
-    wrap.appendChild(filesWrap);
+    wrap.appendChild(attRow);
   }
 
   if(msg.role !== 'user' && msg.reasoning){
