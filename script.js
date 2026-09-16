@@ -3463,6 +3463,11 @@ async function enforceBiometricGate(){
   vv.addEventListener('scroll', scheduleApply);
   composerInput.addEventListener('focus', ()=> setTimeout(scheduleApply, 60));
   composerInput.addEventListener('blur', ()=> setTimeout(scheduleApply, 60));
+  // مهم: كمان نعيد الحساب كل مرة صندوق الكتابة نفسه بيكبر (سطر جديد أثناء
+  // الكتابة)، مش بس وقت فتح/قفل الكيبورد — عشان لو حصل أي فرق توقيت بين
+  // تمدد الصندوق وتحديث ارتفاع الكيبورد، الموضع يتصحح فورًا ولا يتحجب
+  // التولبار/زرار الإرسال تحت الكيبورد.
+  composerInput.addEventListener('input', scheduleApply);
 })();
 
 })();
