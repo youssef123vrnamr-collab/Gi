@@ -327,7 +327,7 @@ button:focus,button:focus-visible{outline:none;}
 .thinking-steps{
   display:flex;flex-direction:column;gap:9px;padding:13px 16px;background:var(--panel);
   border:1px solid var(--border);border-radius:14px;border-bottom-right-radius:4px;width:100%;box-sizing:border-box;
-  height:clamp(220px, 45vh, 420px);overflow-y:auto;overflow-x:hidden;
+  max-height:60vh;overflow-y:auto;overflow-x:hidden;transition:max-height .2s ease;
 }
 /* ============ غرف التفكير Full-width: لما الرسالة فيها خطوات تفكير أو غرفة تفكير عميق
    لايف، بنشيل قيد الـ max-width بتاع الرسائل (70%/92%) ونخليها تاخد عرض المنطقة
@@ -600,20 +600,30 @@ button:focus,button:focus-visible{outline:none;}
 .send-btn:disabled:not(.sending){opacity:.5;cursor:default;transform:none;}
 
 
-/* ============ غرفة التفكير العميق (Deep Thinking Room) — نفس تصميم فلك، بألوان محفوظات ============ */
+/* ============ غرفة التفكير العميق اللايف (الغرفة التانية) — مقفولة افتراضيًا ============
+   بتفضل مقفولة (بيبان بس سطر العنوان + سهم) لحد ما المستخدم يضغط على السهم
+   يفتحها بنفسه — النص بيتحدّث في الخلفية أول بأول حتى وهي مقفولة، وأول ما
+   تتفتح بنوريها "من أولها" (scrollTop=0) مش آخر حاجة اتكتبت. */
 .cosmos-deep-think-live{
   margin:.3rem 0 .5rem;background:var(--panel-raised);min-width:0;max-width:100%;box-sizing:border-box;
-  border:1px solid var(--accent-dim);border-radius:12px;padding:.7rem .85rem;
-  max-height:250px;height:clamp(220px, 45vh, 250px);display:flex;flex-direction:column;overflow-x:hidden;
+  border:1px solid var(--accent-dim);border-radius:12px;padding:.6rem .85rem;
+  display:flex;flex-direction:column;overflow-x:hidden;
 }
 .cosmos-deep-think-live-label{
-  display:flex;align-items:center;gap:.4rem;color:var(--accent);
-  font-size:.82rem;font-weight:600;margin-bottom:.35rem;flex-shrink:0;
+  display:flex;align-items:center;gap:.4rem;color:var(--accent);cursor:pointer;user-select:none;
+  font-size:.82rem;font-weight:600;flex-shrink:0;
 }
-.cosmos-deep-think-live-label i{color:var(--accent);}
+.cosmos-deep-think-live-label i.fa-brain{color:var(--accent);}
+.cosmos-deep-think-live-label span{flex:1;min-width:0;}
+.cosmos-deep-think-live-chevron{transition:transform .2s ease;font-size:.7rem;flex-shrink:0;color:var(--text-dim);}
+.cosmos-deep-think-live.open .cosmos-deep-think-live-chevron{transform:rotate(180deg);}
+.cosmos-deep-think-live-body{height:0;overflow:hidden;transition:height .25s ease;}
+.cosmos-deep-think-live.open .cosmos-deep-think-live-body{
+  height:clamp(160px, 40vh, 250px);margin-top:.45rem;
+}
 .cosmos-deep-think-live-text{
   direction:rtl;unicode-bidi:plaintext;color:var(--text-dim);min-width:0;
-  font-size:.82rem;line-height:1.6;overflow-y:auto;overflow-x:hidden;flex:1;min-height:0;
+  font-size:.82rem;line-height:1.6;overflow-y:auto;overflow-x:hidden;height:100%;
   white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;
 }
 .cosmos-stream-cursor{animation:cosmosBlink 1s step-start infinite;}

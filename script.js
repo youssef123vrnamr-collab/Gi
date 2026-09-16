@@ -2860,10 +2860,28 @@ function appendThinkingIndicator(firstStepLabel){
       let liveBox = wrap.querySelector('.cosmos-deep-think-live');
       if (!liveBox){
         liveBox = document.createElement('div');
-        liveBox.className = 'cosmos-deep-think-live';
+        liveBox.className = 'cosmos-deep-think-live'; // مقفولة افتراضيًا (من غير .open)
         liveBox.innerHTML =
-          '<div class="cosmos-deep-think-live-label"><i class="fas fa-brain"></i><span>بيفكر دلوقتي...</span></div>'+
-          '<div class="cosmos-deep-think-live-text"></div>';
+          '<div class="cosmos-deep-think-live-label" role="button" tabindex="0" aria-expanded="false">'+
+            '<i class="fas fa-brain"></i><span>بيفكر دلوقتي...</span>'+
+            '<i class="fas fa-chevron-down cosmos-deep-think-live-chevron"></i>'+
+          '</div>'+
+          '<div class="cosmos-deep-think-live-body"><div class="cosmos-deep-think-live-text"></div></div>';
+        const labelEl = liveBox.querySelector('.cosmos-deep-think-live-label');
+        const toggleLive = ()=>{
+          const opening = !liveBox.classList.contains('open');
+          liveBox.classList.toggle('open');
+          labelEl.setAttribute('aria-expanded', opening ? 'true' : 'false');
+          if (opening){
+            // أول ما تتفتح، نورّي النص من أوله مش من آخر حاجة اتكتبت لحد دلوقتي
+            requestAnimationFrame(()=>{
+              const textEl = liveBox.querySelector('.cosmos-deep-think-live-text');
+              if (textEl) textEl.scrollTop = 0;
+            });
+          }
+        };
+        labelEl.addEventListener('click', toggleLive);
+        labelEl.addEventListener('keydown', (e)=>{ if (e.key==='Enter' || e.key===' '){ e.preventDefault(); toggleLive(); } });
         wrap.appendChild(liveBox);
       }
       liveBox.querySelector('.cosmos-deep-think-live-text').textContent = textToRender;
