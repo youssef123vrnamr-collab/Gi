@@ -791,7 +791,7 @@ button:focus,button:focus-visible{outline:none;}
 .load-older-messages-btn:disabled{opacity:.6;cursor:default;}
 
 @media (max-width:760px){
-  #sidebar{position:fixed;top:0;bottom:0;right:0;z-index:20;box-shadow:-8px 0 24px rgba(0,0,0,.35);}
+  #sidebar{position:fixed;top:0;bottom:0;right:0;z-index:50;box-shadow:-8px 0 24px rgba(0,0,0,.35);}
   #sidebar.collapsed{margin-right:-270px;}
   #sidebar:not(.collapsed){margin-right:0;}
   .icon-btn{display:block;}
