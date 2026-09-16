@@ -343,6 +343,102 @@ const CODE_LABEL_MAP = { html:'HTML', htm:'HTML', css:'CSS', scss:'SCSS', js:'JS
 const CODE_NAME_MAP  = { html:'index', css:'style', js:'script', jsx:'app', ts:'app', json:'data', py:'main', sql:'query', sh:'script', c:'main', cpp:'main', java:'Main', php:'index', rb:'main', go:'main', md:'readme' };
 const CODE_HLJS_MAP  = { html:'xml', htm:'xml', css:'css', scss:'scss', js:'javascript', javascript:'javascript', jsx:'javascript', ts:'typescript', typescript:'typescript', json:'json', py:'python', python:'python', sql:'sql', sh:'bash', bash:'bash', shell:'bash', c:'c', cpp:'cpp', java:'java', php:'php', rb:'ruby', ruby:'ruby', go:'go', yaml:'yaml', yml:'yaml', md:'markdown' };
 
+/* ============ محرك تشغيل الكود (أي لغة) ============
+   1) HTML/XML → بيتحط جوه iframe (sandbox) حقيقي، وبيتقرا فيه أي خطأ عن طريق
+      جسر بسيط (window.onerror + console.error) بيبعت الأخطاء لبره الـ iframe.
+   2) أي لغة تانية (Python/C/C++/Java/PHP/Ruby/Go/Bash/SQL...) → بتتبعت لـ
+      Piston (emkc.org) وهي API عامة ومجانية لتشغيل كود حقيقي بأمان على السيرفر
+      بتاعها، وبترجع stdout/stderr فعليين — مش تخمين.
+   لغات زي CSS/JSON/YAML/Markdown مالهاش معنى "تشغيل" فعلي، فبترجع ok:null
+   (يعني "مش قابل للتقييم" مش "فيه خطأ"). */
+const PISTON_LANG_MAP = {
+  py:'python', python:'python', ts:'typescript', typescript:'typescript',
+  c:'c', cpp:'cpp', java:'java', php:'php', rb:'ruby', ruby:'ruby', go:'go',
+  sh:'bash', bash:'bash', shell:'bash', sql:'sqlite3'
+};
+const PISTON_VERSION_HINT = { python:'3.10.0', typescript:'5.0.3', c:'10.2.0', cpp:'10.2.0', java:'15.0.2', php:'8.2.3', ruby:'3.0.1', go:'1.16.2', bash:'5.2.0', sqlite3:'3.36.0' };
+
+async function runViaPiston(pistonLang, code){
+  try{
+    const res = await fetchWithRetry('https://emkc.org/api/v2/piston/execute', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ language: pistonLang, version: PISTON_VERSION_HINT[pistonLang] || '*', files:[{ content: code }] }),
+      signal: requestSignal(20000)
+    }, 1);
+    const data = await res.json();
+    const run = (data && data.run) || {};
+    const compile = data && data.compile;
+    const stderr = ((compile && compile.stderr) || '') + (run.stderr || '');
+    const ok = !stderr.trim() && (run.code === 0 || run.code == null);
+    return { ok, stdout: run.stdout || '', stderr: stderr.trim() || (run.signal ? ('العملية اتقفلت بإشارة: '+run.signal) : '') };
+  } catch(e){
+    if (isAbortError(e)) throw e;
+    return { ok:null, stdout:'', stderr:'تعذّر الاتصال بخدمة تشغيل الأكواد دلوقتي (' + (e.message||e) + ')' };
+  }
+}
+
+// ── اختبار HTML/JS جوه iframe معزول (sandbox)، بجسر بسيط بيوصّل أي خطأ فعلي
+//    (onerror / console.error) من جوه الـ iframe لبرّه. لو visible=true بيفضل
+//    ظاهر للمستخدم (معاينة حقيقية)، ولو false بيتشال فورًا بعد الاختبار
+//    (ده اللي بيستخدمه التصحيح التلقائي في الخلفية) ──
+function runHtmlInIframe(htmlDoc, opts){
+  opts = opts || {};
+  return new Promise((resolve)=>{
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts allow-modals');
+    if (opts.visible){
+      iframe.className = 'code-run-iframe';
+    } else {
+      iframe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:800px;height:600px;';
+    }
+    const errors = [];
+    let settled = false;
+    window.__iframeErrorSink = window.__iframeErrorSink || {};
+    const sinkId = 'sink' + Date.now() + Math.random().toString(36).slice(2);
+    window.__iframeErrorSink[sinkId] = (msg)=> errors.push(msg);
+    const bridge = '<script>window.onerror=function(m,s,l){try{parent.__iframeErrorSink["'+sinkId+'"]("خطأ: "+m+" (سطر "+l+")");}catch(e){}};'
+      + 'var _ce=console.error;console.error=function(){try{_ce.apply(console,arguments);}catch(e){}try{parent.__iframeErrorSink["'+sinkId+'"](Array.prototype.slice.call(arguments).join(" "));}catch(e){}};</'+'script>';
+    iframe.srcdoc = bridge + htmlDoc;
+    document.body.appendChild(iframe);
+    const finish = ()=>{
+      if (settled) return; settled = true;
+      delete window.__iframeErrorSink[sinkId];
+      if (!opts.visible) iframe.remove();
+      resolve({ ok: errors.length===0, stdout:'', stderr: errors.join('\n'), iframeEl: opts.visible ? iframe : null });
+    };
+    setTimeout(finish, opts.visible ? 2500 : 1800);
+  });
+}
+
+function isWebLang(l){ return l==='html' || l==='htm' || l==='xml'; }
+function isSkippedLang(l){ return l==='css' || l==='scss' || l==='json' || l==='yaml' || l==='yml' || l==='md' || l===''; }
+
+// ── نقطة الدخول الموحّدة: بتاخد اللغة والكود وترجع { ok, stdout, stderr }.
+//    ok=true (شغال صح) / ok=false (فيه خطأ فعلي) / ok=null (اللغة دي مالهاش
+//    معنى "تشغيل"، أو تعذّر الاختبار — منعتبرهاش خطأ في الحالتين) ──
+async function runAnyCode(lang, code, visible){
+  const l = (lang||'').toLowerCase().trim();
+  if (isSkippedLang(l)) return { ok:null, stdout:'', stderr:'' };
+  if (isWebLang(l) || (l==='js' || l==='javascript') || /<html[\s>]/i.test(code)){
+    const isFullPage = /<html[\s>]/i.test(code);
+    const doc = isFullPage ? code
+      : (l==='js' || l==='javascript')
+        ? '<!DOCTYPE html><html><head></head><body><script>'+code+'</'+'script></body></html>'
+        : '<!DOCTYPE html><html><head></head><body>'+code+'</body></html>';
+    return runHtmlInIframe(doc, { visible: !!visible });
+  }
+  const pistonLang = PISTON_LANG_MAP[l];
+  if (!pistonLang) return { ok:null, stdout:'', stderr:'' };
+  return runViaPiston(pistonLang, code);
+}
+function extractCodeBlocksFromText(text){
+  const blocks = [];
+  const re = /```([a-zA-Z0-9]*)\n?([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text||''))) blocks.push({ lang:(m[1]||'').trim(), code:m[2].replace(/\n$/,'') });
+  return blocks;
+}
+
 function buildCodeFileCard(lang, code){
   const gid = 'cg' + (++_codeGidCounter) + '_' + Date.now();
   window.__codeGroups[gid] = code;
@@ -353,7 +449,7 @@ function buildCodeFileCard(lang, code){
   const filename = baseName + '.' + ext;
   const title = baseName.charAt(0).toUpperCase() + baseName.slice(1);
   window.__codeMeta = window.__codeMeta || {};
-  window.__codeMeta[gid] = { filename, title, label, hljsLang: CODE_HLJS_MAP[l] || l || 'plaintext' };
+  window.__codeMeta[gid] = { filename, title, label, hljsLang: CODE_HLJS_MAP[l] || l || 'plaintext', origLang: l };
   // ── بطاقة بمقاس ثابت دايمًا (نفس الشكل/الطول/العرض) بغض النظر عن طول الكود —
   //    الضغط عليها بيفتح الكود كامل في نافذة منفصلة، مش بيوسّع جوه الشات ──
   return '<div class="code-file-card" data-gid="'+gid+'" onclick="openCodeFileModal(\''+gid+'\')" '
@@ -376,12 +472,16 @@ function buildCodeSnippetCard(lang, code){
   const l = (lang||'').toLowerCase().trim();
   const label = CODE_LABEL_MAP[l] || (l ? l.toUpperCase() : 'TXT');
   const hljsLang = CODE_HLJS_MAP[l] || l || 'plaintext';
+  window.__codeMeta = window.__codeMeta || {};
+  window.__codeMeta[gid] = { origLang: l };
   return '<div class="code-snippet-card" data-gid="'+gid+'">'
     + '<div class="code-snippet-header">'
     + '<span class="code-snippet-lang" dir="ltr">'+label+'</span>'
+    + '<button type="button" class="code-snippet-run-btn" title="تشغيل" onclick="runCodeSnippet(\''+gid+'\',this)"><i class="fas fa-play"></i></button>'
     + '<button type="button" class="code-snippet-copy-btn" title="نسخ" onclick="copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
     + '</div>'
     + '<div class="code-snippet-body"><pre><code class="hljs language-'+hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
+    + '<div class="code-run-output" id="run-out-'+gid+'" style="display:none;"></div>'
     + '</div>';
 }
 // ── معيار الاختيار بين الكارت المصغّر (Snippet) والكارت الكامل (File):
@@ -404,11 +504,13 @@ window.openCodeFileModal = function(gid){
     + '<div class="code-modal-header">'
     + '<div class="code-modal-title" dir="ltr">'+meta.filename+'</div>'
     + '<div class="code-modal-actions">'
+    + '<button type="button" class="code-modal-btn code-modal-run-btn" title="تشغيل" onclick="runCodeInModal(\''+gid+'\')"><i class="fas fa-play"></i><span>تشغيل</span></button>'
     + '<button type="button" class="code-modal-btn" title="نسخ" onclick="copyCodeFile(\''+gid+'\',this)"><i class="fas fa-copy"></i></button>'
     + '<button type="button" class="code-modal-btn" title="تنزيل" onclick="downloadCodeFile(\''+gid+'\',\''+meta.filename+'\')"><i class="fas fa-download"></i></button>'
     + '<button type="button" class="code-modal-btn" title="إغلاق" onclick="closeCodeModal(\''+gid+'\')"><i class="fas fa-times"></i></button>'
     + '</div></div>'
     + '<div class="code-modal-body"><pre><code class="hljs language-'+meta.hljsLang+'">'+escapeHtml(code)+'</code></pre></div>'
+    + '<div class="code-run-output" id="run-out-'+gid+'" style="display:none;"></div>'
     + '<div class="code-rate-bar"><span class="code-rate-label">الكود ده عجبك؟</span>'
     + '<button type="button" class="code-rate-btn code-rate-good" onclick="rateCodeGood(\''+gid+'\',this)"><i class="fas fa-thumbs-up"></i></button>'
     + '<button type="button" class="code-rate-btn code-rate-bad" onclick="rateCodeBad(\''+gid+'\',this)"><i class="fas fa-thumbs-down"></i></button>'
@@ -420,6 +522,46 @@ window.openCodeFileModal = function(gid){
 window.closeCodeModal = function(gid){
   const overlay = document.querySelector('.code-modal-overlay[data-gid="'+gid+'"]');
   if (overlay) overlay.remove();
+};
+
+// ── عرض نتيجة التشغيل (نجاح/خطأ + stdout/stderr، أو معاينة حية لو HTML) ──
+function renderRunOutput(outEl, lang, result){
+  outEl.style.display = 'block';
+  if (result.ok === null){
+    outEl.innerHTML = '<div class="code-run-status warn"><i class="fas fa-circle-info"></i> اللغة دي مالهاش "تشغيل" مباشر (أو تعذّر الوصول لخدمة التشغيل دلوقتي).</div>'
+      + (result.stderr ? '<pre class="code-run-stderr">'+escapeHtml(result.stderr)+'</pre>' : '');
+    return;
+  }
+  const statusHtml = result.ok
+    ? '<div class="code-run-status ok"><i class="fas fa-circle-check"></i> اتنفّذ من غير أي خطأ</div>'
+    : '<div class="code-run-status err"><i class="fas fa-triangle-exclamation"></i> فيه خطأ وقت التشغيل</div>';
+  const previewHtml = result.iframeEl ? '' : ''; // الـ iframe بيتحط مباشرة لو موجود (شوف تحت)
+  const stdoutHtml = result.stdout ? '<div class="code-run-label">الناتج (stdout):</div><pre class="code-run-stdout">'+escapeHtml(result.stdout)+'</pre>' : '';
+  const stderrHtml = result.stderr ? '<div class="code-run-label">الخطأ:</div><pre class="code-run-stderr">'+escapeHtml(result.stderr)+'</pre>' : '';
+  outEl.innerHTML = statusHtml + stdoutHtml + stderrHtml;
+  if (result.iframeEl) outEl.appendChild(result.iframeEl);
+}
+
+window.runCodeInModal = async function(gid){
+  const code = window.__codeGroups[gid];
+  const meta = (window.__codeMeta || {})[gid];
+  const outEl = document.getElementById('run-out-'+gid);
+  if (!code || !meta || !outEl) return;
+  outEl.style.display = 'block';
+  outEl.innerHTML = '<div class="code-run-status"><i class="fas fa-spinner fa-spin"></i> بيشغّل الكود...</div>';
+  const result = await runAnyCode(meta.origLang, code, true);
+  renderRunOutput(outEl, meta.origLang, result);
+};
+window.runCodeSnippet = async function(gid, btnEl){
+  const code = window.__codeGroups[gid];
+  const meta = (window.__codeMeta || {})[gid];
+  const card = btnEl.closest('.code-snippet-card');
+  const outEl = card && card.querySelector('#run-out-'+gid);
+  if (!code || !meta || !outEl) return;
+  outEl.style.display = 'block';
+  outEl.innerHTML = '<div class="code-run-status"><i class="fas fa-spinner fa-spin"></i> بيشغّل الكود...</div>';
+  const result = await runAnyCode(meta.origLang, code, true);
+  renderRunOutput(outEl, meta.origLang, result);
 };
 window.copyCodeFile = function(gid, btnEl){
   const code = window.__codeGroups[gid];
@@ -1157,6 +1299,37 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
     throw err;
   }
   throw new Error("كل مزوّدي الذكاء الاصطناعي فشلوا");
+}
+
+/* ============ المراجعة الذاتية: بيشغّل الكود اللي كتبه فعليًا ويصلّح لوحده ============
+   بعد ما الموديل يكتب الرد، لو فيه كود جواه، بنشغّله فعليًا (iframe للـ
+   HTML/JS، Piston API لأي لغة تانية) من غير ما المستخدم يشوف حاجة. لو فيه
+   خطأ حقيقي، بنبعت الخطأ نفسه للموديل ونطلب منه يصلّحه، ونعرض "🔧 جاري
+   تصحيح الأخطاء..." في خطوات التفكير، ونكرر لحد ما ينجح أو نوصل لحد أقصى
+   آمن من المحاولات (عشان منفضلش نستهلك توكنز/وقت من غير نهاية لو الكود
+   محتاج حاجة مش قادرين نوفرها فعليًا، زي ملف خارجي أو اتصال إنترنت خاص) ──
+const MAX_SELF_FIX_ATTEMPTS = 6;
+async function selfCheckAndFixCode(reply, history, onReasoningDelta, onStep, onContentDelta){
+  let current = reply;
+  let runningHistory = history;
+  for (let i = 0; i < MAX_SELF_FIX_ATTEMPTS; i++){
+    const blocks = extractCodeBlocksFromText(current.text);
+    if (!blocks.length) return current; // مفيش كود أصلاً، مفيش داعي لأي اختبار
+    let failed = null;
+    for (const b of blocks){
+      const result = await runAnyCode(b.lang, b.code, false);
+      if (result.ok === false){ failed = { block:b, result }; break; }
+    }
+    if (!failed) return current; // كل الكود اللي اتقدر يتفحص شغال صح
+    if (onStep) onStep('🔧 لقى خطأ لما شغّل الكود، جاري تصحيح الأخطاء... (محاولة '+(i+2)+')');
+    runningHistory = runningHistory.concat([
+      { role:'assistant', text: current.text },
+      { role:'user', text: 'شغّلت الكود ده فعليًا وطلع الخطأ ده:\n\n' + failed.result.stderr.slice(0,2000)
+          + '\n\nصلّح الخطأ ده وابعت الكود كامل تاني من غير أي اختصار أو حذف (ماتلخصش، اكتب الملف/الكود كله من الأول للآخر بعد التصحيح).' }
+    ]);
+    current = await getAIResponse(runningHistory, onReasoningDelta, onStep, onContentDelta);
+  }
+  return current; // خلصت المحاولات المسموحة — بنرجّع آخر نسخة حتى لو لسه فيها مشكلة
 }
 
 /* ============ تحليل الصور عبر Gemini Vision (زي فلك بالظبط) ============
@@ -2453,6 +2626,7 @@ function appendThinkingIndicator(firstStepLabel){
   const stepsEl = wrap.querySelector('.thinking-steps');
 
   function renderStep(text){
+    const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
     const prevActive = stepsEl.querySelector('.thinking-step.active');
     if (prevActive){
       prevActive.classList.replace('active','done');
@@ -2464,7 +2638,7 @@ function appendThinkingIndicator(firstStepLabel){
     step.querySelector('.thinking-step-text').textContent = text;
     stepsEl.appendChild(step);
     stepsEl.scrollTop = stepsEl.scrollHeight;
-    if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (wrap.isConnected && wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   renderStep(firstStepLabel || 'بيقرا رسالتك...');
@@ -2492,6 +2666,9 @@ function appendThinkingIndicator(firstStepLabel){
     requestAnimationFrame(()=>{
       const textToRender = __pendingReasoningText;
       __pendingReasoningText = null;
+      // ── بنقيس القرب من آخر الصفحة قبل أي تعديل في الـ DOM، بنفس منطق
+      //    typewriterReveal بالظبط، عشان القياس يبقى دقيق ──
+      const wasNearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
       let liveBox = wrap.querySelector('.cosmos-deep-think-live');
       if (!liveBox){
         liveBox = document.createElement('div');
@@ -2502,7 +2679,9 @@ function appendThinkingIndicator(firstStepLabel){
         wrap.appendChild(liveBox);
       }
       liveBox.querySelector('.cosmos-deep-think-live-text').textContent = textToRender;
-      if (wrap.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+      // ── بنسكرول تلقائي بس لو المستخدم كان أصلاً قريب من آخر الصفحة —
+      //    لو طالع بيقرا رسايل قديمة، مبنجبروش نرجّعه لتحت في كل فريم ──
+      if (wrap.isConnected && wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
     });
   };
   return wrap;
@@ -2756,7 +2935,8 @@ composer.addEventListener('submit', async (e)=>{
         }
       };
 
-      const reply = await getAIResponse(history, onReasoningDelta, onStep, onContentDelta);
+      let reply = await getAIResponse(history, onReasoningDelta, onStep, onContentDelta);
+      reply = await selfCheckAndFixCode(reply, history, onReasoningDelta, onStep, onContentDelta);
       thinkingEl._clearStage();
       const replyTs = Date.now();
       const assistantMsg = { role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs, question: text };

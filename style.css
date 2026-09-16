@@ -701,6 +701,42 @@ button:focus,button:focus-visible{outline:none;}
 .load-older-messages-btn:hover{color:var(--text);border-color:var(--accent-dim);}
 .load-older-messages-btn:disabled{opacity:.6;cursor:default;}
 
+/* ============ تشغيل الكود (Run) — زرار + منطقة نتيجة/معاينة ============ */
+.code-modal-run-btn{
+  width:auto !important;padding:0 .7rem;gap:.35rem;font-size:12.5px;font-weight:700;
+  color:var(--accent) !important;
+}
+.code-modal-run-btn:hover{background:rgba(255,255,255,.08);}
+.code-snippet-run-btn{
+  width:26px;height:26px;border-radius:7px;border:none;background:transparent;
+  color:var(--accent);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;transition:background .15s,color .15s;
+}
+.code-snippet-run-btn:hover{background:rgba(255,255,255,.08);}
+.code-run-output{
+  border-top:1px solid var(--border);background:#0d0c0a;padding:.7rem .85rem;
+  max-height:min(50vh,420px);overflow:auto;
+}
+.code-run-status{
+  display:flex;align-items:center;gap:.4rem;font-size:12.5px;font-weight:700;margin-bottom:.5rem;
+  color:var(--text-dim);
+}
+.code-run-status.ok{color:#7ba87a;}
+.code-run-status.err{color:var(--error);}
+.code-run-status.warn{color:#c9a24b;}
+.code-run-label{font-size:11px;color:var(--text-dim);margin:.4rem 0 .2rem;}
+.code-run-stdout,.code-run-stderr{
+  margin:0;padding:.6rem .7rem;border-radius:8px;direction:ltr;text-align:left;
+  font-family:'Consolas','Courier New',monospace;font-size:12px;line-height:1.55;
+  white-space:pre-wrap;word-break:break-word;
+}
+.code-run-stdout{background:rgba(255,255,255,.04);color:var(--text);}
+.code-run-stderr{background:rgba(224,86,86,.08);color:#e08a8a;}
+.code-run-iframe{
+  width:100%;height:min(60vh,420px);border:1px solid var(--border);border-radius:10px;
+  background:#fff;margin-top:.5rem;
+}
+
 @media (max-width:760px){
   #sidebar{position:fixed;top:0;bottom:0;right:0;z-index:20;box-shadow:-8px 0 24px rgba(0,0,0,.35);}
   #sidebar.collapsed{margin-right:-270px;}
