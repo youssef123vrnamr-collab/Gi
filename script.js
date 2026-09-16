@@ -1815,13 +1815,30 @@ messagesEl.addEventListener('click', (e)=>{
 });
 
 // ============ سكرول تلقائي "لايف" وراء رد الذكاء + زرار "روح لتحت" ============
-// autoFollowActive: لما مفعّل، الشاشة بتتابع نمو الرد (خطوات التفكير/الكتابة)
-// تدريجيًا وهي بتكبر، لكن سايبة هامش فاضي بسيط تحت (SCROLL_FOLLOW_GAP) عشان
-// يبان فيه خلفية الشاشة تحت غرفة التفكير بدل ما يلزق بالظبط في آخر سطر —
+// autoFollowActive: لما مفعّل، حلقة followLoopStep تحت شغالة كل فريم وبتقرّب
+// scrollTop تدريجيًا (easing، مش قفزة واحدة فجأة) من الهدف — وهو آخر حاجة
+// ظهرت ناقص هامش بسيط (SCROLL_FOLLOW_GAP) عشان تبان خلفية الشاشة تحت غرفة
+// التفكير بدل ما يلزق بالظبط في آخر سطر. دي بالظبط نفس فكرة السكرول الناعم
+// اللي بتشوفه هنا وهو بيتابع رد كلود وهو بيتكتب: مش قفزة فورية كل ما سطر
+// جديد يتضاف، لكن حركة مستمرة وناعمة كل فريم لحد ما توصل لآخر حاجة ظهرت.
 // ولو المستخدم سحب بإيده لفوق قاصدًا (عشان يقرا حاجة قديمة)، بنوقف المتابعة
 // التلقائية فورًا ونوريله زرار عائم يرجّعه لتحت لما يحب.
 const SCROLL_FOLLOW_GAP = 90;
+const SCROLL_FOLLOW_EASE = 0.18; // كل ما القيمة أكبر، اللحاق أسرع؛ 0.18 قريبة من إحساس السكرول الناعم في واجهات الشات المعروفة
 let autoFollowActive = false;
+
+(function runFollowLoop(){
+  if (autoFollowActive){
+    const maxScroll = messagesEl.scrollHeight - messagesEl.clientHeight;
+    const target = Math.max(0, maxScroll - SCROLL_FOLLOW_GAP);
+    const diff = target - messagesEl.scrollTop;
+    // فرق بسيط جدًا (أقل من بكسل) بنقفله دفعة واحدة بدل ما يفضل يهتز للأبد من غير ما يوصل بالظبط
+    if (Math.abs(diff) > 0.5) messagesEl.scrollTop += diff * SCROLL_FOLLOW_EASE;
+    else if (diff !== 0) messagesEl.scrollTop = target;
+  }
+  requestAnimationFrame(runFollowLoop);
+})();
+
 const scrollBottomBtn = document.createElement('button');
 scrollBottomBtn.type = 'button';
 scrollBottomBtn.id = 'scroll-bottom-btn';
@@ -1830,9 +1847,6 @@ scrollBottomBtn.setAttribute('aria-label', 'روح لآخر الشات');
 scrollBottomBtn.innerHTML = '<i class="fas fa-arrow-down"></i>';
 document.getElementById('chat-main').appendChild(scrollBottomBtn);
 
-function isNearChatBottom(){
-  return (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 40;
-}
 function updateScrollBottomBtn(){
   const farFromBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) > 160;
   scrollBottomBtn.classList.toggle('visible', farFromBottom);
@@ -1843,7 +1857,6 @@ messagesEl.addEventListener('wheel', ()=>{ autoFollowActive = false; }, { passiv
 messagesEl.addEventListener('touchmove', ()=>{ autoFollowActive = false; }, { passive:true });
 scrollBottomBtn.addEventListener('click', ()=>{
   autoFollowActive = true;
-  messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior:'smooth' });
 });
 const composer = document.getElementById('composer');
 const composerInput = document.getElementById('composer-input');
@@ -2727,19 +2740,11 @@ function renderFinalAssistantMessage(wrap, msg){
   }
 }
 
-// ── سكرول ذكي: يتبع لآخر حاجة اتضافت بس لو المستخدم أصلاً قريّب من آخر
-//    الشات (يعني مش قاعد يقرا حاجة فوق بإيده)، بدل ما يشد الشاشة لتحت
-//    بالقوة كل ما حاجة جديدة تتضاف (وده اللي كان بيخلي رسالة المستخدم
-//    تختفي فوق الشاشة أول ما الرد يبدأ يتولّد تحتها مباشرة) ──
-// ── سكرول ذكي: بيتابع نمو الرد تدريجيًا (خطوة بخطوة) طول ما وضع المتابعة
-//    التلقائية مفعّل، وسايب هامش فاضي بسيط تحت (مش لازق في آخر سطر بالظبط)
-//    عشان يبان إحساس إن الشاشة بتتحرك مع الرد من غير ما "تلزق" في نهايته ──
-function smartFollowScroll(){
-  if (!autoFollowActive) return;
-  const maxScroll = messagesEl.scrollHeight - messagesEl.clientHeight;
-  const target = Math.max(0, maxScroll - SCROLL_FOLLOW_GAP);
-  if (target > messagesEl.scrollTop) messagesEl.scrollTop = target;
-}
+// ── سكرول ذكي: بقت الحلقة المستمرة (runFollowLoop) فوق هي اللي بتتابع نمو
+//    الرد كل فريم بحركة ناعمة، فمعدش محتاجين نسكرول يدويًا من هنا. سايبين
+//    الدالة موجودة (فاضية) عشان أي استدعاء ليها في أماكن تانية من الكود
+//    يفضل شغال من غير أي تعديل إضافي أو أخطاء ──
+function smartFollowScroll(){}
 
 function appendMessageBubble(msg, opts){
   opts = opts || {};
