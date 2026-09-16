@@ -289,6 +289,7 @@ button:focus,button:focus-visible{outline:none;}
   width:20px;height:20px;border-radius:50%;background:var(--accent);color:#1b1a17;
   display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;
 }
+.msg-avatar svg{width:12px;height:12px;fill:currentColor;display:block;}
 .msg-sender-name{font-size:12.5px;font-weight:700;color:var(--text-dim);}
 .msg-time{font-size:11px;color:var(--text-dim);margin-top:4px;padding:0 3px;}
 
@@ -337,8 +338,9 @@ button:focus,button:focus-visible{outline:none;}
   box-shadow:0 0 0 0 rgba(216,163,76,.5);animation:stepPulseRing 1.4s infinite;
 }
 .thinking-step.active .thinking-step-icon .infinity-glyph{
-  font-size:13px;font-weight:700;line-height:1;display:inline-block;
+  font-size:13px;font-weight:700;line-height:1;display:inline-flex;color:inherit;
 }
+.infinity-glyph svg{width:13px;height:13px;display:block;fill:currentColor;}
 .thinking-step.done .thinking-step-icon{background:transparent;color:var(--accent-dim);}
 @keyframes stepPulseRing{
   0%{box-shadow:0 0 0 0 rgba(216,163,76,.45);}

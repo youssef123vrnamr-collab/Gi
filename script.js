@@ -66,6 +66,21 @@ function requestSignal(extraMs){
   const timeoutSignal = (typeof AbortSignal.timeout === 'function') ? AbortSignal.timeout(extraMs || 30000) : null;
   return combineSignals([currentAbortController ? currentAbortController.signal : null, timeoutSignal]);
 }
+// ── مهلة خمول (Idle Timeout) للطلبات اللي بتستريم (تفكير عميق + رد):
+//    مهلة إجمالية ثابتة على كل الطلب (زي requestSignal) بتقفل الاتصال حتى
+//    لو لسه بيوصل منه بيانات فعليًا، وده اللي كان بيحصل مع تفكير عميق
+//    بياخد وقت أطول من المهلة — النظام كان بيوقف العملية فجأة رغم إنها شغالة.
+//    هنا بدل كده: بنوقف الطلب بس لو فعلاً "سكت" ومفيش ولا بايت جديد وصل
+//    خلال مدة معينة، وكل جزء جديد بيوصل من الستريم بيصفّر العداد من الأول ──
+function createIdleAbortSignal(idleMs){
+  const controller = new AbortController();
+  let timer = setTimeout(()=>controller.abort(new DOMException('استغرق الاتصال وقت طويل من غير رد', 'TimeoutError')), idleMs);
+  return {
+    signal: combineSignals([currentAbortController ? currentAbortController.signal : null, controller.signal]),
+    bump(){ clearTimeout(timer); timer = setTimeout(()=>controller.abort(new DOMException('استغرق الاتصال وقت طويل من غير رد', 'TimeoutError')), idleMs); },
+    clear(){ clearTimeout(timer); }
+  };
+}
 // ── إعادة محاولة تلقائية بتأخير متزايد (Exponential Backoff): بتتعمل بس على
 //    فشل الاتصال الأولي (قبل ما البث يبدأ) — لو الفشل حصل بعد ما البث بدأ
 //    والنص اتجمّع جزء منه، بنكمل من نفس النقطة (Auto-Resume) مش بنعيد الاتصال ──
@@ -931,6 +946,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
     for (let i=0;i<maxAttempts;i++){
       const key = GroqKeyPool.next();
       if (!key) break;
+      const idle = createIdleAbortSignal(45000);
       try{
         const res = await fetchWithRetry("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
@@ -939,7 +955,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
             model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
             stream: true, reasoning_effort: 'high', reasoning_format: 'parsed', stream_options: { include_usage: true }
           }),
-          signal: requestSignal(60000)
+          signal: idle.signal
         });
         if (!res.ok || !res.body){
           GroqKeyPool.report(key, res.status !== 429);
@@ -954,6 +970,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
           while (true){
             const { done, value } = await reader.read();
             if (done) break;
+            idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop();
@@ -989,6 +1006,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
         roundResult = { text: full, reasoning: reasoningPart, finishReason, usedTokens };
         break;
       } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); if (isAbortError(e)) throw e; }
+      finally{ idle.clear(); }
     }
     if (!roundResult || !roundResult.text) break;
     fullTotal += roundResult.text;
@@ -1093,11 +1111,13 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
         let messages = baseMessages.slice();
         let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+          const idle = createIdleAbortSignal(45000);
+          try{
           const r = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
             body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' }, usage: { include: true } }),
-            signal: requestSignal(60000)
+            signal: idle.signal
           });
           if (!r.ok || !r.body){
             OpenRouterKeyPool.report(key, r.status !== 429);
@@ -1112,6 +1132,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
             while (true){
               const { done, value } = await reader.read();
               if (done) break;
+              idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split('\n');
               buffer = lines.pop();
@@ -1150,6 +1171,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
             { role:'assistant', content: txt },
             { role:'user', content: CONTINUE_PROMPT }
           ]);
+          } finally{ idle.clear(); }
         }
         if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
       } catch(e){ if (isAbortError(e)) throw e; console.warn("OpenRouter call failed", e); }
@@ -1176,11 +1198,13 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
         let messages = baseMessages.slice();
         let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
         for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+          const idle = createIdleAbortSignal(45000);
+          try{
           const r = await fetchWithRetry("https://ai-gateway.vercel.sh/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
             body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, stream_options: { include_usage: true } }),
-            signal: requestSignal(60000)
+            signal: idle.signal
           });
           if (!r.ok || !r.body){
             VercelGatewayKeyPool.report(key, r.status !== 429);
@@ -1195,6 +1219,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
             while (true){
               const { done, value } = await reader.read();
               if (done) break;
+              idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split('\n');
               buffer = lines.pop();
@@ -1232,6 +1257,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
             { role:'assistant', content: txt },
             { role:'user', content: CONTINUE_PROMPT }
           ]);
+          } finally{ idle.clear(); }
         }
         if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
       } catch(e){ if (isAbortError(e)) throw e; console.warn("Vercel Gateway call failed", e); }
@@ -1271,7 +1297,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
       needsSearch = await classifyNeedsSearch(lastUserText);
     }
     if (needsSearch){
-      step('بيبحث في الإنترنت 🔎...');
+      step('بيبحث في الإنترنت...');
       const results = await performWebSearch(lastUserText);
       searchResultsBlock = buildSearchResultsBlock(results);
     }
@@ -1369,7 +1395,7 @@ async function selfCheckAndFixCode(reply, history, onReasoningDelta, onStep, onC
     const blocks = extractCodeBlocksFromText(current.text);
     if (!blocks.length) return current; // مفيش كود أصلاً، مفيش داعي لأي اختبار
 
-    if (onStep) onStep('🧪 بيشغّل الكود فعليًا عشان يتأكد إنه شغّال صح...');
+    if (onStep) onStep('بيشغّل الكود فعليًا عشان يتأكد إنه شغّال صح...');
     const failures = [];
     for (const b of blocks){
       const result = await runAnyCode(b.lang, b.code, false);
@@ -1379,7 +1405,7 @@ async function selfCheckAndFixCode(reply, history, onReasoningDelta, onStep, onC
     }
     if (!failures.length) return current; // كل الكود اللي اتقدر يتفحص شغال صح 100%
 
-    if (onStep) onStep('🔧 لقى ' + failures.length + ' خطأ فعلي، بيصلّح الكود... (محاولة ' + (i+2) + ')');
+    if (onStep) onStep('لقى ' + failures.length + ' خطأ فعلي، بيصلّح الكود... (محاولة ' + (i+2) + ')');
 
     // ── بنجمع كل الأخطاء الحقيقية اللي طلعت من كل كتل الكود مع بعض في
     //    رسالة واحدة، عشان الموديل يصلّحهم كلهم مرة واحدة بدل ما نلف
@@ -1397,7 +1423,7 @@ async function selfCheckAndFixCode(reply, history, onReasoningDelta, onStep, onC
   }
   // ── خلصت المحاولات المسموحة (سقف أمان بس، مش استسلام مبكر) — بنرجّع آخر
   //    نسخة اتصلحت مع تنبيه واضح إن فيه خطأ مستحيل الظروف الحالية تحله ──
-  if (onStep) onStep('⚠️ حاول يصلّح الكود عدد كبير من المرات، هيبعت آخر نسخة وصلها');
+  if (onStep) onStep('حاول يصلّح الكود عدد كبير من المرات، هيبعت آخر نسخة وصلها');
   return current;
 }
 
@@ -2610,7 +2636,7 @@ function appendMessageBubble(msg, opts){
   if(msg.role !== 'user'){
     const header = document.createElement('div');
     header.className = 'msg-header';
-    header.innerHTML = '<span class="msg-avatar">✦</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span>';
+    header.innerHTML = '<span class="msg-avatar">'+AI_AVATAR_SVG+'</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span>';
     wrap.appendChild(header);
   }
 
@@ -2698,11 +2724,29 @@ function appendMessageBubble(msg, opts){
    أيقونة "✓ خلصت"، والخطوة الشغالة دلوقتي بتاخد أيقونة تعبّر عن نوعها (بحث،
    رابط، مزوّد ذكاء اصطناعي...) بحلقة نابضة حواليها، بدل نقطة بسيطة واحدة
    لكل الأنواع — عشان الشكل يبان احترافي ومفهوم مش مجرد تحميل عام. */
+// ── أيقونات SVG بدل أي ايموجي: كل الأيقونات هنا بتستخدم fill="currentColor"
+//    عشان تورث اللون والحركة من الـ CSS بتاعة كل نوع خطوة (infinity-search،
+//    infinity-fix...) زي ما كان بيحصل بالظبط مع حرف "∞" قبل كده، من غير ما
+//    نضطر نلمس أي أنيميشن موجود ──
+const STEP_ICON_SVG = {
+  search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 5L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14"/></svg>',
+  link: '<svg viewBox="0 0 24 24"><path d="M3.9 12a5 5 0 0 1 5-5h4v2h-4a3 3 0 0 0 0 6h4v2h-4a5 5 0 0 1-5-5m6-1h4v2h-4zm5-4h4a5 5 0 0 1 0 10h-4v-2h4a3 3 0 0 0 0-6h-4z"/></svg>',
+  run: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+  fix: '<svg viewBox="0 0 24 24"><path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6l-3 3-4.3-4.3C.6 7.1 1 10.1 3 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.4-.4.4-1.1 0-1.4"/></svg>',
+  code: '<svg viewBox="0 0 24 24"><path d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6z"/></svg>',
+  retry: '<svg viewBox="0 0 24 24"><path d="M17.65 6.35A8 8 0 1 0 19.8 15h-2.1a6 6 0 1 1-1.4-6.9L13 11h7V4z"/></svg>',
+  prepare: '<svg viewBox="0 0 24 24"><path d="M12 2l1.8 5.4L19 9l-5.2 1.6L12 16l-1.8-5.4L5 9l5.2-1.6zM5 16l.9 2.7L8.5 19.5l-2.6.8L5 23l-.9-2.7-2.6-.8 2.6-.8zM19 15l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg>',
+  image: '<svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2M8.5 13.5l2.5 3 3.5-4.5 4.5 6H5z"/></svg>',
+  file: '<svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zm1 7V3.5L18.5 9z"/></svg>',
+  general: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>'
+};
+// ── أيقونة أفاتار المساعد (بدل نجمة ✦ اللي بعض الأجهزة بتعرضها كإيموجي ملوّن) ──
+const AI_AVATAR_SVG = '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2z"/></svg>';
 function stepKind(text){
-  if (/🔎|الإنترنت/.test(text)) return 'search';
+  if (/الإنترنت/.test(text)) return 'search';
   if (/رابط/.test(text)) return 'link';
-  if (/🧪|بيشغّل الكود فعليًا/.test(text)) return 'run';
-  if (/🔧|⚠️|بيصلّح الكود/.test(text)) return 'fix';
+  if (/بيشغّل الكود فعليًا/.test(text)) return 'run';
+  if (/بيصلّح الكود|يصلّح الكود/.test(text)) return 'fix';
   if (/كود/.test(text)) return 'code';
   if (/طريقة تانية/.test(text)) return 'retry';
   if (/بيجهّز الرد/.test(text)) return 'prepare';
@@ -2714,7 +2758,7 @@ function appendThinkingIndicator(firstStepLabel){
   const wrap = document.createElement('div');
   wrap.className = 'msg-wrap assistant';
   wrap.innerHTML =
-    '<div class="msg-header"><span class="msg-avatar">✦</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
+    '<div class="msg-header"><span class="msg-avatar">'+AI_AVATAR_SVG+'</span><span class="msg-sender-name">'+AI_DISPLAY_NAME+'</span></div>'+
     '<div class="thinking-steps"></div>';
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -2728,7 +2772,8 @@ function appendThinkingIndicator(firstStepLabel){
     }
     const step = document.createElement('div');
     step.className = 'thinking-step active';
-    step.innerHTML = '<span class="thinking-step-icon"><span class="infinity-glyph infinity-'+stepKind(text)+'">∞</span></span><span class="thinking-step-text"></span>';
+    const kind = stepKind(text);
+    step.innerHTML = '<span class="thinking-step-icon"><span class="infinity-glyph infinity-'+kind+'">'+(STEP_ICON_SVG[kind]||STEP_ICON_SVG.general)+'</span></span><span class="thinking-step-text"></span>';
     step.querySelector('.thinking-step-text').textContent = text;
     stepsEl.appendChild(step);
     stepsEl.scrollTop = stepsEl.scrollHeight;
