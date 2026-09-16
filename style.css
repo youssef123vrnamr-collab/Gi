@@ -338,9 +338,8 @@ button:focus,button:focus-visible{outline:none;}
   box-shadow:0 0 0 0 rgba(216,163,76,.5);animation:stepPulseRing 1.4s infinite;
 }
 .thinking-step.active .thinking-step-icon .infinity-glyph{
-  font-size:13px;font-weight:700;line-height:1;display:inline-flex;color:inherit;
+  font-size:13px;font-weight:700;line-height:1;display:inline-block;
 }
-.infinity-glyph svg{width:13px;height:13px;display:block;fill:currentColor;}
 .thinking-step.done .thinking-step-icon{background:transparent;color:var(--accent-dim);}
 @keyframes stepPulseRing{
   0%{box-shadow:0 0 0 0 rgba(216,163,76,.45);}

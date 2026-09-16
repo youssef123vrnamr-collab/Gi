@@ -21,6 +21,9 @@ const db = firebase.database();
 //    بيتربط بنفس الـ signal بتاعه، عشان ضغطة "إيقاف" توقف كل حاجة فورًا ──
 let currentAbortController = null;
 function isAbortError(e){ return e && e.name === 'AbortError'; }
+// ── أي إلغاء عمومًا (يدوي أو بسبب خمول) — الإشارة نفسها بقت "ميتة" فمفيش
+//    فايدة نعيد المحاولة بيها تاني، لازم ننتقل فورًا للخطوة اللي بعدها ──
+function isAnyAbortError(e){ return e && (e.name === 'AbortError' || e.name === 'TimeoutError'); }
 // ── بنفرّق بين إيقاف يدوي (المستخدم دوس زرار الإيقاف) وبين إلغاء تلقائي
 //    (واتشدوج/تايم آوت)، عشان الرسالة اللي بتظهر تكون واضحة وصح في الحالتين ──
 let __manualStopRequested = false;
@@ -92,7 +95,7 @@ async function fetchWithRetry(url, options, maxRetries){
       return await fetch(url, options);
     } catch(e){
       lastErr = e;
-      if (isAbortError(e)) throw e; // إيقاف يدوي أو Timeout — متكررش
+      if (isAnyAbortError(e)) throw e; // إيقاف يدوي أو خمول — الإشارة ماتت، منعيدش المحاولة بيها
       if (attempt === maxRetries) throw e;
       const delay = 500 * Math.pow(2, attempt); // 500ms, 1s, 2s...
       await new Promise(r=>setTimeout(r, delay));
@@ -1023,7 +1026,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
 }
 
 /* ============ خط الدفاع 2: Gemini ============ */
-async function callGeminiChat(historyMsgs, onReasoningDelta){
+async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
   if (!GeminiKeyPool.count()) return null;
   const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
   let contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
@@ -1032,18 +1035,52 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
 
   // ── بيحاول يجيب "التفكير" (thoughts) مع الرد لو الموديل بيدعمها، ولو الموديل
   //    رفض الإعداد ده (خطأ 400) بيعيد المحاولة فورًا بنفس المفتاح من غير
-  //    thinkingConfig، عشان الرد الأساسي مايتأثرش حتى لو التفكير مش مدعوم ──
-  async function attempt(key, withThinking){
+  //    thinkingConfig، عشان الرد الأساسي مايتأثرش حتى لو التفكير مش مدعوم.
+  //    بقت الآن Streaming حقيقي (SSE) بدل رد دفعة واحدة، عشان النص يظهر
+  //    لحظة بلحظة زي باقي المزوّدين، وعشان مهلة الخمول تقدر تتابع الاتصال ──
+  async function attempt(key, withThinking, onDelta){
     const genCfg = { temperature: 0.4, maxOutputTokens: 8192 };
     if (withThinking) genCfg.thinkingConfig = { includeThoughts: true };
-    const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg }),
-      signal: requestSignal(30000)
-    });
-    const data = await res.json();
-    return { ok: res.ok, status: res.status, data };
+    const idle = createIdleAbortSignal(45000);
+    try{
+      const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg }),
+        signal: idle.signal
+      });
+      if (!res.ok || !res.body) return { ok:false, status: res.status, answerText:'', thoughtText:'', finishReason:null, usedTokens:0 };
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '', answerText = '', thoughtText = '', finishReason = null, usedTokens = 0;
+      while (true){
+        const { done, value } = await reader.read();
+        if (done) break;
+        idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines){
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (!payload) continue;
+          try{
+            const evt = JSON.parse(payload);
+            if (evt.usageMetadata && evt.usageMetadata.totalTokenCount) usedTokens = evt.usageMetadata.totalTokenCount;
+            const cand = evt.candidates && evt.candidates[0];
+            if (!cand) continue;
+            if (cand.finishReason) finishReason = cand.finishReason;
+            const parts = (cand.content && cand.content.parts) || [];
+            parts.forEach(p=>{
+              if (!p || !p.text) return;
+              if (p.thought){ thoughtText += p.text; if (onReasoningDelta) onReasoningDelta(fullReasoning + thoughtText); }
+              else { answerText += p.text; if (onDelta) onDelta(answerText); }
+            });
+          } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+        }
+      }
+      return { ok:true, status: res.status, answerText, thoughtText, finishReason, usedTokens };
+    } finally { idle.clear(); }
   }
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
@@ -1052,21 +1089,16 @@ async function callGeminiChat(historyMsgs, onReasoningDelta){
       const key = GeminiKeyPool.next();
       if (!key) break;
       try{
-        let { ok, status, data } = await attempt(key, true);
-        if (!ok) { const retry = await attempt(key, false); ok = retry.ok; status = retry.status; data = retry.data; }
-        const cand = data && data.candidates && data.candidates[0];
-        const parts = (cand && cand.content && cand.content.parts) || [];
-        let answerText = '', thoughtText = '';
-        parts.forEach(p=>{ if (!p || !p.text) return; if (p.thought) thoughtText += p.text; else answerText += p.text; });
-        GeminiKeyPool.report(key, status !== 429);
-        if (round === 0){ round0TriedAny = true; if (status !== 429) round0AllWere429 = false; }
-        if (answerText){
-          if (thoughtText && onReasoningDelta) onReasoningDelta(fullReasoning + thoughtText);
-          const used = data && data.usageMetadata && data.usageMetadata.totalTokenCount;
-          roundText = answerText; roundReasoning = thoughtText; roundFinish = cand.finishReason || null; roundUsedTokens = used || 0;
+        const onDelta = (acc)=>{ if (onContentDelta) onContentDelta(fullTotal + acc); };
+        let r = await attempt(key, true, onDelta);
+        if (!r.ok) r = await attempt(key, false, onDelta);
+        GeminiKeyPool.report(key, r.status !== 429);
+        if (round === 0){ round0TriedAny = true; if (r.status !== 429) round0AllWere429 = false; }
+        if (r.answerText){
+          roundText = r.answerText; roundReasoning = r.thoughtText; roundFinish = r.finishReason; roundUsedTokens = r.usedTokens || 0;
           break;
         }
-        if (status !== 429) { i = maxAttempts; break; }
+        if (r.status !== 429) { i = maxAttempts; break; }
       } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini call failed", e); }
     }
     if (!roundText) break;
@@ -1095,7 +1127,7 @@ async function getFreeOpenRouterModels(key){
     return [];
   } catch(e){ if (isAbortError(e)) throw e; return []; }
 }
-async function callOpenRouterChat(historyMsgs, onReasoningDelta){
+async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta){
   if (!OpenRouterKeyPool.count()) return null;
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const maxAttempts = Math.min(OpenRouterKeyPool.count(), 3);
@@ -1148,7 +1180,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
                   if (choice.finish_reason) finishReason = choice.finish_reason;
                   const delta = choice.delta;
                   if (!delta) continue;
-                  if (delta.content) txt += delta.content;
+                  if (delta.content){ txt += delta.content; if (onContentDelta) onContentDelta(fullTotal + txt); }
                   const rPiece = delta.reasoning || delta.reasoning_content;
                   if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
                 } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
@@ -1183,7 +1215,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta){
 }
 
 /* ============ خط الدفاع 4: Vercel AI Gateway ============ */
-async function callVercelChat(historyMsgs, onReasoningDelta){
+async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
   if (!VercelGatewayKeyPool.count()) return null;
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const models = ['openai/gpt-4o-mini','google/gemini-2.0-flash','anthropic/claude-haiku-4-5'];
@@ -1235,7 +1267,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta){
                   if (choice.finish_reason) finishReason = choice.finish_reason;
                   const delta = choice.delta;
                   if (!delta) continue;
-                  if (delta.content) txt += delta.content;
+                  if (delta.content){ txt += delta.content; if (onContentDelta) onContentDelta(fullTotal + txt); }
                   const rPiece = delta.reasoning || delta.reasoning_content;
                   if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
                 } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
@@ -1305,9 +1337,9 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
 
   const providers = [
     { id:'groq', label:'Groq', pool: GroqKeyPool, fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock, onContentDelta) },
-    { id:'gemini', label:'Gemini', pool: GeminiKeyPool, fn: (msgs)=>callGeminiChat(msgs, onReasoningDelta) },
-    { id:'openrouter', label:'OpenRouter', pool: OpenRouterKeyPool, fn: (msgs)=>callOpenRouterChat(msgs, onReasoningDelta) },
-    { id:'vercel', label:'Vercel Gateway', pool: VercelGatewayKeyPool, fn: (msgs)=>callVercelChat(msgs, onReasoningDelta) }
+    { id:'gemini', label:'Gemini', pool: GeminiKeyPool, fn: (msgs)=>callGeminiChat(msgs, onReasoningDelta, onContentDelta) },
+    { id:'openrouter', label:'OpenRouter', pool: OpenRouterKeyPool, fn: (msgs)=>callOpenRouterChat(msgs, onReasoningDelta, onContentDelta) },
+    { id:'vercel', label:'Vercel Gateway', pool: VercelGatewayKeyPool, fn: (msgs)=>callVercelChat(msgs, onReasoningDelta, onContentDelta) }
   ];
   // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين بالترتيب
   // الافتراضي زي ما هو، وكل محاولة بتتعرض كخطوة حقيقية للمستخدم أول ما تبدأ.
@@ -2728,18 +2760,6 @@ function appendMessageBubble(msg, opts){
 //    عشان تورث اللون والحركة من الـ CSS بتاعة كل نوع خطوة (infinity-search،
 //    infinity-fix...) زي ما كان بيحصل بالظبط مع حرف "∞" قبل كده، من غير ما
 //    نضطر نلمس أي أنيميشن موجود ──
-const STEP_ICON_SVG = {
-  search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 5L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14"/></svg>',
-  link: '<svg viewBox="0 0 24 24"><path d="M3.9 12a5 5 0 0 1 5-5h4v2h-4a3 3 0 0 0 0 6h4v2h-4a5 5 0 0 1-5-5m6-1h4v2h-4zm5-4h4a5 5 0 0 1 0 10h-4v-2h4a3 3 0 0 0 0-6h-4z"/></svg>',
-  run: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
-  fix: '<svg viewBox="0 0 24 24"><path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6l-3 3-4.3-4.3C.6 7.1 1 10.1 3 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.4-.4.4-1.1 0-1.4"/></svg>',
-  code: '<svg viewBox="0 0 24 24"><path d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6z"/></svg>',
-  retry: '<svg viewBox="0 0 24 24"><path d="M17.65 6.35A8 8 0 1 0 19.8 15h-2.1a6 6 0 1 1-1.4-6.9L13 11h7V4z"/></svg>',
-  prepare: '<svg viewBox="0 0 24 24"><path d="M12 2l1.8 5.4L19 9l-5.2 1.6L12 16l-1.8-5.4L5 9l5.2-1.6zM5 16l.9 2.7L8.5 19.5l-2.6.8L5 23l-.9-2.7-2.6-.8 2.6-.8zM19 15l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg>',
-  image: '<svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2M8.5 13.5l2.5 3 3.5-4.5 4.5 6H5z"/></svg>',
-  file: '<svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zm1 7V3.5L18.5 9z"/></svg>',
-  general: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>'
-};
 // ── أيقونة أفاتار المساعد (بدل نجمة ✦ اللي بعض الأجهزة بتعرضها كإيموجي ملوّن) ──
 const AI_AVATAR_SVG = '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2z"/></svg>';
 function stepKind(text){
@@ -2773,7 +2793,7 @@ function appendThinkingIndicator(firstStepLabel){
     const step = document.createElement('div');
     step.className = 'thinking-step active';
     const kind = stepKind(text);
-    step.innerHTML = '<span class="thinking-step-icon"><span class="infinity-glyph infinity-'+kind+'">'+(STEP_ICON_SVG[kind]||STEP_ICON_SVG.general)+'</span></span><span class="thinking-step-text"></span>';
+    step.innerHTML = '<span class="thinking-step-icon"><span class="infinity-glyph infinity-'+kind+'">∞</span></span><span class="thinking-step-text"></span>';
     step.querySelector('.thinking-step-text').textContent = text;
     stepsEl.appendChild(step);
     stepsEl.scrollTop = stepsEl.scrollHeight;
@@ -3061,8 +3081,17 @@ composer.addEventListener('submit', async (e)=>{
       //    واحدة زي ما هو، النص الخام اللي بيتعرض لايف هو التفكير بس ──
       const onReasoningDelta = (fullReasoningText)=> thinkingEl._setLiveReasoning(fullReasoningText);
       const onStep = (text)=> thinkingEl._addStep(text);
+      let answerStageShown = false;
       let codeStageShown = false;
       const onContentDelta = (fullText)=>{
+        // ── أول حرف فعلي بيوصل من الرد (مش التفكير) — بنعرض خطوة "بيكتب
+        //    الرد دلوقتي" فورًا في نفس اللحظة، بدون أي تأخير أو انتظار ──
+        if (!answerStageShown){
+          answerStageShown = true;
+          thinkingEl._addStep('بيجهّز الرد ويكتبه دلوقتي...');
+        }
+        // ── أول ما علامة كتلة كود (```) تظهر في النص، بنبدّل فورًا لخطوة
+        //    "بيجهّز الكود" (بلونها وحركتها المختلفة) في نفس اللحظة بالظبط ──
         if (!codeStageShown && fullText.indexOf('```') > -1){
           codeStageShown = true;
           thinkingEl._addStep('بيجهّز الكود...');
