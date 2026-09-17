@@ -2,7 +2,7 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, interactive-widget=resizes-content">
 <title>Digital Mind</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1a17">
@@ -35,38 +35,39 @@
 <!-- ============ AUTH SCREEN ============ -->
 <div id="auth-screen" class="screen" style="display:none;">
   <div class="auth-card">
+    <button id="auth-lang-toggle" class="lang-toggle-btn" type="button" aria-label="Change language / تغيير اللغة">TR</button>
     <h1 class="brand">Digital Mind<span class="brand-model">AlalaGyGyAgha V2.6</span></h1>
-    <p class="brand-sub">مساحتك الخاصة، بتفتكر كل حاجة تقولها.</p>
+    <p class="brand-sub" data-i18n="sub">مساحتك الخاصة، بتفتكر كل حاجة تقولها.</p>
 
     <div class="tab-switch">
-      <button id="tab-login" class="tab-btn active" type="button">تسجيل الدخول</button>
-      <button id="tab-signup" class="tab-btn" type="button">حساب جديد</button>
+      <button id="tab-login" class="tab-btn active" type="button" data-i18n="tabLogin">تسجيل الدخول</button>
+      <button id="tab-signup" class="tab-btn" type="button" data-i18n="tabSignup">حساب جديد</button>
     </div>
 
     <form id="login-form" class="auth-form">
-      <label class="field-label" for="login-email">البريد الإلكتروني</label>
-      <input id="login-email" class="field-input" type="email" required autocomplete="email" placeholder="name@example.com">
-      <label class="field-label" for="login-password">كلمة المرور</label>
-      <input id="login-password" class="field-input" type="password" required autocomplete="current-password" placeholder="••••••••">
+      <label class="field-label" for="login-email" data-i18n="email">البريد الإلكتروني</label>
+      <input id="login-email" class="field-input" type="email" required autocomplete="email" placeholder="name@example.com" data-i18n-placeholder="emailPlaceholder">
+      <label class="field-label" for="login-password" data-i18n="password">كلمة المرور</label>
+      <input id="login-password" class="field-input" type="password" required autocomplete="current-password" placeholder="••••••••" data-i18n-placeholder="passwordPlaceholder">
       <div id="login-error" class="field-error"></div>
-      <button type="submit" class="primary-btn">دخول</button>
+      <button type="submit" class="primary-btn" data-i18n="loginBtn">دخول</button>
     </form>
 
     <form id="signup-form" class="auth-form" style="display:none;">
-      <label class="field-label" for="signup-name">الاسم</label>
-      <input id="signup-name" class="field-input" type="text" required autocomplete="name" placeholder="اسمك">
-      <label class="field-label">النوع</label>
+      <label class="field-label" for="signup-name" data-i18n="name">الاسم</label>
+      <input id="signup-name" class="field-input" type="text" required autocomplete="name" placeholder="اسمك" data-i18n-placeholder="namePlaceholder">
+      <label class="field-label" data-i18n="gender">النوع</label>
       <div class="gender-switch">
-        <button type="button" id="gender-male-btn" class="gender-btn active" data-gender="male">ذكر</button>
-        <button type="button" id="gender-female-btn" class="gender-btn" data-gender="female">أنثى</button>
+        <button type="button" id="gender-male-btn" class="gender-btn active" data-gender="male" data-i18n="male">ذكر</button>
+        <button type="button" id="gender-female-btn" class="gender-btn" data-gender="female" data-i18n="female">أنثى</button>
       </div>
       <input type="hidden" id="signup-gender" value="male">
-      <label class="field-label" for="signup-email">البريد الإلكتروني</label>
-      <input id="signup-email" class="field-input" type="email" required autocomplete="email" placeholder="name@example.com">
-      <label class="field-label" for="signup-password">كلمة المرور</label>
-      <input id="signup-password" class="field-input" type="password" required autocomplete="new-password" minlength="6" placeholder="٦ حروف على الأقل">
+      <label class="field-label" for="signup-email" data-i18n="email">البريد الإلكتروني</label>
+      <input id="signup-email" class="field-input" type="email" required autocomplete="email" placeholder="name@example.com" data-i18n-placeholder="emailPlaceholder">
+      <label class="field-label" for="signup-password" data-i18n="password">كلمة المرور</label>
+      <input id="signup-password" class="field-input" type="password" required autocomplete="new-password" minlength="6" placeholder="٦ حروف على الأقل" data-i18n-placeholder="passwordMinPlaceholder">
       <div id="signup-error" class="field-error"></div>
-      <button type="submit" class="primary-btn">إنشاء الحساب</button>
+      <button type="submit" class="primary-btn" data-i18n="signupBtn">إنشاء الحساب</button>
     </form>
   </div>
 </div>

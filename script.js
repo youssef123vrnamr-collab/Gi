@@ -2031,6 +2031,89 @@ const signupGenderInput = document.getElementById('signup-gender');
     signupGenderInput.value = btn.dataset.gender;
   });
 });
+/* ============ لغة شاشة الدخول (عربي/تركي) ============
+   بتتعرّف تلقائيًا أول مرة على لغة الجهاز/المتصفح (لو تركي بيفتح تركي، غير
+   كده عربي كافتراضي)، وبعد كده بتفتكر آخر اختيار يدوي للمستخدم في localStorage.
+   الترجمة هنا مقصودة تبقى بس لشاشة الدخول/التسجيل زي ما اتطلب، مش التطبيق كله. */
+const AUTH_I18N = {
+  ar: {
+    sub: 'مساحتك الخاصة، بتفتكر كل حاجة تقولها.',
+    tabLogin: 'تسجيل الدخول', tabSignup: 'حساب جديد',
+    email: 'البريد الإلكتروني', emailPlaceholder: 'name@example.com',
+    password: 'كلمة المرور', passwordPlaceholder: '••••••••',
+    loginBtn: 'دخول',
+    name: 'الاسم', namePlaceholder: 'اسمك',
+    gender: 'النوع', male: 'ذكر', female: 'أنثى',
+    passwordMinPlaceholder: '٦ حروف على الأقل',
+    signupBtn: 'إنشاء الحساب',
+    langToggle: 'TR',
+    errors: {
+      'auth/email-already-in-use': 'البريد ده متسجل قبل كده.',
+      'auth/invalid-email': 'صيغة البريد مش صح.',
+      'auth/weak-password': 'كلمة المرور لازم تكون ٦ حروف على الأقل.',
+      'auth/user-not-found': 'مفيش حساب بالبريد ده.',
+      'auth/wrong-password': 'كلمة المرور غلط.',
+      'auth/invalid-credential': 'البريد أو كلمة المرور غلط.',
+      'auth/operation-not-allowed': 'تسجيل الدخول بالبريد وكلمة المرور مش مفعّل في المشروع.',
+      'auth/unauthorized-domain': 'الدومين ده مش مُصرَّح له في إعدادات Firebase.',
+      default: 'حصل خطأ، جرب تاني.'
+    }
+  },
+  tr: {
+    sub: 'Kişisel alanın, söylediğin her şeyi hatırlar.',
+    tabLogin: 'Giriş Yap', tabSignup: 'Yeni Hesap',
+    email: 'E-posta', emailPlaceholder: 'name@example.com',
+    password: 'Şifre', passwordPlaceholder: '••••••••',
+    loginBtn: 'Giriş',
+    name: 'İsim', namePlaceholder: 'İsmin',
+    gender: 'Cinsiyet', male: 'Erkek', female: 'Kadın',
+    passwordMinPlaceholder: 'En az 6 karakter',
+    signupBtn: 'Hesap Oluştur',
+    langToggle: 'AR',
+    errors: {
+      'auth/email-already-in-use': 'Bu e-posta zaten kayıtlı.',
+      'auth/invalid-email': 'E-posta biçimi geçersiz.',
+      'auth/weak-password': 'Şifre en az 6 karakter olmalı.',
+      'auth/user-not-found': 'Bu e-postayla bir hesap bulunamadı.',
+      'auth/wrong-password': 'Şifre yanlış.',
+      'auth/invalid-credential': 'E-posta veya şifre yanlış.',
+      'auth/operation-not-allowed': 'E-posta ve şifre ile giriş bu projede etkin değil.',
+      'auth/unauthorized-domain': 'Bu alan adı Firebase ayarlarında yetkili değil.',
+      default: 'Bir hata oluştu, tekrar dene.'
+    }
+  }
+};
+
+function detectDefaultAuthLang(){
+  const saved = localStorage.getItem('authLang');
+  if (saved === 'ar' || saved === 'tr') return saved;
+  const sysLang = ((navigator.language || navigator.userLanguage || '') + '').toLowerCase();
+  return sysLang.startsWith('tr') ? 'tr' : 'ar';
+}
+let currentAuthLang = detectDefaultAuthLang();
+
+function applyAuthLanguage(lang){
+  currentAuthLang = (lang === 'tr') ? 'tr' : 'ar';
+  const dict = AUTH_I18N[currentAuthLang];
+  authScreen.setAttribute('lang', currentAuthLang);
+  authScreen.setAttribute('dir', currentAuthLang === 'tr' ? 'ltr' : 'rtl');
+  authScreen.querySelectorAll('[data-i18n]').forEach(el=>{
+    const key = el.getAttribute('data-i18n');
+    if (dict[key] !== undefined) el.textContent = dict[key];
+  });
+  authScreen.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{
+    const key = el.getAttribute('data-i18n-placeholder');
+    if (dict[key] !== undefined) el.placeholder = dict[key];
+  });
+  const toggleBtn = document.getElementById('auth-lang-toggle');
+  if (toggleBtn) toggleBtn.textContent = dict.langToggle;
+  localStorage.setItem('authLang', currentAuthLang);
+}
+document.getElementById('auth-lang-toggle').addEventListener('click', ()=>{
+  applyAuthLanguage(currentAuthLang === 'ar' ? 'tr' : 'ar');
+});
+applyAuthLanguage(currentAuthLang);
+
 tabLogin.addEventListener('click', ()=>{
   tabLogin.classList.add('active'); tabSignup.classList.remove('active');
   loginForm.style.display='flex'; signupForm.style.display='none';
@@ -2089,17 +2172,8 @@ loginForm.addEventListener('submit', async (e)=>{
 });
 
 function describeAuthError(err){
-  const map = {
-    'auth/email-already-in-use': 'البريد ده متسجل قبل كده.',
-    'auth/invalid-email': 'صيغة البريد مش صح.',
-    'auth/weak-password': 'كلمة المرور لازم تكون ٦ حروف على الأقل.',
-    'auth/user-not-found': 'مفيش حساب بالبريد ده.',
-    'auth/wrong-password': 'كلمة المرور غلط.',
-    'auth/invalid-credential': 'البريد أو كلمة المرور غلط.',
-    'auth/operation-not-allowed': 'تسجيل الدخول بالبريد وكلمة المرور مش مفعّل في المشروع.',
-    'auth/unauthorized-domain': 'الدومين ده مش مُصرَّح له في إعدادات Firebase.'
-  };
-  return map[err.code] || 'حصل خطأ، جرب تاني.';
+  const dict = AUTH_I18N[currentAuthLang].errors;
+  return dict[err.code] || dict.default;
 }
 
 /* ============ رصيد التوكن اليومي: توكن عام لكل التطبيق، بيتقسم بالتساوي على كل المستخدمين ============
