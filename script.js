@@ -776,7 +776,13 @@ function buildUserIdentityBlock(){
 }
 
 function buildSystemPrompt(searchResultsBlock){
-  return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
+  // ── لغة الرد بتتبع لغة الواجهة اللي المستخدم مختارها (عربي/تركي)، مش
+  //    عربي دايمًا زي ما كانت — عشان لو حد شغّل التطبيق بالتركي، يتكلم معاه
+  //    الذكاء الاصطناعي نفسه بالتركي مش بس شاشات القوائم والأزرار ──
+  const langInstruction = currentAppLang === 'tr'
+    ? 'اسمك "' + AI_DISPLAY_NAME + '". Kullanıcının arayüz dili Türkçe olarak ayarlı, bu yüzden ona açık ve profesyonel bir şekilde SADECE TÜRKÇE cevap ver (kullanıcı başka bir dilde yazsa bile, sen Türkçe cevap ver — o dilde bir cümleyle karşılık verip Türkçeye dönmen yeterli). Sana kim olduğun sorulursa, sadece bir yapay zeka asistanı olduğunu söyle, belirli bir şirket veya model adı verme (yanıtlar arka planda birden fazla modele otomatik dağıtılıyor). Claude ya da ChatGPT olduğunu söylemen kesinlikle yasak.'
+    : 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.';
+  return langInstruction
     + buildUserIdentityBlock()
     + buildLiveContextBlock()
     + buildReasoningRoomBlock()
@@ -1411,7 +1417,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   // ── لو المستخدم بعت رابط صريح، ندخله ونقرا محتواه فعليًا بدل ما نعمل بحث عام ──
   const explicitUrl = extractFirstUrl(lastUserText);
   if (tavilyReady && explicitUrl){
-    step('بيفتح الرابط اللي بعته ويقرا محتواه...');
+    step(t('stepOpeningLink'));
     const extracted = await performUrlExtract(explicitUrl);
     searchResultsBlock = buildUrlContentBlock(extracted, explicitUrl);
   }
@@ -1421,11 +1427,11 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
     const explicitNeed = shouldWebSearch(lastUserText);
     let needsSearch = explicitNeed;
     if (!needsSearch){
-      step('بيقرر لو الرسالة محتاجة بحث في الإنترنت ولا لأ...');
+      step(t('stepDecidingSearch'));
       needsSearch = await classifyNeedsSearch(lastUserText);
     }
     if (needsSearch){
-      step('بيبحث في الإنترنت...');
+      step(t('stepSearching'));
       const results = await performWebSearch(lastUserText);
       searchResultsBlock = buildSearchResultsBlock(results);
     }
@@ -1452,7 +1458,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
     for (const p of providers){
       if (!p.pool.count()){ failLog.push(p.label + ': مفيش مفتاح'); continue; }
       configuredCount++;
-      step('بيجهّز الرد...');
+      step(t('stepPreparingReply'));
       let result = null, thrown = null;
       try{ result = await p.fn(messages); }
       catch(e){ if (isAbortError(e)) throw e; thrown = e; }
@@ -1468,7 +1474,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
       } else {
         failLog.push(p.label + ': رجع رد فاضي (مفيش نص)');
       }
-      step('بيجرب طريقة تانية...');
+      step(t('stepRetryingDifferentWay'));
     }
     return { ok:false, configuredCount, quotaExhaustedCount, failLog };
   }
@@ -1484,7 +1490,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   if (allWereQuota){
     // محاولة تانية بعد تأخير بسيط — لو الزحمة مؤقتة هترد عادي من غير ما
     // المستخدم يحس بأي مشكلة أصلاً.
-    step('الخدمة مزدحمة شوية، بيعيد المحاولة...');
+    step(t('stepServiceBusyRetrying'));
     await new Promise(r=>setTimeout(r, 4000));
     attempt = await tryAllProviders();
     if (attempt.ok) return { text: attempt.text, reasoning: attempt.reasoning, provider: attempt.provider };
@@ -2135,6 +2141,32 @@ const APP_I18N = {
     secLoginRequired: 'سجّل دخولك الأول عشان تقدر تشوف سجلاتك.',
     secBroadcastMsg: 'تنبيه أمني: تم تفعيل إجراء إيقاف طارئ — التطبيق تحت المراجعة الأمنية مؤقتًا.',
     secAiPausedMsg: 'خدمات الذكاء الاصطناعي متوقفة مؤقتًا (تحت المراجعة الأمنية) — هترجع تلقائيًا خلال 24 ساعة.',
+    toastNoOlderMessages: '⚠️ مقدرتش أحمّل رسائل أقدم',
+    toastNoSavedQuestion: '⚠️ مفيش سؤال محفوظ لإعادة إرساله',
+    toastWaitCurrentReply: '⏳ استنى الرد الحالي يخلص الأول',
+    toastCopiedConversation: '✅ اتنسخت المحادثة، تقدر تلزقها في أي تطبيق تاني زي ChatGPT أو Gemini',
+    toastCopyFailed: '⚠️ مقدرتش أنسخ أو أشارك النص',
+    toastZipFailed: '❌ مقدرتش أضغط الملفات',
+    toastImageReadFailed: '⚠️ مقدرتش أقرا الصورة دي',
+    toastMusicAnalysisFailed: '⚠️ الكلام اتفهم، لكن التحليل الموسيقي الحقيقي فشل دلوقتي',
+    toastFileReadFailedPrefix: '⚠️ مقدرتش أقرا الملف ده: ',
+    toastAttachmentProcessing: '⏳ لسه بيحلل الملف المرفق، استنى لحظة كمان وابعت تاني',
+    stepAnalyzingImages: 'بيفتح الصور ويحللها...',
+    stepReadingFiles: 'بيقرا محتوى الملفات المرفقة...',
+    stepReadingMessage: 'بيقرا رسالتك...',
+    stepPreparingReply: 'بيجهّز الرد...',
+    stepDecidingSearch: 'بيقرر لو الرسالة محتاجة بحث في الإنترنت ولا لأ...',
+    stepSearching: 'بيبحث في الإنترنت...',
+    stepOpeningLink: 'بيفتح الرابط اللي بعته ويقرا محتواه...',
+    stepWritingReply: 'بيجهّز الرد ويكتبه دلوقتي...',
+    stepPreparingCode: 'بيجهّز الكود...',
+    stepRetryingDifferentWay: 'بيجرب طريقة تانية...',
+    stepServiceBusyRetrying: 'الخدمة مزدحمة شوية، بيعيد المحاولة...',
+    errStopped: 'تم إيقاف الرد.',
+    errTimeout: 'الرد أخد وقت أطول من المعتاد فاتلغى تلقائيًا. جرب تاني، أو ابعت رسالة أقصر لو ممكن.',
+    errPausedRetry: '⏸️ الرد ده اتوقف لأن ميزة الطوارئ الأمنية كانت شغالة وقتها. ابعت رسالتك تاني دلوقتي وهترد عادي.',
+    errServiceDownSuffix: ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.',
+    errGeneric: 'حصل خطأ في الرد، جرب تاني.',
     activityLabels: {
       login: 'تسجيل دخول', signup: 'إنشاء حساب', logout: 'تسجيل خروج',
       emergency_report: 'بلاغ أمني طارئ', biometric_registered: 'تسجيل بصمة'
@@ -2196,6 +2228,32 @@ const APP_I18N = {
     secLoginRequired: 'Kayıtlarını görebilmek için önce giriş yapmalısın.',
     secBroadcastMsg: 'Güvenlik uyarısı: acil durdurma prosedürü etkinleştirildi — uygulama geçici olarak güvenlik incelemesi altında.',
     secAiPausedMsg: 'Yapay zeka hizmetleri geçici olarak durduruldu (güvenlik incelemesi) — 24 saat içinde otomatik olarak geri gelecek.',
+    toastNoOlderMessages: '⚠️ Daha eski mesajlar yüklenemedi',
+    toastNoSavedQuestion: '⚠️ Yeniden gönderilecek kayıtlı bir soru yok',
+    toastWaitCurrentReply: '⏳ Önce mevcut yanıtın bitmesini bekle',
+    toastCopiedConversation: '✅ Sohbet kopyalandı, ChatGPT veya Gemini gibi başka bir uygulamaya yapıştırabilirsin',
+    toastCopyFailed: '⚠️ Metin kopyalanamadı veya paylaşılamadı',
+    toastZipFailed: '❌ Dosyalar sıkıştırılamadı',
+    toastImageReadFailed: '⚠️ Bu görsel okunamadı',
+    toastMusicAnalysisFailed: '⚠️ Konuşma anlaşıldı ama gerçek müzik analizi şu an başarısız oldu',
+    toastFileReadFailedPrefix: '⚠️ Bu dosya okunamadı: ',
+    toastAttachmentProcessing: '⏳ Eklenen dosya hâlâ işleniyor, biraz bekleyip tekrar gönder',
+    stepAnalyzingImages: 'Görseller açılıyor ve analiz ediliyor...',
+    stepReadingFiles: 'Ekli dosyaların içeriği okunuyor...',
+    stepReadingMessage: 'Mesajın okunuyor...',
+    stepPreparingReply: 'Yanıt hazırlanıyor...',
+    stepDecidingSearch: 'Mesajın internet araması gerektirip gerektirmediğine karar veriliyor...',
+    stepSearching: 'İnternette aranıyor...',
+    stepOpeningLink: 'Gönderdiğin bağlantı açılıyor ve içeriği okunuyor...',
+    stepWritingReply: 'Yanıt hazırlanıp yazılıyor...',
+    stepPreparingCode: 'Kod hazırlanıyor...',
+    stepRetryingDifferentWay: 'Başka bir yöntem deneniyor...',
+    stepServiceBusyRetrying: 'Hizmet biraz yoğun, tekrar deneniyor...',
+    errStopped: 'Yanıt durduruldu.',
+    errTimeout: 'Yanıt her zamankinden uzun sürdü ve otomatik olarak iptal edildi. Tekrar dene veya mümkünse daha kısa bir mesaj gönder.',
+    errPausedRetry: '⏸️ Bu yanıt, o sırada acil güvenlik özelliği etkin olduğu için durduruldu. Mesajını şimdi tekrar gönder, normal şekilde yanıt verecek.',
+    errServiceDownSuffix: ' şu anda yoğun (token bitmedi), biraz sonra tekrar dene.',
+    errGeneric: 'Yanıt oluşturulurken bir hata oluştu, tekrar dene.',
     activityLabels: {
       login: 'Giriş yapıldı', signup: 'Hesap oluşturuldu', logout: 'Çıkış yapıldı',
       emergency_report: 'Acil güvenlik bildirimi', biometric_registered: 'Parmak izi kaydedildi'
@@ -2377,7 +2435,10 @@ function syncUsageToFirebase(){
   db.ref('users/'+currentUser.uid+'/usage/'+usageDayKey+'/tokensUsed').set(usageUsedTokens).catch(()=>{});
 }
 function formatTokenCount(n){ return Math.max(0, Math.round(n||0)).toLocaleString('en-US'); }
-function usageShareTokens(){ return Math.max(1, Math.floor(globalDailyTokenBudget / totalUsersCount)); }
+// الحد الأدنى المضمون لنصيب كل مستخدم يوميًا، حتى لو عدد المستخدمين كبر جدًا
+// وقسمة الرصيد العام عليهم طلعت أقل من كده — بيتفعّل من غير ما يحتاج تعديل يدوي
+const MIN_USER_DAILY_SHARE = 500;
+function usageShareTokens(){ return Math.max(MIN_USER_DAILY_SHARE, Math.floor(globalDailyTokenBudget / totalUsersCount)); }
 function usageRemainingTokens(){ return Math.max(0, usageShareTokens() - usageUsedTokens); }
 function usageIsLocked(){ return !!currentUser && usageLoaded && usageRemainingTokens() <= 0; }
 // بتتنادى بعد كل رد حقيقي من الذكاء الاصطناعي بعدد التوكينز اللي الرد ده استهلكها فعليًا
@@ -2909,7 +2970,7 @@ async function loadOlderMessages(){
   } catch(e){
     console.warn('loadOlderMessages failed', e);
     btn.disabled = false; btn.innerHTML = originalHtml;
-    showToast('⚠️ مقدرتش أحمّل رسائل أقدم', 'network');
+    showToast(t('toastNoOlderMessages'), 'network');
   }
 }
 
@@ -3145,11 +3206,11 @@ function buildActionBar(questionText, answerText){
   //    المستخدم يقدر ياخد رد جديد على نفس السؤال من غير ما يكتبه تاني ──
   bar.appendChild(mkBtn('fas fa-rotate-right', 'إعادة الإرسال', (btn)=>{
     if (!questionText){
-      showToast('⚠️ مفيش سؤال محفوظ لإعادة إرساله', 'unsupported');
+      showToast(t('toastNoSavedQuestion'), 'unsupported');
       return;
     }
     if (sendBtn.classList.contains('sending')){
-      showToast('⏳ استنى الرد الحالي يخلص الأول', 'info');
+      showToast(t('toastWaitCurrentReply'), 'info');
       return;
     }
     composerInput.value = questionText;
@@ -3172,10 +3233,10 @@ function buildActionBar(questionText, answerText){
     if (navigator.clipboard){
       navigator.clipboard.writeText(shareText).then(()=>{
         btn.innerHTML = '<i class="fas fa-check"></i>';
-        showToast('✅ اتنسخت المحادثة، تقدر تلزقها في أي تطبيق تاني زي ChatGPT أو Gemini', 'success');
+        showToast(t('toastCopiedConversation'), 'success');
         setTimeout(()=>{ btn.innerHTML = '<i class="fas fa-share-nodes"></i>'; }, 1500);
       }).catch(()=>{
-        showToast('⚠️ مقدرتش أنسخ أو أشارك النص', 'error');
+        showToast(t('toastCopyFailed'), 'error');
       });
     }
   }));
@@ -3210,7 +3271,7 @@ function maybeAddZipAllButton(wrap){
       a.href = url; a.download = 'digital-mind-files.zip';
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
-    } catch(e){ console.error(e); showToast('❌ مقدرتش أضغط الملفات', 'error'); }
+    } catch(e){ console.error(e); showToast(t('toastZipFailed'), 'error'); }
     finally { btn.disabled = false; btn.innerHTML = originalHtml; }
   });
   wrap.appendChild(btn);
@@ -3661,7 +3722,7 @@ attachInput.addEventListener('change', async ()=>{
         const dataUrl = await compressImage(file);
         pendingAttachments.push({ id, type:'image', dataUrl });
         renderAttachPreview();
-      } catch(e){ console.error(e); showToast('⚠️ مقدرتش أقرا الصورة دي', 'unsupported'); }
+      } catch(e){ console.error(e); showToast(t('toastImageReadFailed'), 'unsupported'); }
       continue;
     }
 
@@ -3690,11 +3751,11 @@ attachInput.addEventListener('change', async ()=>{
       //    تمام، والمستخدم مايعرفش إن جزء من الملف اتفوّت. بنوريه تنبيه
       //    واضح هنا بدل ما يفضل مخبّي جوه tooltip الماوس بس ──
       if (result.musicAnalysisFailed){
-        showToast('⚠️ الكلام اتفهم، لكن التحليل الموسيقي الحقيقي فشل دلوقتي', 'unsupported');
+        showToast(t('toastMusicAnalysisFailed'), 'unsupported');
       }
     } catch(e){
       console.error(e);
-      showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''), 'unsupported');
+      showToast(t('toastFileReadFailedPrefix') + (e.message || ''), 'unsupported');
       removeAttachmentById(id);
     }
   }
@@ -3737,7 +3798,7 @@ composer.addEventListener('submit', async (e)=>{
   //    لأن ده كان بيخلي الرسالة تتبعت من غير fileContext خالص، فالذكاء
   //    الاصطناعي يوصل له مرفق فاضي ويردّ بردود عامة زي "مقدرش أسمع الصوت" ──
   if (files.some(f => f.processing)){
-    showToast('⏳ لسه بيحلل الملف المرفق، استنى لحظة كمان وابعت تاني', 'info');
+    showToast(t('toastAttachmentProcessing'), 'info');
     return;
   }
 
@@ -3816,8 +3877,8 @@ composer.addEventListener('submit', async (e)=>{
   }
 
   const thinkingEl = appendThinkingIndicator(images.length
-    ? 'بيفتح الصور ويحللها...'
-    : (files.length ? 'بيقرا محتوى الملفات المرفقة...' : 'بيقرا رسالتك...'));
+    ? t('stepAnalyzingImages')
+    : (files.length ? t('stepReadingFiles') : t('stepReadingMessage')));
 
   try{
     if(images.length){
@@ -3864,13 +3925,13 @@ composer.addEventListener('submit', async (e)=>{
         //    الرد دلوقتي" فورًا في نفس اللحظة، بدون أي تأخير أو انتظار ──
         if (!answerStageShown){
           answerStageShown = true;
-          thinkingEl._addStep('بيجهّز الرد ويكتبه دلوقتي...');
+          thinkingEl._addStep(t('stepWritingReply'));
         }
         // ── أول ما علامة كتلة كود (```) تظهر في النص، بنبدّل فورًا لخطوة
         //    "بيجهّز الكود" (بلونها وحركتها المختلفة) في نفس اللحظة بالظبط ──
         if (!codeStageShown && fullText.indexOf('```') > -1){
           codeStageShown = true;
-          thinkingEl._addStep('بيجهّز الكود...');
+          thinkingEl._addStep(t('stepPreparingCode'));
         }
       };
 
@@ -3895,25 +3956,23 @@ composer.addEventListener('submit', async (e)=>{
     closeScrollSpacer();
     let errMsgText;
     if (isAbortError(err)){
-      errMsgText = __manualStopRequested
-        ? 'تم إيقاف الرد.'
-        : 'الرد أخد وقت أطول من المعتاد فاتلغى تلقائيًا. جرب تاني، أو ابعت رسالة أقصر لو ممكن.';
+      errMsgText = __manualStopRequested ? t('errStopped') : t('errTimeout');
     } else if (err && err.message === 'AI_PAUSED_SECURITY_LOCK'){
       // ── ده اللي كان بيسبب "الرسالة العالقة": القفل اتفعّل بعد ما رسالة
       //    المستخدم اتسجلت في القاعدة بالفعل (سباق توقيت)، فكانت الرسالة
       //    تفضل من غير رد محفوظ للأبد. دلوقتي بنسجّل رد واضح ليها بدل ما
       //    نسيبها معلّقة، حتى لو القفل اتفكّ بعد كده ──
-      errMsgText = '⏸️ الرد ده اتوقف لأن ميزة الطوارئ الأمنية كانت شغالة وقتها. ابعت رسالتك تاني دلوقتي وهترد عادي.';
+      errMsgText = t('errPausedRetry');
     } else if (err && err.serviceDown){
       // مفيش أي بديل شغال دلوقتي — بعد ما جربنا كل المزوّدين مرتين (مع تأخير
       // بينهم). ده غالبًا رايت-ليميت مؤقت على المفاتيح المشتركة مع فلك،
       // مش إن رصيد التوكن بتاعك خلص فعليًا — فبنوصف الحالة صح للمستخدم.
-      errMsgText = '❌ ' + err.serviceDown + ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.';
+      errMsgText = '❌ ' + err.serviceDown + t('errServiceDownSuffix');
     } else {
       const details = (err && err.providerDetails && err.providerDetails.length)
         ? '\n\n' + err.providerDetails.join('\n')
         : '';
-      errMsgText = 'حصل خطأ في الرد، جرب تاني.' + details;
+      errMsgText = t('errGeneric') + details;
       console.error(err, err && err.providerDetails);
     }
     thinkingEl.querySelector('.thinking-steps')?.replaceWith(
