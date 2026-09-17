@@ -49,6 +49,42 @@
   </div>
 </div>
 
+<!-- ============ BOOT WATCHDOG ============
+     بيلقط أي إيرور (زي فشل تحميل Firebase من الـ CDN بسبب النت/الحظر) أو
+     أي تعليق سايلنت من غير إيرور، ويطلع رسالة + زرار "إعادة المحاولة"
+     بدل ما شاشة التحميل تفضل معلّقة للأبد من غير أي تفسير. ============ -->
+<script>
+(function(){
+  var bootOk = false;
+  window.__markBootOk = function(){ bootOk = true; };
+  function showBootError(msg){
+    if (bootOk) return;
+    var ls = document.getElementById('loading-screen');
+    if (!ls || ls.style.display === 'none') return;
+    if (ls.querySelector('.boot-err-msg')) return; // مايتكررش
+    var inner = ls.querySelector('.loader-inner');
+    var box = document.createElement('div');
+    box.className = 'boot-err-msg';
+    box.style.cssText = 'margin-top:22px;max-width:280px;text-align:center;font-family:Tajawal,sans-serif;';
+    var p = document.createElement('div');
+    p.style.cssText = 'color:#ffb4b4;font-size:14px;line-height:1.6;direction:rtl;';
+    p.textContent = msg;
+    var btn = document.createElement('button');
+    btn.textContent = 'إعادة المحاولة';
+    btn.style.cssText = 'margin-top:14px;padding:9px 20px;border-radius:10px;border:none;background:#e8d27a;color:#1b1a17;font-weight:700;font-family:Tajawal,sans-serif;';
+    btn.onclick = function(){ location.reload(); };
+    box.appendChild(p); box.appendChild(btn);
+    if (inner) inner.appendChild(box);
+  }
+  window.addEventListener('error', function(e){
+    showBootError('حصل خطأ أثناء تحميل التطبيق — تأكد من اتصال الإنترنت وحاول تاني.' + (e && e.message ? ' (' + e.message + ')' : ''));
+  }, true); // capture عشان يلقط فشل تحميل ملفات الـ script كمان
+  setTimeout(function(){
+    showBootError('التحميل بياخد وقت أطول من المعتاد — تأكد من اتصال الإنترنت وحاول تاني.');
+  }, 9000);
+})();
+</script>
+
 <!-- ============ AUTH SCREEN ============ -->
 <div id="auth-screen" class="screen" style="display:none;">
   <div class="auth-card">
