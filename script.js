@@ -946,7 +946,9 @@ async function performUrlExtract(url){
     const r = await fetchWithRetry('https://api.tavily.com/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: key, urls: [url] }),
+      // extract_depth: 'advanced' بيدّي فرصة أكبر لقراءة صفحات فيها جافاسكريبت
+      // أو تنسيق معقّد (زي صفحات مشاركة Gemini/ChatGPT)، بدل الوضع الافتراضي البسيط
+      body: JSON.stringify({ api_key: key, urls: [url], extract_depth: 'advanced' }),
       signal: requestSignal(30000)
     });
     if (!r.ok) return null;
@@ -955,10 +957,16 @@ async function performUrlExtract(url){
     return item ? { url: item.url || url, content: item.raw_content || '' } : null;
   } catch(e){ if (isAbortError(e)) throw e; console.warn('performUrlExtract failed', e); return null; }
 }
-function buildUrlContentBlock(extracted){
-  if (!extracted || !extracted.content) return '';
-  return '\n\n--- محتوى الرابط اللي بعته المستخدم (' + extracted.url + ') — استخدمه في ردك ---\n' +
-    extracted.content.slice(0, 6000) + '\n---';
+// ── لو القراءة التلقائية فشلت (مثلاً صفحة بتتحمّل بجافاسكريبت زي روابط
+//    مشاركة Gemini/ChatGPT ومبتظهرش في الـ HTML الخام)، بنبلّغ النموذج صراحة
+//    بده بدل ما يسيبه يخمّن أو يرفض بشكل عام — عشان يوضّح للمستخدم بدقة
+//    إن الرابط ده تحديدًا اتعذّرت قراءته ويطلب منه يلصق النص بنفسه ──
+function buildUrlContentBlock(extracted, url){
+  if (extracted && extracted.content){
+    return '\n\n--- محتوى الرابط اللي بعته المستخدم (' + extracted.url + ') — استخدمه في ردك ---\n' +
+      extracted.content.slice(0, 6000) + '\n---';
+  }
+  return '\n\n--- تنبيه للنظام (مش هيتشاف من المستخدم): المستخدم بعت رابط (' + url + ') لكن القراءة التلقائية له فشلت — على الأغلب الصفحة بتتحمّل محتواها بجافاسكريبت (زي صفحات مشاركة Gemini/ChatGPT) وأدوات القراءة الآلية مبتقدرش توصله. قوله بوضوح إنك مقدرتش تفتح الرابط ده تحديدًا لصعوبة تقنية في نوع الصفحة، واطلب منه ينسخ النص أو المحتوى المطلوب ويلصقه هنا مباشرة بدل الرابط. ---';
 }
 
 function buildSearchResultsBlock(results){
@@ -1355,7 +1363,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   if (tavilyReady && explicitUrl){
     step('بيفتح الرابط اللي بعته ويقرا محتواه...');
     const extracted = await performUrlExtract(explicitUrl);
-    searchResultsBlock = buildUrlContentBlock(extracted);
+    searchResultsBlock = buildUrlContentBlock(extracted, explicitUrl);
   }
 
   // ── قرار البحث العام: كلمة صريحة الأول، وإلا نسأل الموديل نفسه (لو مفيش رابط اتقرا فعلاً) ──
