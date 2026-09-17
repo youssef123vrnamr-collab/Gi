@@ -2660,6 +2660,45 @@ function buildActionBar(questionText, answerText){
   bar.appendChild(mkBtn('fas fa-volume-high', 'قراءة صوتية', (btn)=>{
     speakText(answerText, btn);
   }));
+
+  // ── إعادة الإرسال: بتحط نفس السؤال في صندوق الكتابة وتبعته تاني، عشان
+  //    المستخدم يقدر ياخد رد جديد على نفس السؤال من غير ما يكتبه تاني ──
+  bar.appendChild(mkBtn('fas fa-rotate-right', 'إعادة الإرسال', (btn)=>{
+    if (!questionText){
+      showToast('⚠️ مفيش سؤال محفوظ لإعادة إرساله', 'unsupported');
+      return;
+    }
+    if (sendBtn.classList.contains('sending')){
+      showToast('⏳ استنى الرد الحالي يخلص الأول', 'info');
+      return;
+    }
+    composerInput.value = questionText;
+    composerInput.style.height = 'auto';
+    composerInput.style.height = Math.min(140, composerInput.scrollHeight) + 'px';
+    if (typeof composer.requestSubmit === 'function') composer.requestSubmit();
+    else composer.dispatchEvent(new Event('submit', { cancelable: true }));
+  }));
+
+  // ── مشاركة: بتفتح شاشة المشاركة الأصلية بتاعة الجهاز (لو متاحة) عشان
+  //    المستخدم يقدر يبعت السؤال والرد لأي تطبيق تاني زي واتساب، أو حتى
+  //    يلزقهم في محادثة تانية مع ChatGPT/Gemini. لو الجهاز/المتصفح مش
+  //    داعم شاشة المشاركة، بننسخهم للحافظة بدالها ──
+  bar.appendChild(mkBtn('fas fa-share-nodes', 'مشاركة', (btn)=>{
+    const shareText = (questionText ? ('السؤال:\n' + questionText + '\n\n') : '') + 'الإجابة:\n' + answerText;
+    if (navigator.share){
+      navigator.share({ text: shareText }).catch(()=>{ /* المستخدم لغى المشاركة، مفيش داعي لأي رسالة خطأ */ });
+      return;
+    }
+    if (navigator.clipboard){
+      navigator.clipboard.writeText(shareText).then(()=>{
+        btn.innerHTML = '<i class="fas fa-check"></i>';
+        showToast('✅ اتنسخت المحادثة، تقدر تلزقها في أي تطبيق تاني زي ChatGPT أو Gemini', 'success');
+        setTimeout(()=>{ btn.innerHTML = '<i class="fas fa-share-nodes"></i>'; }, 1500);
+      }).catch(()=>{
+        showToast('⚠️ مقدرتش أنسخ أو أشارك النص', 'error');
+      });
+    }
+  }));
   return bar;
 }
 
