@@ -17,6 +17,30 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
 
+/* ============ APP CHECK ============
+   ⚠️ لازم تحط الـ Site Key بتاعك هنا (من Firebase Console → App Check →
+   سجّل الـ Web App → reCAPTCHA v3) قبل ما ده يشتغل فعليًا. لحد ما تحطه،
+   getAppCheckToken() تحت هترجع null وأي نداء لـ groqProxy هيترفض بـ 401 —
+   ده متعمّد (fail-closed) عشان محدش يفتكر إن الحماية شغالة وهي مش شغالة. */
+const APP_CHECK_SITE_KEY = "ضع_مفتاح_reCAPTCHA_v3_هنا";
+let appCheckInstance = null;
+try{
+  if (APP_CHECK_SITE_KEY && APP_CHECK_SITE_KEY.indexOf('ضع_') !== 0 && firebase.appCheck){
+    appCheckInstance = firebase.appCheck();
+    appCheckInstance.activate(APP_CHECK_SITE_KEY, true); // true = تجديد تلقائي للتوكن
+  } else {
+    console.warn('App Check معطّل: محتاج تحط APP_CHECK_SITE_KEY الحقيقي في script.js');
+  }
+}catch(e){ console.warn('App Check activation failed', e); }
+
+async function getAppCheckToken(){
+  if (!appCheckInstance) return null;
+  try{
+    const res = await appCheckInstance.getToken(/*forceRefresh*/ false);
+    return res && res.token ? res.token : null;
+  }catch(e){ console.warn('getAppCheckToken failed', e); return null; }
+}
+
 /* ============ SECURITY (الدرع + الكيل-سويتش) — مراجع Realtime Database ============ */
 const securityAiPauseRef = db.ref('security/aiPause');
 const securityBroadcastRef = db.ref('security/broadcast');
@@ -984,14 +1008,41 @@ function buildSearchResultsBlock(results){
 /* ============ خط الدفاع 1: Groq — Streaming + غرفة التفكير العميق الحية ============
    لو الرد اتقطع قبل ما يخلص (finish_reason === 'length' — بيحصل غالبًا مع أكواد
    طويلة)، بنكمّل تلقائيًا بطلب تاني من نفس النقطة، لحد ما يخلص فعلاً أو نوصل
-   للحد الأقصى من المحاولات، بدل ما نسيب الكود مبتور. */
+   للحد الأقصى من المحاولات، بدل ما نسيب الكود مبتور.
+
+   ⚠️ ده دلوقتي بينادي الـ Cloud Function (groqProxy في index.js) بدل ما يكلم
+   api.groq.com مباشرة بمفتاح خام. المفتاح بقى محفوظ سيرفر-سايد بس (Secret
+   Manager)، والمتصفح بيبعت بس: توكن دخول Firebase + توكن App Check. حط رابط
+   الفانكشن الحقيقي بتاعك تحت (بيظهر لك في الترمينال بعد firebase deploy). */
+const GROQ_PROXY_URL = "https://ضع-رابط-الفانكشن-الحقيقي-هنا/groqProxy";
 const CONTINUE_PROMPT = 'كمل بالظبط من نفس الحرف اللي وقفت عنده، من غير ما تعيد ولا حرف كتبته قبل كده، ومن غير أي مقدمة أو تعليق زيادة. لو كنت في نص كود، كمل الكود نفسه لحد ما يخلص ويتقفل بـ ``` — ممنوع تلخيص أو اختصار أي جزء.';
 const MAX_CONTINUATIONS = 5;
+const GROQ_PROXY_ATTEMPTS = 2; // محاولتين بس (مفيش تدوير مفاتيح دلوقتي، المفتاح واحد وسيرفر-سايد)
+
+async function callGroqProxyOnce(runningMessages, idleSignal){
+  if (!currentUser) throw new Error('NOT_SIGNED_IN');
+  const [idToken, appCheckToken] = await Promise.all([
+    currentUser.getIdToken(),
+    getAppCheckToken()
+  ]);
+  if (!appCheckToken) throw new Error('APP_CHECK_TOKEN_MISSING'); // fail-closed لو App Check مش متفعّل صح
+  return fetchWithRetry(GROQ_PROXY_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + idToken,
+      "X-Firebase-AppCheck": appCheckToken,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
+      stream: true, reasoning_effort: 'high', reasoning_format: 'parsed', stream_options: { include_usage: true }
+    }),
+    signal: idleSignal
+  });
+}
 
 async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, onContentDelta){
   if (window.__aiPaused) throw new Error('AI_PAUSED_SECURITY_LOCK');
-  if (!GroqKeyPool.count()) return null;
-  const maxAttempts = Math.min(GroqKeyPool.count(), 3);
   const sys = buildSystemPrompt(searchResultsBlock || '');
   let runningMessages = [{ role:'system', content: sys }].concat(historyMsgs);
   let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
@@ -999,24 +1050,17 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
     let roundResult = null;
-    for (let i=0;i<maxAttempts;i++){
-      const key = GroqKeyPool.next();
-      if (!key) break;
+    for (let i=0;i<GROQ_PROXY_ATTEMPTS;i++){
       const idle = createIdleAbortSignal(45000);
       try{
-        const res = await fetchWithRetry("https://api.groq.com/openai/v1/chat/completions", {
-          method: "POST",
-          headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
-            stream: true, reasoning_effort: 'high', reasoning_format: 'parsed', stream_options: { include_usage: true }
-          }),
-          signal: idle.signal
-        });
+        const res = await callGroqProxyOnce(runningMessages, idle.signal);
         if (!res.ok || !res.body){
-          GroqKeyPool.report(key, res.status !== 429);
           if (round === 0){ round0TriedAny = true; if (res.status !== 429) round0AllWere429 = false; }
-          if (res.status !== 429) { i = maxAttempts; break; }
+          if (res.status === 401 || res.status === 403){
+            console.error('groqProxy auth/app-check rejected the request', res.status);
+            i = GROQ_PROXY_ATTEMPTS; break; // متبقاش تحاول تاني، المشكلة مش مؤقتة
+          }
+          if (res.status !== 429) { i = GROQ_PROXY_ATTEMPTS; break; }
           continue;
         }
         const reader = res.body.getReader();
@@ -1057,11 +1101,10 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
           if (full){ finishReason = 'length'; }
           else throw streamErr;
         }
-        GroqKeyPool.report(key, true);
         if (round === 0){ round0TriedAny = true; round0AllWere429 = false; }
         roundResult = { text: full, reasoning: reasoningPart, finishReason, usedTokens };
         break;
-      } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); if (isAbortError(e)) throw e; }
+      } catch(e){ console.warn("Groq proxy call failed", e); if (isAbortError(e)) throw e; }
       finally{ idle.clear(); }
     }
     if (!roundResult || !roundResult.text) break;
@@ -3735,6 +3778,21 @@ composer.addEventListener('submit', async (e)=>{
   }, 120000);
   refreshGeoContext(); // مجرد محاولة تحديث في الخلفية لو لسه معندناش بيانات موقع/صلاة اليوم
 
+  // ── إعادة فحص القفل هنا كمان (مش بس فوق) — لأن بين لحظة الضغط على إرسال
+  //    ولحظة كتابة الرسالة في القاعدة ممكن يمر وقت (تجهيز مرفقات، إلخ)، ولو
+  //    المستخدم فعّل زرار الطوارئ في نفس اللحظة دي بالظبط، كانت الرسالة بتتسجل
+  //    في القاعدة للأبد من غير أي رد (لأن رسالة الخطأ التالية كانت بتتعرض محليًا
+  //    بس ومتتسجلش)، فبتفضل عالقة في المحادثة حتى بعد ما نرجع نفكّ القفل ──
+  if (window.__aiPaused){
+    showToast(t('secAiPausedMsg'), 'error');
+    composerInput.value = text;
+    pendingAttachments = attachmentsSnapshot;
+    sendBtn.classList.remove('sending');
+    document.getElementById('send-btn-icon').className = 'fas fa-arrow-up';
+    clearTimeout(window.__sendWatchdog);
+    return;
+  }
+
   const convRef = db.ref('users/'+currentUser.uid+'/conversations/'+currentConvId);
   const userMsg = { role:'user', ts: Date.now() };
   if(text) userMsg.text = text;
@@ -3835,29 +3893,40 @@ composer.addEventListener('submit', async (e)=>{
     //    وترجع الغرفة سكرول طبيعي زي أي رسالة تانية بدل ما تفضل ملزّقة ──
     thinkingEl.classList.remove('thinking-full');
     closeScrollSpacer();
+    let errMsgText;
     if (isAbortError(err)){
-      const stopMsg = __manualStopRequested
+      errMsgText = __manualStopRequested
         ? 'تم إيقاف الرد.'
         : 'الرد أخد وقت أطول من المعتاد فاتلغى تلقائيًا. جرب تاني، أو ابعت رسالة أقصر لو ممكن.';
-      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent: stopMsg })
-      );
+    } else if (err && err.message === 'AI_PAUSED_SECURITY_LOCK'){
+      // ── ده اللي كان بيسبب "الرسالة العالقة": القفل اتفعّل بعد ما رسالة
+      //    المستخدم اتسجلت في القاعدة بالفعل (سباق توقيت)، فكانت الرسالة
+      //    تفضل من غير رد محفوظ للأبد. دلوقتي بنسجّل رد واضح ليها بدل ما
+      //    نسيبها معلّقة، حتى لو القفل اتفكّ بعد كده ──
+      errMsgText = '⏸️ الرد ده اتوقف لأن ميزة الطوارئ الأمنية كانت شغالة وقتها. ابعت رسالتك تاني دلوقتي وهترد عادي.';
     } else if (err && err.serviceDown){
       // مفيش أي بديل شغال دلوقتي — بعد ما جربنا كل المزوّدين مرتين (مع تأخير
       // بينهم). ده غالبًا رايت-ليميت مؤقت على المفاتيح المشتركة مع فلك،
       // مش إن رصيد التوكن بتاعك خلص فعليًا — فبنوصف الحالة صح للمستخدم.
-      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'❌ ' + err.serviceDown + ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.' })
-      );
+      errMsgText = '❌ ' + err.serviceDown + ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.';
     } else {
       const details = (err && err.providerDetails && err.providerDetails.length)
         ? '\n\n' + err.providerDetails.join('\n')
         : '';
-      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' + details })
-      );
+      errMsgText = 'حصل خطأ في الرد، جرب تاني.' + details;
       console.error(err, err && err.providerDetails);
     }
+    thinkingEl.querySelector('.thinking-steps')?.replaceWith(
+      Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent: errMsgText })
+    );
+    // ── نحفظ رسالة الخطأ في القاعدة زي أي رد تاني (مش بس محليًا في الـ DOM)،
+    //    عشان لما المحادثة تتفتح تاني أو تترندر من الـ listener، الرسالة اللي
+    //    بعتها المستخدم متفضلش من غير أي رد ظاهر معاها ──
+    try{
+      const errTs = Date.now();
+      await convRef.child('messages').push({ role:'assistant', text: errMsgText, error: true, ts: errTs });
+      await convRef.update({ updatedAt: errTs });
+    }catch(saveErr){ console.warn('failed to persist error message', saveErr); }
   } finally {
     clearTimeout(window.__sendWatchdog);
     currentAbortController = null;

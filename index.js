@@ -1,11 +1,21 @@
 // Cloud Function — بروكسي Streaming لـ Groq بيخفي المفتاح تمامًا عن المتصفح،
 // ومعاه حمايات حقيقية على مستوى السيرفر (مش بس واجهة قابلة للتخطي):
+//   0) App Check — الطلب لازم يجيب توكن X-Firebase-AppCheck صحيح، يعني جاي
+//      فعليًا من نسخة التطبيق الرسمية (مش Postman ولا سكريبت خارجي حتى لو
+//      معاه Firebase ID token مسروق).
 //   1) لازم توكن دخول Firebase صحيح — مفيش استخدام من غير حساب مسجّل.
 //   2) Rate limit لكل مستخدم (بالدقيقة + باليوم) يمنع أي إساءة استخدام حتى
 //      لو حد لعب في الفرونت إند وتخطى الحدود اللي في script.js.
 //   3) تنضيف/تقييد الـ body اللي بيتبعت لـ Groq (نموذج مسموح بيه، حجم رسائل
 //      محدود، مفيش حقول غريبة بتتمرر زي ما هي).
 //   4) CORS مقفول على دومين التطبيق بس، مش مفتوح لأي حد.
+//
+// تفعيل App Check للمشروع (مرة واحدة بس، من الكونسول):
+//   Firebase Console → App Check → سجّل الـ Web App بتاعك → اختار reCAPTCHA v3
+//   (أو reCAPTCHA Enterprise) → خد الـ Site Key وحطه في الفرونت إند (script.js).
+//   بعد كده من نفس الصفحة فعّل "Enforce" لأي منتج عايز تحميه (هنا مش لازم
+//   تفعّلها على الـ Functions نفسها لأننا بنتحقق يدويًا جوه الكود، بس التسجيل
+//   والـ Site Key لازم يكونوا معمولين عشان التوكن يتولّد أصلاً من الفرونت إند).
 // نفس الفكرة تتكرر لـ Gemini / OpenRouter / Vercel Gateway (URL + endpoint
 // مختلفين بس) — لسه شغالين مباشرة من المتصفح دلوقتي، ولازم نفس المعاملة.
 //
@@ -72,6 +82,24 @@ async function verifyCaller(req) {
     return decoded; // فيه decoded.uid
   } catch (err) {
     console.warn("verifyIdToken failed", err.message);
+    return null;
+  }
+}
+
+// ============ APP CHECK — لازم توكن App Check صحيح في هيدر X-Firebase-AppCheck ============
+// ده اللي بيضمن إن الطلب جاي فعليًا من نسخة التطبيق الرسمية (Vercel/الدومين
+// المسجّل)، مش من Postman أو سكريبت خارجي حتى لو معاه Firebase ID token سليم
+// (توكن الدخول ده ممكن يتسرق أو يتستخدم بره التطبيق، لكن توكن App Check
+// مربوط بتحقق reCAPTCHA/الـ attestation بتاع التطبيق نفسه وقت التوليد).
+// لازم يتنفّذ قبل أي منطق تاني وقبل استهلاك أي مفتاح/Secret.
+async function verifyAppCheck(req) {
+  const token = req.headers["x-firebase-appcheck"];
+  if (!token) return null;
+  try {
+    const claims = await admin.appCheck().verifyToken(token);
+    return claims; // فيه claims.appId
+  } catch (err) {
+    console.warn("App Check verifyToken failed", err.message);
     return null;
   }
 }
@@ -148,14 +176,23 @@ exports.groqProxy = onRequest(
       return;
     }
 
-    // 1) تسجيل الدخول
+    // 1) App Check — أول حاجة بتتفحص، قبل حتى قراءة أي بيانات مستخدم، عشان
+    //    نرفض أي طلب مش جاي من نسخة التطبيق الرسمية فورًا من غير ما نضيّع
+    //    وقت/موارد على طلب هيتترفض في الآخر
+    const appCheckClaims = await verifyAppCheck(req);
+    if (!appCheckClaims) {
+      res.status(401).json({ error: "app_check_failed", message: "Missing or invalid App Check token." });
+      return;
+    }
+
+    // 2) تسجيل الدخول
     const decoded = await verifyCaller(req);
     if (!decoded) {
       res.status(401).json({ error: "unauthorized", message: "Missing or invalid ID token." });
       return;
     }
 
-    // 2) الكيل-سويتش
+    // 3) الكيل-سويتش
     if (await isAiPaused()) {
       res.status(503).json({
         error: "ai_paused",
@@ -164,14 +201,14 @@ exports.groqProxy = onRequest(
       return;
     }
 
-    // 3) الـ Rate Limit
+    // 4) الـ Rate Limit
     const rl = await checkAndBumpRateLimit(decoded.uid);
     if (!rl.ok) {
       res.status(429).json({ error: rl.reason, message: "Too many requests — try again shortly." });
       return;
     }
 
-    // 4) تنضيف الطلب
+    // 5) تنضيف الطلب
     const sanitized = sanitizePayload(req.body);
     if (sanitized.error) {
       res.status(400).json({ error: sanitized.error });
