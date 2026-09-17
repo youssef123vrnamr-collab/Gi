@@ -937,8 +937,14 @@ button:focus,button:focus-visible{outline:none;}
 
 /* موقع الزرار جوه هيدر الشات (الهيدر نفسه بقى relative عشان الزرار يفضل
    ثابت أعلى يسار فعلي بصرف النظر عن اتجاه RTL/LTR) */
-#chat-header{position:relative;padding-left:52px;}
+#chat-header{position:relative;padding-left:52px;padding-right:10px;}
 #chat-header .shield-btn{top:8px;}
+
+/* في اللغة التانية (TR / LTR): نفس التصميم بالظبط بس مقلوب — الدرع يروح
+   يمين الشاشة، وشريط التوكن + زرار القائمة يروحوا شمال الشاشة. */
+#app-shell[dir="ltr"] #chat-header{padding-left:10px;padding-right:52px;}
+#app-shell[dir="ltr"] .shield-btn{left:auto;right:12px;}
+#app-shell[dir="ltr"] #chat-header .shield-btn{left:auto;right:12px;}
 
 /* لو مقفول (aiPause شغال) بنلوّن الدرع باللون الأحمر التحذيري بدل التدرّج */
 .shield-btn.paused .shield-svg .shield-outline,
@@ -1044,7 +1050,9 @@ button:focus,button:focus-visible{outline:none;}
 @media (max-width:420px){
   .security-modal{max-width:100%;padding-left:16px;padding-right:16px;}
   .shield-btn{width:34px;height:34px;top:10px;left:10px;}
-  #chat-header{padding-inline-start:46px;}
+  #chat-header{padding-left:46px;padding-right:8px;}
+  #app-shell[dir="ltr"] .shield-btn{left:auto;right:10px;}
+  #app-shell[dir="ltr"] #chat-header{padding-left:8px;padding-right:46px;}
 }
 [dir="ltr"] .activity-time{direction:ltr;}
 [lang="tr"] .brand-sub,[lang="tr"] .security-hero p{direction:ltr;}
