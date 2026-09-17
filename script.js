@@ -825,6 +825,7 @@ function buildLiveContextBlock(){
   if (geoState.status === 'denied'){
     block += 'ملحوظة: المستخدم مسموحش (أو لسه) بالوصول لموقعه الجغرافي، فمعرفتش أجيب مواعيد الصلاة أو اتجاه القبلة أو اسم مدينته بالظبط — لو سأل عن حاجة من دي، قوله يسمح بإذن الموقع من المتصفح.\n';
   }
+  block += 'تنبيه مهم: البيانات دي (الوقت، التاريخ، مواعيد الصلاة، الموقع، القبلة) اتحطت هنا عشان تستخدمها كمرجع لو المستخدم سأل عنها أو عن حاجة محتاجة منها فعلاً (زي "الساعة كام"، "الصلاة الجاية إمتى"، حساب مدة، أو أي سؤال مرتبط بالوقت/التاريخ/الموقع). متذكرهاش، متفتحش بيها الرد، ومتقولهاش للمستخدم من نفسك لو ما سألش عنها — حتى لو حسّيت إنها معلومة "مفيدة" تتقال، سيبها إلا لو هو اللي طلبها.\n';
   block += '---';
   return block;
 }
@@ -1829,8 +1830,21 @@ let autoFollowActive = false;
 
 (function runFollowLoop(){
   if (autoFollowActive){
-    const maxScroll = messagesEl.scrollHeight - messagesEl.clientHeight;
-    const target = Math.max(0, maxScroll - SCROLL_FOLLOW_GAP);
+    // ── لو فيه غرفة تفكير شغالة دلوقتي (thinking-full)، السكرول التلقائي
+    //    ميجريش لآخر حاجة اتضافت تحتها (ده كان بيكسر الـ sticky ويخلي
+    //    الغرفة تتزحلق من فوق وتختفي بعد أول رسالة)، لكن يوقف بالظبط عند
+    //    أول ظهور للغرفة عشان تفضل ملزّقة فوق، والمساحة الفاضية تحتها
+    //    تفضل بادية زي ما التصميم الأصلي يقصد. أول ما الرد يخلص وكلاس
+    //    thinking-full يتشال، السكرول يرجع يجري عادي لآخر حاجة ──
+    const activeThinking = messagesEl.querySelector('.msg-wrap.assistant.thinking-full');
+    let target;
+    if (activeThinking){
+      const gap = messagesEl.scrollTop + (activeThinking.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top);
+      target = Math.max(0, gap);
+    } else {
+      const maxScroll = messagesEl.scrollHeight - messagesEl.clientHeight;
+      target = Math.max(0, maxScroll - SCROLL_FOLLOW_GAP);
+    }
     const diff = target - messagesEl.scrollTop;
     // فرق بسيط جدًا (أقل من بكسل) بنقفله دفعة واحدة بدل ما يفضل يهتز للأبد من غير ما يوصل بالظبط
     if (Math.abs(diff) > 0.5) messagesEl.scrollTop += diff * SCROLL_FOLLOW_EASE;
