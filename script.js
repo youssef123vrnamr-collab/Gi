@@ -1820,15 +1820,24 @@ async function processAttachedFile(file, opts){
   } else if (kind === 'excel'){
     applyChunking(await extractExcelText(file), 'ملف Excel (' + fileSizeLabel() + ')');
   } else if (kind === 'audio'){
-    const [transcript, musicAnalysis] = await Promise.all([
-      transcribeAudio(file).catch(()=> ''),
-      analyzeAudioWithGemini(file).catch(()=> '')
+    const settled = await Promise.allSettled([
+      transcribeAudio(file),
+      analyzeAudioWithGemini(file)
     ]);
+    const transcript = (settled[0].status === 'fulfilled' && settled[0].value) ? settled[0].value : '';
+    const musicAnalysis = (settled[1].status === 'fulfilled' && settled[1].value) ? settled[1].value : '';
+    if (settled[0].status === 'rejected') console.warn('transcribeAudio failed', settled[0].reason);
+    if (settled[1].status !== 'fulfilled' || !settled[1].value) result.musicAnalysisFailed = true;
+
     let combined = '';
     if (transcript) combined += 'الكلام/الغنا اللي اتفهم من التسجيل:\n' + transcript + '\n\n';
     if (musicAnalysis) combined += 'تحليل موسيقي/صوتي حقيقي للملف (سمعه فعليًا):\n' + musicAnalysis;
     result.extractedText = combined.trim() || 'مقدرتش أطلع أي تفريغ أو تحليل من الملف الصوتي ده دلوقتي.';
-    result.note = 'ملف صوتي (' + fileSizeLabel() + ' — تفريغ كلام + تحليل موسيقي حقيقي)';
+    let noteParts = ['ملف صوتي (' + fileSizeLabel() + ')'];
+    if (transcript) noteParts.push('اتعمله تفريغ كلام');
+    if (musicAnalysis) noteParts.push('اتعمله تحليل موسيقي حقيقي');
+    if (result.musicAnalysisFailed) noteParts.push('⚠️ التحليل الموسيقي فشل دلوقتي');
+    result.note = noteParts.join(' — ');
   } else if (kind === 'zip'){
     const zr = await readZipFile(file, !!(opts && opts.extractZip));
     result.extractedText = zr.note;
@@ -3147,6 +3156,13 @@ attachInput.addEventListener('change', async ()=>{
         item.chunkIndex = 0;
       }
       renderAttachPreview();
+      // ── تحليل الموسيقى (Gemini) بيفشل أحيانًا (مفتاح خلص/شبكة) من غير ما
+      //    يوقف باقي المعالجة — التفريغ لوحده كان بيكمل بصمت وكأن كل حاجة
+      //    تمام، والمستخدم مايعرفش إن جزء من الملف اتفوّت. بنوريه تنبيه
+      //    واضح هنا بدل ما يفضل مخبّي جوه tooltip الماوس بس ──
+      if (result.musicAnalysisFailed){
+        showToast('⚠️ الكلام اتفهم، لكن التحليل الموسيقي الحقيقي فشل دلوقتي', 'unsupported');
+      }
     } catch(e){
       console.error(e);
       showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''), 'unsupported');
