@@ -2413,6 +2413,7 @@ logoutBtn.addEventListener('click', ()=>{
 
 /* ============ AUTH STATE ============ */
 auth.onAuthStateChanged(user=>{
+  if (window.__markBootOk) window.__markBootOk(); // وصلنا هنا بنجاح = مفيش داعي لرسالة الخطأ بعد كده
   loadingScreen.classList.add('fade-out');
   setTimeout(()=>{ loadingScreen.style.display='none'; }, 450);
   if(user){
@@ -2551,7 +2552,13 @@ document.getElementById('emergency-confirm-yes').addEventListener('click', async
 /* ============ WATCHERS — بث حي لكل المستخدمين المتصلين (شغالة من غير
    الحاجة لتسجيل دخول، عشان أي حد فاتح التطبيق يشوف التنبيه فورًا) ============ */
 function refreshSecurityBannersText(){
-  if (broadcastBanner.style.display === 'flex') broadcastText.textContent = t('secBroadcastMsg');
+  // بندوّر على العناصر بنفسها (مش من متغيرات const برّانية) عشان الدالة دي
+  // ممكن تتنادى بدري (من applyAuthLanguage وقت تحميل السكربت) قبل ما
+  // broadcastBanner/broadcastText يتعرّفوا لسه — التوصيل المباشر بيرمي
+  // "Cannot access before initialization" (TDZ).
+  const bb = document.getElementById('security-broadcast-banner');
+  const bt = document.getElementById('security-broadcast-text');
+  if (bb && bt && bb.style.display === 'flex') bt.textContent = t('secBroadcastMsg');
   if (window.__aiPaused){
     const lockText = document.getElementById('usage-lock-text');
     if (lockText) lockText.textContent = t('secAiPausedMsg');
