@@ -17,6 +17,12 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
 
+/* ============ SECURITY (الدرع + الكيل-سويتش) — مراجع Realtime Database ============ */
+const securityAiPauseRef = db.ref('security/aiPause');
+const securityBroadcastRef = db.ref('security/broadcast');
+const securityReportsRef = db.ref('security/emergencyReports');
+window.__aiPaused = false;
+
 /* ============ SHARE TARGET ============
    لما المستخدم يعمل "مشاركة" من تطبيق تاني (واتساب، المتصفح، ...) ويختار
    Digital Mind من قائمة المشاركة، النظام بيفتح index.html ومعاه ?title=&text=&url=
@@ -983,6 +989,7 @@ const CONTINUE_PROMPT = 'كمل بالظبط من نفس الحرف اللي و�
 const MAX_CONTINUATIONS = 5;
 
 async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, onContentDelta){
+  if (window.__aiPaused) throw new Error('AI_PAUSED_SECURITY_LOCK');
   if (!GroqKeyPool.count()) return null;
   const maxAttempts = Math.min(GroqKeyPool.count(), 3);
   const sys = buildSystemPrompt(searchResultsBlock || '');
@@ -2035,7 +2042,11 @@ const signupGenderInput = document.getElementById('signup-gender');
    بتتعرّف تلقائيًا أول مرة على لغة الجهاز/المتصفح (لو تركي بيفتح تركي، غير
    كده عربي كافتراضي)، وبعد كده بتفتكر آخر اختيار يدوي للمستخدم في localStorage.
    الترجمة هنا مقصودة تبقى بس لشاشة الدخول/التسجيل زي ما اتطلب، مش التطبيق كله. */
-const AUTH_I18N = {
+/* ============ APP_I18N — نظام ترجمة موسّع لكل التطبيق (شاشة الدخول + الشات
+   + صفحة الأمان + كل المودالز)، مش بس شاشة الدخول زي الأول. لسه بيتعرّف
+   تلقائيًا أول مرة على لغة الجهاز (تركي بيفتح تركي، غير كده عربي)، وبيفتكر
+   آخر اختيار يدوي للمستخدم، وبقى بيتطبّق على document كله مش على auth-screen بس. ============ */
+const APP_I18N = {
   ar: {
     sub: 'مساحتك الخاصة، بتفتكر كل حاجة تقولها.',
     tabLogin: 'تسجيل الدخول', tabSignup: 'حساب جديد',
@@ -2047,6 +2058,44 @@ const AUTH_I18N = {
     passwordMinPlaceholder: '٦ حروف على الأقل',
     signupBtn: 'إنشاء الحساب',
     langToggle: 'TR',
+    newChat: 'محادثة جديدة', logout: 'تسجيل الخروج',
+    composerPlaceholder: 'اكتب رسالتك...', attachLabel: 'إرفاق ملف',
+    usageLockDefault: 'الجلسة النهارده خلصت.',
+    renameTitle: 'تعديل اسم المحادثة', renamePlaceholder: 'اسم المحادثة',
+    deleteTitle: 'حذف المحادثة؟', deleteText: 'هتتحذف المحادثة والرسائل اللي فيها نهائيًا، ومش هينفع ترجّعها تاني.',
+    cancel: 'إلغاء', save: 'حفظ', delete: 'حذف',
+    bioTitle: 'تأمين حسابك ببصمتك',
+    bioText: 'عشان نضمن عدالة استخدام التوكنات اليومية بين كل المستخدمين، لازم تسجّل بصمة إصبعك (أو أي وسيلة تحقق بيومترية على جهازك) قبل ما تكمل.',
+    bioTerms: 'تسجيل البصمة يربط حسابك بأمان بجهازك ويُستخدم حصريًا لمنع تكرار الحسابات الوهمية والتحايل على استهلاك الـ Tokens اليومية، لضمان عدالة الاستخدام للجميع. بصمتك بتتخزّن على جهازك بس عن طريق نظام تشغيله (WebAuthn) ومش بتتبعت لأي حد.',
+    bioRegisterBtn: 'تسجيل البصمة دلوقتي',
+    bioUnsupported: 'جهازك أو متصفحك مش داعم تسجيل بصمة (WebAuthn) دلوقتي — جرب متصفح تاني أو حدّث نظام التشغيل عشان تقدر تكمل.',
+    secBtnLabel: 'الأمان والخصوصية',
+    secTitle: 'درع الحماية الكامل', secSubtitle: 'نظام أمان شفاف، تحت سيطرتك بالكامل',
+    secStep1Title: 'عزل بياناتك بالكامل',
+    secStep1Text: 'كل محادثة وملف وسجل نشاط مربوط بحسابك بس، ومحدّش غيرك — حتى فريق التطبيق — يقدر يوصله من غير إذنك.',
+    secStep2Title: 'يعمل بسلاسة مع أي VPN',
+    secStep2Text: 'التطبيق مصمّم يشتغل بسلاسة تامة مع أي شبكة VPN تختارها، من غير أي حظر أو قيود. إحنا مش بنعمل تتبّع لموقعك أو شبكتك، ومفيش أي "بصمة تتبع" بتتسجّل عنك.',
+    secStep3Title: 'لوحة بياناتك الخاصة',
+    secStep3Text: 'تقدر تشوف بنفسك كل سجلات نشاطك المخزّنة على السيرفر في أي وقت.',
+    secDashboardBtn: 'عرض سجلاتي',
+    secPledgeTitle: 'التعهد الأمني المُلزم',
+    secPledgeText: 'بنتعهد إن قواعد عزل بياناتك ووعود الخصوصية دي مش تفاوضية. لو حصل أي خرق أو مخالفة لأي قاعدة من دول — بأي شكل — إنت صاحب السلطة المباشرة إنك تُبلّغ فورًا، والسيرفر هيتصرف تلقائيًا زي ما هو موضّح تحت من غير ما ينتظر موافقة حد.',
+    secEmergencyBtn: 'الإبلاغ عن خرق أمني طارئ',
+    secEmergencyNote: 'الضغط هنا بيوقف خدمات الذكاء الاصطناعي تلقائيًا لمدة 24 ساعة للمراجعة، وبيتبعت تنبيه لكل المستخدمين المتصلين.',
+    secConfirmTitle: 'تفعيل الإيقاف الطارئ؟',
+    secConfirmText: 'ده هيوقف خدمات الذكاء الاصطناعي لكل المستخدمين لمدة 24 ساعة، وهيتبعت تنبيه عام للكل. استخدمه بس لو فعلاً في خرق أمني حقيقي.',
+    secConfirmYes: 'أيوه، فعّل الإيقاف',
+    secBack: 'رجوع', secDashboardTitle: 'سجل نشاطك',
+    secDashboardEmpty: 'مفيش نشاط مسجّل لسه.',
+    secAlreadyReported: 'إنت بلّغت قبل كده، وبلاغك لسه قيد المراجعة.',
+    secReportError: 'حصل خطأ وإحنا بنبعت البلاغ، جرب تاني.',
+    secLoginRequired: 'سجّل دخولك الأول عشان تقدر تشوف سجلاتك.',
+    secBroadcastMsg: 'تنبيه أمني: تم تفعيل إجراء إيقاف طارئ — التطبيق تحت المراجعة الأمنية مؤقتًا.',
+    secAiPausedMsg: 'خدمات الذكاء الاصطناعي متوقفة مؤقتًا (تحت المراجعة الأمنية) — هترجع تلقائيًا خلال 24 ساعة.',
+    activityLabels: {
+      login: 'تسجيل دخول', signup: 'إنشاء حساب', logout: 'تسجيل خروج',
+      emergency_report: 'بلاغ أمني طارئ', biometric_registered: 'تسجيل بصمة'
+    },
     errors: {
       'auth/email-already-in-use': 'البريد ده متسجل قبل كده.',
       'auth/invalid-email': 'صيغة البريد مش صح.',
@@ -2070,6 +2119,44 @@ const AUTH_I18N = {
     passwordMinPlaceholder: 'En az 6 karakter',
     signupBtn: 'Hesap Oluştur',
     langToggle: 'AR',
+    newChat: 'Yeni sohbet', logout: 'Çıkış yap',
+    composerPlaceholder: 'Mesajını yaz...', attachLabel: 'Dosya ekle',
+    usageLockDefault: 'Bugünkü oturum bitti.',
+    renameTitle: 'Sohbet adını düzenle', renamePlaceholder: 'Sohbet adı',
+    deleteTitle: 'Sohbet silinsin mi?', deleteText: 'Bu sohbet ve içindeki tüm mesajlar kalıcı olarak silinecek, geri alınamaz.',
+    cancel: 'İptal', save: 'Kaydet', delete: 'Sil',
+    bioTitle: 'Hesabını parmak izinle güvence altına al',
+    bioText: 'Günlük token kullanımının tüm kullanıcılar arasında adil olmasını sağlamak için devam etmeden önce parmak izini (veya cihazındaki başka bir biyometrik doğrulamayı) kaydetmen gerekiyor.',
+    bioTerms: 'Parmak izi kaydı hesabını cihazına güvenli şekilde bağlar ve sadece sahte hesap oluşturmayı ve günlük token limitini aşmaya çalışmayı önlemek için kullanılır. Parmak izin sadece cihazının işletim sistemi (WebAuthn) üzerinden cihazında saklanır, hiçbir yere gönderilmez.',
+    bioRegisterBtn: 'Şimdi Parmak İzi Kaydet',
+    bioUnsupported: 'Cihazın veya tarayıcın şu an parmak izi kaydını (WebAuthn) desteklemiyor — devam edebilmek için başka bir tarayıcı dene veya işletim sistemini güncelle.',
+    secBtnLabel: 'Güvenlik ve Gizlilik',
+    secTitle: 'Tam Koruma Kalkanı', secSubtitle: 'Tamamen senin kontrolünde, şeffaf bir güvenlik sistemi',
+    secStep1Title: 'Verilerin tamamen izole',
+    secStep1Text: 'Her sohbet, dosya ve etkinlik kaydı sadece hesabına bağlıdır; senin iznin olmadan uygulama ekibi dahil hiç kimse ona erişemez.',
+    secStep2Title: 'Her VPN ile sorunsuz çalışır',
+    secStep2Text: 'Uygulama, seçtiğin herhangi bir VPN ağıyla hiçbir engelleme veya kısıtlama olmadan sorunsuz çalışacak şekilde tasarlandı. Konumunu veya ağını takip etmiyoruz; senin hakkında kaydedilen bir "izleme parmak izi" yok.',
+    secStep3Title: 'Kişisel veri panelin',
+    secStep3Text: 'Sunucuda kayıtlı tüm etkinlik kayıtlarını istediğin an kendin görebilirsin.',
+    secDashboardBtn: 'Kayıtlarımı Göster',
+    secPledgeTitle: 'Bağlayıcı Güvenlik Taahhüdü',
+    secPledgeText: 'Veri izolasyonu kurallarının ve gizlilik sözlerinin pazarlık konusu olmadığını taahhüt ediyoruz. Bu kurallardan herhangi biri herhangi bir şekilde ihlal edilirse, bunu anında bildirme yetkisi doğrudan sende olur ve sunucu aşağıda belirtildiği gibi kimseden onay beklemeden otomatik olarak devreye girer.',
+    secEmergencyBtn: 'Acil Güvenlik İhlali Bildir',
+    secEmergencyNote: 'Buraya basmak, yapay zeka hizmetlerini inceleme için otomatik olarak 24 saatliğine durdurur ve bağlı tüm kullanıcılara bir uyarı gönderir.',
+    secConfirmTitle: 'Acil durdurma etkinleştirilsin mi?',
+    secConfirmText: 'Bu, tüm kullanıcılar için yapay zeka hizmetlerini 24 saatliğine durdurur ve herkese genel bir uyarı gönderir. Sadece gerçek bir güvenlik ihlali varsa kullan.',
+    secConfirmYes: 'Evet, durdurmayı etkinleştir',
+    secBack: 'Geri', secDashboardTitle: 'Etkinlik Kayıtların',
+    secDashboardEmpty: 'Henüz kayıtlı bir etkinlik yok.',
+    secAlreadyReported: 'Daha önce bildirimde bulundun, bildirimin hâlâ inceleniyor.',
+    secReportError: 'Bildirim gönderilirken bir hata oluştu, tekrar dene.',
+    secLoginRequired: 'Kayıtlarını görebilmek için önce giriş yapmalısın.',
+    secBroadcastMsg: 'Güvenlik uyarısı: acil durdurma prosedürü etkinleştirildi — uygulama geçici olarak güvenlik incelemesi altında.',
+    secAiPausedMsg: 'Yapay zeka hizmetleri geçici olarak durduruldu (güvenlik incelemesi) — 24 saat içinde otomatik olarak geri gelecek.',
+    activityLabels: {
+      login: 'Giriş yapıldı', signup: 'Hesap oluşturuldu', logout: 'Çıkış yapıldı',
+      emergency_report: 'Acil güvenlik bildirimi', biometric_registered: 'Parmak izi kaydedildi'
+    },
     errors: {
       'auth/email-already-in-use': 'Bu e-posta zaten kayıtlı.',
       'auth/invalid-email': 'E-posta biçimi geçersiz.',
@@ -2083,6 +2170,8 @@ const AUTH_I18N = {
     }
   }
 };
+// اسم قديم لسه محتفظين بيه عشان أي كود تاني بيرجع له (توافق خلفي)
+const AUTH_I18N = APP_I18N;
 
 function detectDefaultAuthLang(){
   const saved = localStorage.getItem('authLang');
@@ -2091,28 +2180,59 @@ function detectDefaultAuthLang(){
   return sysLang.startsWith('tr') ? 'tr' : 'ar';
 }
 let currentAuthLang = detectDefaultAuthLang();
+let currentAppLang = currentAuthLang; // نفس القيمة، اسم أوضح للاستخدام في التطبيق كله
+
+// t(key) — بترجع النص المترجم للمفتاح المطلوب باللغة الحالية، مع fallback للعربي
+function t(key){
+  const dict = APP_I18N[currentAppLang] || APP_I18N.ar;
+  return (dict[key] !== undefined) ? dict[key] : ((APP_I18N.ar[key] !== undefined) ? APP_I18N.ar[key] : key);
+}
 
 function applyAuthLanguage(lang){
   currentAuthLang = (lang === 'tr') ? 'tr' : 'ar';
-  const dict = AUTH_I18N[currentAuthLang];
-  authScreen.setAttribute('lang', currentAuthLang);
-  authScreen.setAttribute('dir', currentAuthLang === 'tr' ? 'ltr' : 'rtl');
-  authScreen.querySelectorAll('[data-i18n]').forEach(el=>{
+  currentAppLang = currentAuthLang;
+  const dict = APP_I18N[currentAppLang];
+  const dir = currentAppLang === 'tr' ? 'ltr' : 'rtl';
+
+  // بيتطبّق على كل الصفحة دلوقتي (شاشة الدخول + التطبيق + صفحة الأمان)، مش بس auth-screen
+  document.documentElement.setAttribute('lang', currentAppLang);
+  authScreen.setAttribute('lang', currentAppLang);
+  authScreen.setAttribute('dir', dir);
+  appShell.setAttribute('lang', currentAppLang);
+  appShell.setAttribute('dir', dir);
+  const secModalEl = document.getElementById('security-modal');
+  if (secModalEl){ secModalEl.setAttribute('lang', currentAppLang); secModalEl.setAttribute('dir', dir); }
+
+  document.querySelectorAll('[data-i18n]').forEach(el=>{
     const key = el.getAttribute('data-i18n');
     if (dict[key] !== undefined) el.textContent = dict[key];
   });
-  authScreen.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{
     const key = el.getAttribute('data-i18n-placeholder');
     if (dict[key] !== undefined) el.placeholder = dict[key];
   });
+  document.querySelectorAll('[data-i18n-aria]').forEach(el=>{
+    const key = el.getAttribute('data-i18n-aria');
+    if (dict[key] !== undefined) el.setAttribute('aria-label', dict[key]);
+  });
+
   const toggleBtn = document.getElementById('auth-lang-toggle');
   if (toggleBtn) toggleBtn.textContent = dict.langToggle;
-  localStorage.setItem('authLang', currentAuthLang);
+  const appToggleLabel = document.getElementById('app-lang-toggle-label');
+  if (appToggleLabel) appToggleLabel.textContent = dict.langToggle;
+
+  localStorage.setItem('authLang', currentAppLang);
+
+  // لو في تنبيهات أمان شغالة (كيل-سويتش/بث)، حدّث نصوصها بلغة جديدة فورًا
+  if (typeof refreshSecurityBannersText === 'function') refreshSecurityBannersText();
 }
 document.getElementById('auth-lang-toggle').addEventListener('click', ()=>{
-  applyAuthLanguage(currentAuthLang === 'ar' ? 'tr' : 'ar');
+  applyAuthLanguage(currentAppLang === 'ar' ? 'tr' : 'ar');
 });
-applyAuthLanguage(currentAuthLang);
+document.getElementById('app-lang-toggle').addEventListener('click', ()=>{
+  applyAuthLanguage(currentAppLang === 'ar' ? 'tr' : 'ar');
+});
+applyAuthLanguage(currentAppLang);
 
 tabLogin.addEventListener('click', ()=>{
   tabLogin.classList.add('active'); tabSignup.classList.remove('active');
@@ -2276,7 +2396,20 @@ function updateUsageWindowUI(){
 window.addEventListener('beforeunload', syncUsageToFirebase);
 document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='hidden') syncUsageToFirebase(); });
 
-logoutBtn.addEventListener('click', ()=> auth.signOut());
+/* ============ ACTIVITY LOG — سجل نشاط المستخدم (يظهر في لوحة بياناته
+   بعد الدخول من زرار الدرع). كل سطر مربوط بحسابه بس عن طريق قواعد أمان
+   الـ Realtime Database (users/$uid قابل للقراءة/الكتابة لصاحبه فقط). ============ */
+function logActivity(action, extra){
+  const user = currentUser;
+  if (!user) return;
+  const entry = Object.assign({ action: action, at: Date.now() }, extra || {});
+  db.ref('users/'+user.uid+'/activityLog').push(entry).catch(()=>{});
+}
+
+logoutBtn.addEventListener('click', ()=>{
+  logActivity('logout');
+  auth.signOut();
+});
 
 /* ============ AUTH STATE ============ */
 auth.onAuthStateChanged(user=>{
@@ -2294,6 +2427,7 @@ auth.onAuthStateChanged(user=>{
     listenToConversations();
     refreshGeoContext(); // بيجيب الموقع/مواعيد الصلاة/القبلة في الخلفية، من غير ما يعطل حاجة
     enforceBiometricGate(); // بوابة البصمة البيومترية: حسابات جديدة وقديمة على السواء
+    logActivity('login');
   } else {
     currentUser = null;
     currentUserGender = null;
@@ -2304,6 +2438,151 @@ auth.onAuthStateChanged(user=>{
     if(conversationsRef) conversationsRef.off();
     authScreen.style.display='flex';
     appShell.style.display='none';
+  }
+});
+
+/* ============ SECURITY MODAL — صفحة الأمان، لوحة البيانات، والإبلاغ الطارئ ============ */
+const securityModal = document.getElementById('security-modal');
+const securityViewInfo = document.getElementById('security-view-info');
+const securityViewConfirm = document.getElementById('security-view-confirm');
+const securityViewDashboard = document.getElementById('security-view-dashboard');
+const activityLogList = document.getElementById('activity-log-list');
+const broadcastBanner = document.getElementById('security-broadcast-banner');
+const broadcastText = document.getElementById('security-broadcast-text');
+
+function showSecurityView(view){
+  [securityViewInfo, securityViewConfirm, securityViewDashboard].forEach(v=> v.classList.remove('active'));
+  if (view === 'confirm') securityViewConfirm.classList.add('active');
+  else if (view === 'dashboard') securityViewDashboard.classList.add('active');
+  else securityViewInfo.classList.add('active');
+}
+function openSecurityModal(){
+  showSecurityView('info');
+  securityModal.classList.add('open');
+}
+function closeSecurityModal(){
+  securityModal.classList.remove('open');
+}
+['security-shield-btn-auth','security-shield-btn-header'].forEach(id=>{
+  const btn = document.getElementById(id);
+  if (btn) btn.addEventListener('click', openSecurityModal);
+});
+document.getElementById('security-close-btn').addEventListener('click', closeSecurityModal);
+securityModal.addEventListener('click', (e)=>{ if (e.target === securityModal) closeSecurityModal(); });
+
+function loadActivityDashboard(){
+  if (!currentUser){
+    activityLogList.innerHTML = '<p class="activity-empty">'+t('secLoginRequired')+'</p>';
+    return;
+  }
+  activityLogList.innerHTML = '<p class="activity-loading">…</p>';
+  db.ref('users/'+currentUser.uid+'/activityLog').orderByChild('at').limitToLast(60).once('value')
+    .then(snap=>{
+      const items = [];
+      snap.forEach(ch=>{ items.push(ch.val()); });
+      items.reverse();
+      if (!items.length){
+        activityLogList.innerHTML = '<p class="activity-empty">'+t('secDashboardEmpty')+'</p>';
+        return;
+      }
+      const labels = (APP_I18N[currentAppLang] || APP_I18N.ar).activityLabels || {};
+      activityLogList.innerHTML = '';
+      items.forEach(it=>{
+        const row = document.createElement('div');
+        row.className = 'activity-row';
+        const label = labels[it.action] || it.action || '—';
+        const d = new Date(it.at || 0);
+        const timeStr = isNaN(d.getTime()) ? '' : d.toLocaleString(currentAppLang==='tr' ? 'tr-TR' : 'ar-EG');
+        const actionSpan = document.createElement('span');
+        actionSpan.className = 'activity-action';
+        actionSpan.textContent = label;
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'activity-time';
+        timeSpan.textContent = timeStr;
+        row.appendChild(actionSpan);
+        row.appendChild(timeSpan);
+        activityLogList.appendChild(row);
+      });
+    })
+    .catch(()=>{ activityLogList.innerHTML = '<p class="activity-empty">'+t('secReportError')+'</p>'; });
+}
+document.getElementById('open-dashboard-btn').addEventListener('click', ()=>{
+  showSecurityView('dashboard');
+  loadActivityDashboard();
+});
+document.getElementById('dashboard-back-btn').addEventListener('click', ()=> showSecurityView('info'));
+
+/* ============ EMERGENCY REPORT (كيل-سويتش) ============
+   كل مستخدم مسموحله ببلاغ واحد نشط بس في نفس الوقت (مفتاح الكتابة uid ثابت)،
+   عشان يمنع سبام/إساءة استخدام الزرار من نفس الحساب. البلاغ بيفعّل علَم
+   security/aiPause اللي بيتقرا من الـ Cloud Function (index.js) قبل أي طلب
+   ذكاء اصطناعي، وبيفعّل كمان security/broadcast اللي كل المستخدمين المتصلين
+   شايفينه لايف عن طريق .on('value'). */
+document.getElementById('emergency-report-btn').addEventListener('click', ()=> showSecurityView('confirm'));
+document.getElementById('emergency-confirm-no').addEventListener('click', ()=> showSecurityView('info'));
+document.getElementById('emergency-confirm-yes').addEventListener('click', async ()=>{
+  const btn = document.getElementById('emergency-confirm-yes');
+  if (!currentUser){ closeSecurityModal(); return; }
+  btn.disabled = true;
+  try{
+    const myReportRef = securityReportsRef.child(currentUser.uid);
+    const existing = await myReportRef.once('value');
+    if (existing.exists()){
+      showToast(t('secAlreadyReported'), 'info');
+      showSecurityView('info');
+      btn.disabled = false;
+      return;
+    }
+    const now = Date.now();
+    const until = now + 24*60*60*1000;
+    await myReportRef.set({ at: now, uid: currentUser.uid });
+    await securityAiPauseRef.set({ active: true, since: now, until: until, reportedBy: currentUser.uid });
+    await securityBroadcastRef.set({ active: true, since: now, until: until });
+    logActivity('emergency_report');
+    showSecurityView('info');
+    closeSecurityModal();
+  }catch(err){
+    console.error('emergency report error', err);
+    showToast(t('secReportError'), 'error');
+  }
+  btn.disabled = false;
+});
+
+/* ============ WATCHERS — بث حي لكل المستخدمين المتصلين (شغالة من غير
+   الحاجة لتسجيل دخول، عشان أي حد فاتح التطبيق يشوف التنبيه فورًا) ============ */
+function refreshSecurityBannersText(){
+  if (broadcastBanner.style.display === 'flex') broadcastText.textContent = t('secBroadcastMsg');
+  if (window.__aiPaused){
+    const lockText = document.getElementById('usage-lock-text');
+    if (lockText) lockText.textContent = t('secAiPausedMsg');
+  }
+}
+securityBroadcastRef.on('value', snap=>{
+  const val = snap.val();
+  const active = !!(val && val.active && (!val.until || val.until > Date.now()));
+  if (active){
+    broadcastText.textContent = t('secBroadcastMsg');
+    broadcastBanner.style.display = 'flex';
+  } else {
+    broadcastBanner.style.display = 'none';
+  }
+});
+securityAiPauseRef.on('value', snap=>{
+  const val = snap.val();
+  const active = !!(val && val.active && (!val.until || val.until > Date.now()));
+  window.__aiPaused = active;
+  document.querySelectorAll('.shield-btn').forEach(b=> b.classList.toggle('paused', active));
+  if (active){
+    const lockBanner = document.getElementById('usage-lock-banner');
+    const lockText = document.getElementById('usage-lock-text');
+    if (lockBanner && lockText){
+      lockText.textContent = t('secAiPausedMsg');
+      lockBanner.style.display = 'flex';
+    }
+    if (typeof composerInput !== 'undefined') composerInput.disabled = true;
+    if (typeof sendBtn !== 'undefined') sendBtn.disabled = true;
+  } else if (typeof updateUsageWindowUI === 'function' && currentUser){
+    updateUsageWindowUI();
   }
 });
 
@@ -3382,6 +3661,10 @@ composerInput.addEventListener('input', ()=>{
 
 composer.addEventListener('submit', async (e)=>{
   e.preventDefault();
+  if (window.__aiPaused){
+    showToast(t('secAiPausedMsg'), 'error');
+    return;
+  }
   if (usageIsLocked()){
     updateUsageWindowUI();
     return;

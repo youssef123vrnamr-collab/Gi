@@ -23,6 +23,23 @@
 </head>
 <body>
 
+<!-- ============ SHIELD ICON — تعريف مشترك للتدرّج المتحرّك (سيولة قوس قزح) ============ -->
+<svg width="0" height="0" style="position:absolute;overflow:hidden;pointer-events:none;">
+  <defs>
+    <linearGradient id="shieldFlow" x1="0" y1="0" x2="1" y2="0" spreadMethod="repeat">
+      <stop offset="0%" stop-color="#ff4d6d"/>
+      <stop offset="14%" stop-color="#ff9f4d"/>
+      <stop offset="28%" stop-color="#ffe14d"/>
+      <stop offset="42%" stop-color="#4dff88"/>
+      <stop offset="57%" stop-color="#4dc9ff"/>
+      <stop offset="71%" stop-color="#8a4dff"/>
+      <stop offset="85%" stop-color="#ff4dd2"/>
+      <stop offset="100%" stop-color="#ff4d6d"/>
+      <animateTransform attributeName="gradientTransform" type="translate" from="0 0" to="1 0" dur="2.4s" repeatCount="indefinite"/>
+    </linearGradient>
+  </defs>
+</svg>
+
 <!-- ============ LOADING ============ -->
 <div id="loading-screen">
   <div class="loader-inner">
@@ -35,6 +52,12 @@
 <!-- ============ AUTH SCREEN ============ -->
 <div id="auth-screen" class="screen" style="display:none;">
   <div class="auth-card">
+    <button id="security-shield-btn-auth" class="shield-btn" type="button" aria-label="Security &amp; Privacy" data-i18n-aria="secBtnLabel">
+      <svg viewBox="0 0 48 48" class="shield-svg" aria-hidden="true">
+        <path class="shield-outline" d="M24 4 L40 10 V22 C40 33 33 41 24 44 C15 41 8 33 8 22 V10 Z" fill="rgba(255,255,255,.04)" stroke="url(#shieldFlow)" stroke-width="2.4" stroke-linejoin="round"/>
+        <path class="shield-infinity" d="M14.5 24c0-3.1 2.4-5.4 5.2-5.4 3.5 0 5.2 3.1 6.8 5.4 1.6-2.3 3.3-5.4 6.8-5.4 2.8 0 5.2 2.3 5.2 5.4s-2.4 5.4-5.2 5.4c-3.5 0-5.2-3.1-6.8-5.4-1.6 2.3-3.3 5.4-6.8 5.4-2.8 0-5.2-2.3-5.2-5.4Z" fill="none" stroke="url(#shieldFlow)" stroke-width="2.6" stroke-linecap="round"/>
+      </svg>
+    </button>
     <button id="auth-lang-toggle" class="lang-toggle-btn" type="button" aria-label="Change language / تغيير اللغة">TR</button>
     <h1 class="brand">Digital Mind<span class="brand-model">AlalaGyGyAgha V2.6</span></h1>
     <p class="brand-sub" data-i18n="sub">مساحتك الخاصة، بتفتكر كل حاجة تقولها.</p>
@@ -77,19 +100,30 @@
   <aside id="sidebar">
     <div class="sidebar-top">
       <span class="brand-mini">Digital Mind</span>
-      <button id="new-chat-btn" class="ghost-btn" type="button"><i class="fas fa-plus"></i><span>محادثة جديدة</span></button>
+      <button id="new-chat-btn" class="ghost-btn" type="button"><i class="fas fa-plus"></i><span data-i18n="newChat">محادثة جديدة</span></button>
     </div>
     <nav id="conversation-list" class="conversation-list"></nav>
     <div class="sidebar-bottom">
       <div class="user-chip">
         <span id="user-name-label">—</span>
       </div>
-      <button id="logout-btn" class="ghost-btn subtle" type="button"><i class="fas fa-arrow-right-from-bracket"></i><span>تسجيل الخروج</span></button>
+      <button id="app-lang-toggle" class="ghost-btn subtle" type="button"><i class="fas fa-language"></i><span id="app-lang-toggle-label">TR</span></button>
+      <button id="logout-btn" class="ghost-btn subtle" type="button"><i class="fas fa-arrow-right-from-bracket"></i><span data-i18n="logout">تسجيل الخروج</span></button>
     </div>
   </aside>
 
   <main id="chat-main">
+    <div id="security-broadcast-banner" class="security-broadcast-banner" style="display:none;">
+      <i class="fas fa-triangle-exclamation"></i>
+      <span id="security-broadcast-text" data-i18n="secBroadcastMsg"></span>
+    </div>
     <header id="chat-header">
+      <button id="security-shield-btn-header" class="shield-btn" type="button" aria-label="Security &amp; Privacy" data-i18n-aria="secBtnLabel">
+        <svg viewBox="0 0 48 48" class="shield-svg" aria-hidden="true">
+          <path class="shield-outline" d="M24 4 L40 10 V22 C40 33 33 41 24 44 C15 41 8 33 8 22 V10 Z" fill="rgba(255,255,255,.04)" stroke="url(#shieldFlow)" stroke-width="2.4" stroke-linejoin="round"/>
+          <path class="shield-infinity" d="M14.5 24c0-3.1 2.4-5.4 5.2-5.4 3.5 0 5.2 3.1 6.8 5.4 1.6-2.3 3.3-5.4 6.8-5.4 2.8 0 5.2 2.3 5.2 5.4s-2.4 5.4-5.2 5.4c-3.5 0-5.2-3.1-6.8-5.4-1.6 2.3-3.3 5.4-6.8 5.4-2.8 0-5.2-2.3-5.2-5.4Z" fill="none" stroke="url(#shieldFlow)" stroke-width="2.6" stroke-linecap="round"/>
+        </svg>
+      </button>
       <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="القائمة"><i class="fas fa-bars"></i></button>
       <span id="conversation-title">محادثة جديدة</span>
       <div id="usage-window-bar" class="usage-window-bar" title="">
@@ -101,7 +135,7 @@
 
     <div id="usage-lock-banner" class="usage-lock-banner" style="display:none;">
       <i class="fas fa-lock"></i>
-      <span id="usage-lock-text">الجلسة النهارده خلصت.</span>
+      <span id="usage-lock-text" data-i18n="usageLockDefault">الجلسة النهارده خلصت.</span>
     </div>
 
     <div id="messages" class="messages"></div>
@@ -111,10 +145,10 @@
         <input type="file" id="attach-input" hidden multiple>
         <div class="composer-card">
           <div id="attach-preview" class="attach-preview"></div>
-          <textarea id="composer-input" rows="1" placeholder="اكتب رسالتك..." aria-label="اكتب رسالتك"></textarea>
+          <textarea id="composer-input" rows="1" placeholder="اكتب رسالتك..." aria-label="اكتب رسالتك" data-i18n-placeholder="composerPlaceholder" data-i18n-aria="composerPlaceholder"></textarea>
           <div class="composer-toolbar">
             <div class="composer-toolbar-left">
-              <button type="button" id="attach-btn" class="composer-icon-btn attach-btn" aria-label="إرفاق ملف"><i class="fas fa-plus"></i></button>
+              <button type="button" id="attach-btn" class="composer-icon-btn attach-btn" aria-label="إرفاق ملف" data-i18n-aria="attachLabel"><i class="fas fa-plus"></i></button>
               <span class="model-pill" id="model-pill">AlalaGyGyAgha V2.6</span>
             </div>
             <button type="submit" class="send-btn" aria-label="إرسال"><i id="send-btn-icon" class="fas fa-arrow-up"></i></button>
@@ -133,12 +167,12 @@
 <div id="rename-modal" class="app-modal-overlay">
   <div class="app-modal">
     <div class="app-modal-icon accent"><i class="fas fa-pen"></i></div>
-    <h3 class="app-modal-title">تعديل اسم المحادثة</h3>
+    <h3 class="app-modal-title" data-i18n="renameTitle">تعديل اسم المحادثة</h3>
     <form id="rename-form">
-      <input id="rename-input" class="field-input" type="text" maxlength="60" autocomplete="off" placeholder="اسم المحادثة">
+      <input id="rename-input" class="field-input" type="text" maxlength="60" autocomplete="off" placeholder="اسم المحادثة" data-i18n-placeholder="renamePlaceholder">
       <div class="app-modal-actions">
-        <button type="button" id="rename-cancel-btn" class="app-modal-btn ghost">إلغاء</button>
-        <button type="submit" class="app-modal-btn primary">حفظ</button>
+        <button type="button" id="rename-cancel-btn" class="app-modal-btn ghost" data-i18n="cancel">إلغاء</button>
+        <button type="submit" class="app-modal-btn primary" data-i18n="save">حفظ</button>
       </div>
     </form>
   </div>
@@ -148,11 +182,11 @@
 <div id="delete-modal" class="app-modal-overlay">
   <div class="app-modal">
     <div class="app-modal-icon danger"><i class="fas fa-trash-can"></i></div>
-    <h3 class="app-modal-title">حذف المحادثة؟</h3>
-    <p class="app-modal-text" id="delete-modal-text">هتتحذف المحادثة والرسائل اللي فيها نهائيًا، ومش هينفع ترجّعها تاني.</p>
+    <h3 class="app-modal-title" data-i18n="deleteTitle">حذف المحادثة؟</h3>
+    <p class="app-modal-text" id="delete-modal-text" data-i18n="deleteText">هتتحذف المحادثة والرسائل اللي فيها نهائيًا، ومش هينفع ترجّعها تاني.</p>
     <div class="app-modal-actions">
-      <button type="button" id="delete-cancel-btn" class="app-modal-btn ghost">إلغاء</button>
-      <button type="button" id="delete-confirm-btn" class="app-modal-btn danger"><i class="fas fa-trash-can"></i><span>حذف</span></button>
+      <button type="button" id="delete-cancel-btn" class="app-modal-btn ghost" data-i18n="cancel">إلغاء</button>
+      <button type="button" id="delete-confirm-btn" class="app-modal-btn danger"><i class="fas fa-trash-can"></i><span data-i18n="delete">حذف</span></button>
     </div>
   </div>
 </div>
@@ -164,24 +198,98 @@
 <div id="biometric-modal" class="app-modal-overlay biometric-overlay" style="display:none;">
   <div class="app-modal biometric-modal">
     <div class="app-modal-icon accent"><i class="fas fa-fingerprint"></i></div>
-    <h3 class="app-modal-title">تأمين حسابك ببصمتك</h3>
-    <p class="app-modal-text" id="biometric-modal-text">
+    <h3 class="app-modal-title" data-i18n="bioTitle">تأمين حسابك ببصمتك</h3>
+    <p class="app-modal-text" id="biometric-modal-text" data-i18n="bioText">
       عشان نضمن عدالة استخدام التوكنات اليومية بين كل المستخدمين، لازم تسجّل بصمة
       إصبعك (أو أي وسيلة تحقق بيومترية على جهازك) قبل ما تكمل.
     </p>
     <div class="biometric-terms">
       <i class="fas fa-circle-info"></i>
-      <span>تسجيل البصمة يربط حسابك بأمان بجهازك ويُستخدم حصريًا لمنع تكرار الحسابات الوهمية والتحايل على استهلاك الـ Tokens اليومية، لضمان عدالة الاستخدام للجميع. بصمتك بتتخزّن على جهازك بس عن طريق نظام تشغيله (WebAuthn) ومش بتتبعت لأي حد.</span>
+      <span data-i18n="bioTerms">تسجيل البصمة يربط حسابك بأمان بجهازك ويُستخدم حصريًا لمنع تكرار الحسابات الوهمية والتحايل على استهلاك الـ Tokens اليومية، لضمان عدالة الاستخدام للجميع. بصمتك بتتخزّن على جهازك بس عن طريق نظام تشغيله (WebAuthn) ومش بتتبعت لأي حد.</span>
     </div>
     <div id="biometric-error" class="field-error"></div>
     <div class="app-modal-actions biometric-actions">
       <button type="button" id="biometric-register-btn" class="app-modal-btn primary">
-        <i class="fas fa-fingerprint"></i><span>تسجيل البصمة دلوقتي</span>
+        <i class="fas fa-fingerprint"></i><span data-i18n="bioRegisterBtn">تسجيل البصمة دلوقتي</span>
       </button>
     </div>
-    <p class="biometric-fallback-note" id="biometric-unsupported-note" style="display:none;">
+    <p class="biometric-fallback-note" id="biometric-unsupported-note" style="display:none;" data-i18n="bioUnsupported">
       جهازك أو متصفحك مش داعم تسجيل بصمة (WebAuthn) دلوقتي — جرب متصفح تاني أو حدّث نظام التشغيل عشان تقدر تكمل.
     </p>
+  </div>
+</div>
+
+<!-- ============ SECURITY MODAL — الصفحة المخصصة للأمان والخصوصية ============ -->
+<div id="security-modal" class="app-modal-overlay security-overlay">
+  <div class="app-modal security-modal">
+    <button id="security-close-btn" class="modal-close-btn" type="button" aria-label="Close">&times;</button>
+
+    <!-- VIEW 1: معلومات الأمان + التعهد + زرار الطوارئ -->
+    <div id="security-view-info" class="security-view active">
+      <div class="security-hero">
+        <svg viewBox="0 0 48 48" class="shield-svg shield-svg-lg" aria-hidden="true">
+          <path class="shield-outline" d="M24 4 L40 10 V22 C40 33 33 41 24 44 C15 41 8 33 8 22 V10 Z" fill="rgba(255,255,255,.04)" stroke="url(#shieldFlow)" stroke-width="2.2" stroke-linejoin="round"/>
+          <path class="shield-infinity" d="M14.5 24c0-3.1 2.4-5.4 5.2-5.4 3.5 0 5.2 3.1 6.8 5.4 1.6-2.3 3.3-5.4 6.8-5.4 2.8 0 5.2 2.3 5.2 5.4s-2.4 5.4-5.2 5.4c-3.5 0-5.2-3.1-6.8-5.4-1.6 2.3-3.3 5.4-6.8 5.4-2.8 0-5.2-2.3-5.2-5.4Z" fill="none" stroke="url(#shieldFlow)" stroke-width="2.4" stroke-linecap="round"/>
+        </svg>
+        <h2 data-i18n="secTitle">درع الحماية الكامل</h2>
+        <p data-i18n="secSubtitle">نظام أمان شفاف، تحت سيطرتك بالكامل</p>
+      </div>
+
+      <div class="security-steps">
+        <div class="security-step">
+          <div class="security-step-icon"><i class="fas fa-user-shield"></i></div>
+          <div>
+            <h4 data-i18n="secStep1Title">عزل بياناتك بالكامل</h4>
+            <p data-i18n="secStep1Text">كل محادثة وملف وسجل نشاط مربوط بحسابك بس، ومحدّش غيرك — حتى فريق التطبيق — يقدر يوصله من غير إذنك.</p>
+          </div>
+        </div>
+        <div class="security-step">
+          <div class="security-step-icon"><i class="fas fa-globe"></i></div>
+          <div>
+            <h4 data-i18n="secStep2Title">يعمل بسلاسة مع أي VPN</h4>
+            <p data-i18n="secStep2Text">التطبيق مصمّم يشتغل بسلاسة تامة مع أي شبكة VPN تختارها، من غير أي حظر أو قيود. إحنا مش بنعمل تتبّع لموقعك أو شبكتك، ومفيش أي "بصمة تتبع" بتتسجّل عنك.</p>
+          </div>
+        </div>
+        <div class="security-step">
+          <div class="security-step-icon"><i class="fas fa-database"></i></div>
+          <div>
+            <h4 data-i18n="secStep3Title">لوحة بياناتك الخاصة</h4>
+            <p data-i18n="secStep3Text">تقدر تشوف بنفسك كل سجلات نشاطك المخزّنة على السيرفر في أي وقت.</p>
+            <button id="open-dashboard-btn" class="app-modal-btn ghost small" type="button" data-i18n="secDashboardBtn">عرض سجلاتي</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="security-pledge">
+        <div class="security-pledge-icon"><i class="fas fa-scale-balanced"></i></div>
+        <h4 data-i18n="secPledgeTitle">التعهد الأمني المُلزم</h4>
+        <p data-i18n="secPledgeText">بنتعهد إن قواعد عزل بياناتك ووعود الخصوصية دي مش تفاوضية. لو حصل أي خرق أو مخالفة لأي قاعدة من دول — بأي شكل — إنت صاحب السلطة المباشرة إنك تُبلّغ فورًا، والسيرفر هيتصرف تلقائيًا زي ما هو موضّح تحت من غير ما ينتظر موافقة حد.</p>
+      </div>
+
+      <button id="emergency-report-btn" class="emergency-btn" type="button">
+        <i class="fas fa-triangle-exclamation"></i>
+        <span data-i18n="secEmergencyBtn">الإبلاغ عن خرق أمني طارئ</span>
+      </button>
+      <p class="emergency-note" data-i18n="secEmergencyNote">الضغط هنا بيوقف خدمات الذكاء الاصطناعي تلقائيًا لمدة 24 ساعة للمراجعة، وبيتبعت تنبيه لكل المستخدمين المتصلين.</p>
+    </div>
+
+    <!-- VIEW 2: تأكيد قبل تفعيل الكيل-سويتش -->
+    <div id="security-view-confirm" class="security-view">
+      <div class="security-confirm-icon"><i class="fas fa-triangle-exclamation"></i></div>
+      <h3 class="app-modal-title" data-i18n="secConfirmTitle">تفعيل الإيقاف الطارئ؟</h3>
+      <p class="security-confirm-text" data-i18n="secConfirmText">ده هيوقف خدمات الذكاء الاصطناعي لكل المستخدمين لمدة 24 ساعة، وهيتبعت تنبيه عام للكل. استخدمه بس لو فعلاً في خرق أمني حقيقي.</p>
+      <div class="app-modal-actions">
+        <button type="button" id="emergency-confirm-no" class="app-modal-btn ghost" data-i18n="cancel">إلغاء</button>
+        <button type="button" id="emergency-confirm-yes" class="app-modal-btn danger" data-i18n="secConfirmYes">أيوه، فعّل الإيقاف</button>
+      </div>
+    </div>
+
+    <!-- VIEW 3: لوحة بيانات المستخدم -->
+    <div id="security-view-dashboard" class="security-view security-view-dashboard">
+      <button class="security-back-btn" id="dashboard-back-btn" type="button"><i class="fas fa-arrow-right"></i><span data-i18n="secBack">رجوع</span></button>
+      <h3 data-i18n="secDashboardTitle">سجل نشاطك</h3>
+      <div id="activity-log-list" class="activity-log-list"></div>
+    </div>
   </div>
 </div>
 
