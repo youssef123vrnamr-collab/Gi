@@ -1954,6 +1954,34 @@ let autoFollowActive = false;
   requestAnimationFrame(runFollowLoop);
 })();
 
+// ============ سباسر السكرول: مساحة فاضية مؤقتة بتتحط آخر حاجة في الشات ============
+// المشكلة اللي كانت بتحصل: scrollIntoView({block:'start'}) مقدرش يوصل برسالة
+// المستخدم/غرفة التفكير لأول الشاشة تمامًا لو المحادثة لسه قصيرة، لأن مفيش
+// محتوى كفاية تحتها يسمح للحاوية أصلاً إنها تتسكرول للمسافة المطلوبة (زي ما
+// بيحصل بالظبط في واجهة كلود). الحل: نفتح مساحة فاضية بارتفاع الشاشة تقريبًا
+// (scroll-spacer) فور ما نضيف الرسالة الجديدة، عشان يبقى فيه مساحة كافية
+// تسمح بالسكرول، وبعدين نقفلها (height:0 بأنيميشن ناعم) أول ما الرد يخلص أو
+// يتوقف، عشان محاولة السكرول الجاية تبدأ من غير أي مسافة فاضية زايدة متراكمة.
+let scrollSpacerEl = null;
+function ensureScrollSpacer(){
+  if (!scrollSpacerEl || !scrollSpacerEl.isConnected){
+    scrollSpacerEl = document.createElement('div');
+    scrollSpacerEl.className = 'scroll-spacer';
+  }
+  messagesEl.appendChild(scrollSpacerEl); // لازم تفضل آخر عنصر دايمًا
+  return scrollSpacerEl;
+}
+function openScrollSpacer(){
+  const spacer = ensureScrollSpacer();
+  spacer.style.transition = 'none'; // تفتح فورًا من غير أنيميشن عشان توصل قبل السكرول
+  spacer.style.height = messagesEl.clientHeight + 'px';
+  void spacer.offsetHeight; // نجبر المتصفح يطبّق القيمة فورًا قبل ما نرجّع الترانزيشن العادية
+  spacer.style.transition = '';
+}
+function closeScrollSpacer(){
+  if (scrollSpacerEl) scrollSpacerEl.style.height = '0px';
+}
+
 const scrollBottomBtn = document.createElement('button');
 scrollBottomBtn.type = 'button';
 scrollBottomBtn.id = 'scroll-bottom-btn';
@@ -2876,6 +2904,7 @@ function renderFinalAssistantMessage(wrap, msg){
     time.textContent = formatTime(msg.ts);
     wrap.appendChild(time);
     smartFollowScroll();
+    closeScrollSpacer();
   }
 
   try{
@@ -2980,6 +3009,7 @@ function appendMessageBubble(msg, opts){
       //    الشاشة، بدل ما تختفي فوق أول ما خطوات الرد تبدأ تتضاف تحتها،
       //    ونفعّل وضع "المتابعة التلقائية" عشان الشاشة تتابع نمو الرد بعدين ──
       autoFollowActive = true;
+      openScrollSpacer();
       requestAnimationFrame(()=> wrap.scrollIntoView({ behavior:'smooth', block:'start' }));
     } else {
       smartFollowScroll();
@@ -3036,6 +3066,7 @@ function appendThinkingIndicator(firstStepLabel){
   //    بالظبط (مش نستنى المتابعة التلقائية توصلها بعد شوية)، وده هو المكان
   //    اللي هتفضل ملزّقة فيه (sticky) طول مدة التفكير والكتابة ──
   autoFollowActive = true;
+  openScrollSpacer();
   requestAnimationFrame(()=> wrap.scrollIntoView({ behavior:'smooth', block:'start' }));
   const stepsEl = wrap.querySelector('.thinking-steps');
 
@@ -3418,6 +3449,7 @@ composer.addEventListener('submit', async (e)=>{
     // ── الرد "وقف" هنا (خطأ أو إلغاء)، فبنشيل التثبيت فوق (thinking-full)
     //    وترجع الغرفة سكرول طبيعي زي أي رسالة تانية بدل ما تفضل ملزّقة ──
     thinkingEl.classList.remove('thinking-full');
+    closeScrollSpacer();
     if (isAbortError(err)){
       const stopMsg = __manualStopRequested
         ? 'تم إيقاف الرد.'
