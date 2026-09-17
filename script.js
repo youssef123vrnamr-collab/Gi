@@ -16,6 +16,32 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
+
+/* ============ SHARE TARGET ============
+   لما المستخدم يعمل "مشاركة" من تطبيق تاني (واتساب، المتصفح، ...) ويختار
+   Digital Mind من قائمة المشاركة، النظام بيفتح index.html ومعاه ?title=&text=&url=
+   (متعرّف في manifest.json تحت share_target). هنا بنلقط القيم دي أول ما
+   الصفحة تفتح، بننضّف الرابط عشان أي ريفريش بعد كده ميكررش نفس النص، وبنسيبها
+   جاهزة في pendingSharedText لحد ما المحادثة تبقى جاهزة نحطها في صندوق الكتابة. */
+let pendingSharedText = '';
+try{
+  const __shareParams = new URLSearchParams(window.location.search);
+  const __sTitle = (__shareParams.get('title') || '').trim();
+  const __sText = (__shareParams.get('text') || '').trim();
+  const __sUrl = (__shareParams.get('url') || '').trim();
+  if(__sTitle || __sText || __sUrl){
+    pendingSharedText = [__sTitle, __sText, __sUrl].filter(Boolean).join('\n\n');
+    history.replaceState(null, '', window.location.pathname);
+  }
+}catch(e){ /* لو حصل أي خطأ في قراءة الرابط، منكملش عادي من غير مشاركة */ }
+function applyPendingSharedTextIfAny(){
+  if(!pendingSharedText) return;
+  composerInput.value = pendingSharedText;
+  composerInput.style.height = 'auto';
+  composerInput.style.height = Math.min(140, composerInput.scrollHeight) + 'px';
+  composerInput.focus();
+  pendingSharedText = '';
+}
 // ── التحكم في إيقاف الرد: كل رسالة بتتبعت بتاخد AbortController جديد،
 //    وأي fetch شغال في المعالجة (بحث، قراءة رابط، أي مزوّد ذكاء اصطناعي)
 //    بيتربط بنفس الـ signal بتاعه، عشان ضغطة "إيقاف" توقف كل حاجة فورًا ──
@@ -2186,6 +2212,7 @@ function listenToConversations(){
     } else if(!ids.length){
       startNewConversation();
     }
+    applyPendingSharedTextIfAny();
   });
 }
 
