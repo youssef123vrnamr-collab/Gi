@@ -2569,7 +2569,7 @@ function formatAnswer(raw){
   }
   s = out.join('\n');
   s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-  s = s.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,.08);padding:.1rem .3rem;border-radius:4px;direction:ltr;display:inline-block">$1</code>');
+  s = s.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,.08);padding:.1rem .3rem;border-radius:4px;direction:ltr;display:inline-block;max-width:100%;overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap">$1</code>');
   s = s.replace(/\n{3,}/g, '\n\n').replace(/\n/g, '<br>');
 
   for (var ci=0; ci<styleBlocks.length; ci++){
