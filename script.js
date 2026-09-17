@@ -1678,7 +1678,8 @@ async function transcribeAudio(file){
   const form = new FormData();
   form.append('file', file);
   form.append('model', 'whisper-large-v3');
-  form.append('language', 'ar');
+  // ── متفروضش اللغة عربي — سايبين Whisper يكتشف لغة الكلام لوحده، عشان
+  //    التفريغ يبقى دقيق مهما كانت لغة المتكلم/الأغنية ──
   const res = await fetchWithRetry('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + key },
@@ -1688,6 +1689,56 @@ async function transcribeAudio(file){
   if (!res.ok) throw new Error('فشل تفريغ الصوت');
   const data = await res.json();
   return (data.text || '').trim();
+}
+
+/* ============ تحليل موسيقي/صوتي حقيقي عبر Gemini (بيسمع الملف فعلاً، مش تفريغ كلام) ============
+   Whisper بيحوّل كلام لنص بس وما بيفهمش موسيقى. الدالة دي بتبعت الملف الصوتي
+   نفسه (base64، زي ما بنعمل بالظبط مع الصور في analyzeImagesWithGemini) لـ
+   Gemini، وهو فعلاً بيسمعه ويقدر يوصف الآلات، الإيقاع، جو الأغنية/المزاج،
+   ونوعها، ومش بس ينطق اللي اتقال. */
+function fileToBase64DataUrl(file){
+  return new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+async function analyzeAudioWithGemini(file, promptText){
+  if (!GeminiKeyPool.count()) return '';
+  let dataUrl;
+  try{ dataUrl = await fileToBase64DataUrl(file); } catch(e){ return ''; }
+  const commaIdx = dataUrl.indexOf(',');
+  const base64Data = commaIdx > -1 ? dataUrl.slice(commaIdx+1) : dataUrl;
+  const mimeType = (file.type && file.type.startsWith('audio/')) ? file.type : 'audio/mpeg';
+  const fullPrompt = (promptText ||
+    'استمع للملف الصوتي ده كامل وحلله تحليل حقيقي مش مجرد تفريغ كلام. لو أغنية: قول نوعها/جنسها الموسيقي، الجو العام/المزاج، الآلات اللي واضحة، سرعة الإيقاع (سريع/متوسط/بطيء)، وملخص بسيط لموضوع الكلمات لو الغنا مفهوم. لو مجرد كلام/تسجيل عادي مش أغنية، قول كده صراحة من غير تخمين تفاصيل موسيقية مش موجودة.')
+    + '\n\nجاوب باللغة العربية، بأسلوب منظم بنقاط عند الحاجة، من غير ماركداون خام زي ### أو --- أو جداول |.';
+  const parts = [{ text: fullPrompt }, { inline_data: { mime_type: mimeType, data: base64Data } }];
+  const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
+  for (let i=0;i<maxAttempts;i++){
+    const key = GeminiKeyPool.next();
+    if (!key) break;
+    try{
+      const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ contents: [{ parts }] }),
+        signal: requestSignal(45000)
+      });
+      const data = await res.json();
+      const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
+        data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+      GeminiKeyPool.report(key, res.status !== 429);
+      if (txt){
+        const used = data && data.usageMetadata && data.usageMetadata.totalTokenCount;
+        if (used) addTokensUsed(used);
+        return txt;
+      }
+      if (res.status !== 429) break;
+    } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini audio analysis failed", e); }
+  }
+  return '';
 }
 
 // ── ZIP: لو extract=true بنفك الضغط ونقرا كل ملف نصي جواه (بتخطي الملفات الثنائية/الكبيرة)،
@@ -1769,8 +1820,15 @@ async function processAttachedFile(file, opts){
   } else if (kind === 'excel'){
     applyChunking(await extractExcelText(file), 'ملف Excel (' + fileSizeLabel() + ')');
   } else if (kind === 'audio'){
-    result.extractedText = await transcribeAudio(file);
-    result.note = 'ملف صوتي (' + fileSizeLabel() + ' — تم تفريغه لنص)';
+    const [transcript, musicAnalysis] = await Promise.all([
+      transcribeAudio(file).catch(()=> ''),
+      analyzeAudioWithGemini(file).catch(()=> '')
+    ]);
+    let combined = '';
+    if (transcript) combined += 'الكلام/الغنا اللي اتفهم من التسجيل:\n' + transcript + '\n\n';
+    if (musicAnalysis) combined += 'تحليل موسيقي/صوتي حقيقي للملف (سمعه فعليًا):\n' + musicAnalysis;
+    result.extractedText = combined.trim() || 'مقدرتش أطلع أي تفريغ أو تحليل من الملف الصوتي ده دلوقتي.';
+    result.note = 'ملف صوتي (' + fileSizeLabel() + ' — تفريغ كلام + تحليل موسيقي حقيقي)';
   } else if (kind === 'zip'){
     const zr = await readZipFile(file, !!(opts && opts.extractZip));
     result.extractedText = zr.note;
