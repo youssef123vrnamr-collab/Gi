@@ -2683,13 +2683,18 @@ function formatAnswer(raw){
   return s;
 }
 
-// ── سطر تنبيه بسيط بيتحط آخر كل رد من الذكاء الاصطناعي، زي أي نموذج كبير
-//    (كلود، شات جي بي تي...) بيوضّح إن الرد ممكن يكون فيه غلط ──
+// ── سطر تنبيه بسيط بيتحط بس تحت آخر رد من الذكاء الاصطناعي (مش تحت كل
+//    رد)، زي أي نموذج كبير (كلود، شات جي بي تي...) بيوضّح إن الرد ممكن
+//    يكون فيه غلط. لما رد جديد يوصل، بنشيل السطر ده من الرد اللي قبله
+//    ونحطه بس تحت الجديد ──
 function buildAiDisclaimer(){
   const note = document.createElement('div');
   note.className = 'ai-disclaimer';
   note.textContent = AI_DISPLAY_NAME + ' ممكن يخطئ. تأكد من المعلومات المهمة.';
   return note;
+}
+function clearAiDisclaimers(){
+  messagesEl.querySelectorAll('.ai-disclaimer').forEach(el => el.remove());
 }
 
 // ── نفس شريط فلك بالظبط: نسخ / 👎 / 👍 — بيغذي غرفة 3 (الذاكرة الدائمة) ──
@@ -2912,6 +2917,7 @@ function renderFinalAssistantMessage(wrap, msg){
     time.className = 'msg-time';
     time.textContent = formatTime(msg.ts);
     wrap.appendChild(time);
+    clearAiDisclaimers();
     wrap.appendChild(buildAiDisclaimer());
     smartFollowScroll();
     closeScrollSpacer();
@@ -3007,6 +3013,7 @@ function appendMessageBubble(msg, opts){
   wrap.appendChild(time);
 
   if(msg.role !== 'user' && msg.text){
+    clearAiDisclaimers();
     wrap.appendChild(buildAiDisclaimer());
   }
 
