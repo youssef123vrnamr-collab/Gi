@@ -298,6 +298,7 @@ button:focus,button:focus-visible{outline:none;}
 .msg-avatar svg{width:12px;height:12px;fill:currentColor;display:block;}
 .msg-sender-name{font-size:12.5px;font-weight:700;color:var(--text-dim);}
 .msg-time{font-size:11px;color:var(--text-dim);margin-top:4px;padding:0 3px;}
+.ai-disclaimer{font-size:10.5px;color:var(--text-dim);opacity:.65;margin-top:2px;padding:0 3px;}
 
 /* ============ مهم: أي كلمة/رابط/مصطلح إنجليزي طويل من غير مسافات (زي أسماء برامج
    أو روابط) كان ممكن يخلي السطر كله يعدّي عرض الشاشة بدل ما يلف، فيضطر المستخدم

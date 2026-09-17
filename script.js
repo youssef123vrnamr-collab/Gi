@@ -2683,6 +2683,15 @@ function formatAnswer(raw){
   return s;
 }
 
+// ── سطر تنبيه بسيط بيتحط آخر كل رد من الذكاء الاصطناعي، زي أي نموذج كبير
+//    (كلود، شات جي بي تي...) بيوضّح إن الرد ممكن يكون فيه غلط ──
+function buildAiDisclaimer(){
+  const note = document.createElement('div');
+  note.className = 'ai-disclaimer';
+  note.textContent = AI_DISPLAY_NAME + ' ممكن يخطئ. تأكد من المعلومات المهمة.';
+  return note;
+}
+
 // ── نفس شريط فلك بالظبط: نسخ / 👎 / 👍 — بيغذي غرفة 3 (الذاكرة الدائمة) ──
 function buildActionBar(questionText, answerText){
   const bar = document.createElement('div');
@@ -2903,6 +2912,7 @@ function renderFinalAssistantMessage(wrap, msg){
     time.className = 'msg-time';
     time.textContent = formatTime(msg.ts);
     wrap.appendChild(time);
+    wrap.appendChild(buildAiDisclaimer());
     smartFollowScroll();
     closeScrollSpacer();
   }
@@ -2995,6 +3005,10 @@ function appendMessageBubble(msg, opts){
   time.className = 'msg-time';
   time.textContent = formatTime(msg.ts);
   wrap.appendChild(time);
+
+  if(msg.role !== 'user' && msg.text){
+    wrap.appendChild(buildAiDisclaimer());
+  }
 
   if (opts.prepend){
     // بيتحط بعد زرار "تحميل رسائل أقدم" (لو موجود) وقبل أول رسالة كانت متحمّلة ──
