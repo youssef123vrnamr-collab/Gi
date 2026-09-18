@@ -1367,6 +1367,11 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   async function tryAllProviders(){
     let configuredCount = 0, quotaExhaustedCount = 0;
     const failLog = [];
+    // ── خطوة حقيقية: قبل أي طلب لأي مزوّد، بنجيب توكن الهوية (Firebase Auth)
+    //    وتوكن App Check ونرفقهم بالطلب — ده اللي بيخلي السيرفر يتأكد إن
+    //    الطلب جاي فعليًا من حساب مسجّل ومن نسخة التطبيق الرسمية قبل ما ينفّذ
+    //    أي حاجة (شوف verifyCaller/verifyAppCheck في index.js) ──
+    step(t('stepVerifyingIdentity'));
     for (const p of providers){
       if (!p.configured()){ failLog.push(p.label + ': مفيش مفتاح'); continue; }
       configuredCount++;
@@ -2071,6 +2076,7 @@ const APP_I18N = {
     stepPreparingCode: 'بيجهّز الكود...',
     stepRetryingDifferentWay: 'بيجرب طريقة تانية...',
     stepServiceBusyRetrying: 'الخدمة مزدحمة شوية، بيعيد المحاولة...',
+    stepVerifyingIdentity: 'بيتأكد من الهوية وصلاحية الطلب...',
     errStopped: 'تم إيقاف الرد.',
     errTimeout: 'الرد أخد وقت أطول من المعتاد فاتلغى تلقائيًا. جرب تاني، أو ابعت رسالة أقصر لو ممكن.',
     errPausedRetry: '⏸️ الرد ده اتوقف لأن ميزة الطوارئ الأمنية كانت شغالة وقتها. ابعت رسالتك تاني دلوقتي وهترد عادي.',
@@ -2176,6 +2182,7 @@ const APP_I18N = {
     stepPreparingCode: 'Kod hazırlanıyor...',
     stepRetryingDifferentWay: 'Başka bir yöntem deneniyor...',
     stepServiceBusyRetrying: 'Hizmet biraz yoğun, tekrar deneniyor...',
+    stepVerifyingIdentity: 'Kimlik ve isteğin geçerliliği doğrulanıyor...',
     errStopped: 'Yanıt durduruldu.',
     errTimeout: 'Yanıt her zamankinden uzun sürdü ve otomatik olarak iptal edildi. Tekrar dene veya mümkünse daha kısa bir mesaj gönder.',
     errPausedRetry: '⏸️ Bu yanıt, o sırada acil güvenlik özelliği etkin olduğu için durduruldu. Mesajını şimdi tekrar gönder, normal şekilde yanıt verecek.',
@@ -3473,6 +3480,7 @@ function stepKind(text){
   if (/بيصلّح الكود|يصلّح الكود/.test(text)) return 'fix';
   if (/كود/.test(text)) return 'code';
   if (/طريقة تانية/.test(text)) return 'retry';
+  if (/الهوية/.test(text)) return 'security';
   if (/بيجهّز الرد/.test(text)) return 'prepare';
   if (/صور/.test(text)) return 'image';
   if (/ملفات|ملف/.test(text)) return 'file';
