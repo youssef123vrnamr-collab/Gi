@@ -472,24 +472,6 @@ button:focus,button:focus-visible{outline:none;}
   33%{color:#d8a34c;transform:scale(1.12);}
   66%{color:#e0916d;transform:scale(1.12);}
 }
-/* --- رمز ما لا نهاية لخطوة "التحقق الأمني" (App Check / تسجيل الدخول قبل أي رد) --- */
-.infinity-security{
-  background: linear-gradient(
-    135deg,
-    #121212 0%,      /* أسود فاحم */
-    #4b0082 40%,     /* بنفسجي نيلي (Indigo) */
-    #3927a9 70%,     /* بنفسجي مزرق (متوسط) */
-    #0000ff 100%     /* أزرق كهربائي ساطع */
-  );
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: infinitySecurityGlow 1.8s infinite alternate;
-  filter: drop-shadow(0 0 8px rgba(57, 39, 169, 0.8));
-}
-@keyframes infinitySecurityGlow{
-  0%{ transform: scale(1); filter: drop-shadow(0 0 6px rgba(75, 0, 130, 0.8)); }
-  100%{ transform: scale(1.15); filter: drop-shadow(0 0 15px rgba(0, 0, 255, 1)); }
-}
 .infinity-general{animation:infinityColorCycleCool 2.4s linear infinite;}
 @keyframes infinityColorCycleCool{
   0%{color:#1b1a17;transform:rotate(0deg);}
