@@ -45,7 +45,7 @@ const TAVILY_API_KEY = defineSecret("TAVILY_API_KEY");
 //    CLOUD_FUNCTIONS_BASE في script.js كان صح. مش قادر أعرف الدومين ده من
 //    الملفات اللي عندي، فلازم تحطه إنت.
 const ALLOWED_ORIGINS = [
-  "https://your-app.vercel.app",     // ⚠️ غيّرها لدومين الـ Vercel الحقيقي بتاعك
+  "https://mahfoozat-app.vercel.app",
   "http://localhost:3000",
   "http://127.0.0.1:5500",
 ];
