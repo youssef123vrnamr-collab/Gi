@@ -1116,7 +1116,14 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
       const res = await callJsonProxy(GEMINI_PROXY_URL, {
         model: 'gemini-3.5-flash', contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg
       }, idle.signal);
-      if (!res.ok || !res.body) return { ok:false, status: res.status, answerText:'', thoughtText:'', finishReason:null, usedTokens:0 };
+      if (!res.ok || !res.body){
+        // ── قبل كده كنا بنرمي سبب الفشل الحقيقي ونرجع بس status، فكان بيبان
+        //    في اللوج "رد فاضي" من غير ما نعرف ليه (مفتاح غلط؟ موديل غلط؟
+        //    quota خلصت؟). دلوقتي بنقرا جسم الرد ونطبعه في الكونسول عشان
+        //    نقدر نشخّص المشكلة الحقيقية من DevTools ──
+        try{ const errBody = await res.text(); console.error('geminiProxy failed', res.status, errBody); } catch(_e){}
+        return { ok:false, status: res.status, answerText:'', thoughtText:'', finishReason:null, usedTokens:0 };
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '', answerText = '', thoughtText = '', finishReason = null, usedTokens = 0;
@@ -1203,6 +1210,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta)
         if (!r.ok || !r.body){
           triedAny = true;
           if (r.status !== 429) allWere429 = false;
+          try{ const errBody = await r.text(); console.error('openRouterProxy failed', model, r.status, errBody); } catch(_e){}
           break;
         }
         const reader = r.body.getReader();
@@ -1278,6 +1286,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
         if (!r.ok || !r.body){
           triedAny = true;
           if (r.status !== 429) allWere429 = false;
+          try{ const errBody = await r.text(); console.error('vercelGatewayProxy failed', model, r.status, errBody); } catch(_e){}
           break;
         }
         const reader = r.body.getReader();
