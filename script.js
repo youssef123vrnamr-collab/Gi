@@ -963,7 +963,15 @@ function buildSearchResultsBlock(results){
    (Secret Manager)، والمتصفح بيبعت بس: توكن دخول Firebase + توكن App Check.
    حط روابط الفانكشنز الحقيقية بتاعتك تحت (بتظهرلك في الترمينال بعد
    firebase deploy). */
-const CLOUD_FUNCTIONS_BASE = "https://ضع-الدومين-الأساسي-لفانكشنز-مشروعك-هنا"; // مثال: https://us-central1-ai-prime-f9017.cloudfunctions.net
+// ⚠️⚠️ ده كان لسه الـ placeholder الأصلي في الكود ("ضع-الدومين-..") وده هو
+//    سبب فشل كل المزوّدين مع بعض (كل الطلبات كانت بتتبعت لدومين مش موجود
+//    فعليًا فتفشل بخطأ شبكة، والخطأ ده كان بيتبلع بصمت ويظهر كـ "رد فاضي").
+//    حطيت هنا رابط متوقّع بناءً على مشروع Firebase "ai-prime-f9017" اللي
+//    التطبيق بيستخدمه (من index.html/الإعدادات) + المنطقة الافتراضية
+//    (us-central1) لدوال الجيل التاني (2nd gen) اللي مفيهاش region محدد في
+//    index.js. تأكد إن ده مطابق للرابط اللي فعليًا ظهرلك في الترمينال بعد
+//    تنفيذ: firebase deploy --only functions
+const CLOUD_FUNCTIONS_BASE = "https://us-central1-ai-prime-f9017.cloudfunctions.net";
 const GROQ_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/groqProxy";
 const GROQ_WHISPER_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/groqWhisperProxy";
 const OPENROUTER_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/openRouterProxy";
@@ -1007,7 +1015,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
   const sys = buildSystemPrompt(searchResultsBlock || '');
   let runningMessages = [{ role:'system', content: sys }].concat(historyMsgs);
   let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
-  let round0AllWere429 = true, round0TriedAny = false;
+  let round0AllWere429 = true, round0TriedAny = false, lastError = null;
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
     let roundResult = null;
@@ -1065,7 +1073,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
         if (round === 0){ round0TriedAny = true; round0AllWere429 = false; }
         roundResult = { text: full, reasoning: reasoningPart, finishReason, usedTokens };
         break;
-      } catch(e){ console.warn("Groq proxy call failed", e); if (isAbortError(e)) throw e; }
+      } catch(e){ console.warn("Groq proxy call failed", e); if (isAbortError(e)) throw e; lastError = e; }
       finally{ idle.clear(); }
     }
     if (!roundResult || !roundResult.text) break;
@@ -1079,14 +1087,19 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
     ]);
   }
   if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-  return (round0TriedAny && round0AllWere429) ? { quotaExhausted: true } : null;
+  if (round0TriedAny && round0AllWere429) return { quotaExhausted: true };
+  // ── لو مفيش نص خالص ولا حتى محاولة اتسجلت (round0TriedAny === false)،
+  //    غالبًا ده خطأ شبكة/دومين حقيقي حصل قبل ما نوصل للسيرفر أصلاً — نرميه
+  //    عشان يظهر في failLog بدل "رد فاضي" اللي بيخفي المشكلة الحقيقية ──
+  if (!round0TriedAny && lastError) throw lastError;
+  return null;
 }
 
 /* ============ خط الدفاع 2: Gemini ============ */
 async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
   let contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
-  let round0AllWere429 = true, round0TriedAny = false;
+  let round0AllWere429 = true, round0TriedAny = false, lastError = null;
 
   // ── بيحاول يجيب "التفكير" (thoughts) مع الرد لو الموديل بيدعمها، ولو الموديل
   //    رفض الإعداد ده (خطأ 400) بيعيد المحاولة فورًا من غير thinkingConfig،
@@ -1148,7 +1161,7 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
         }
         if (r.status === 401 || r.status === 403){ console.error('geminiProxy auth/app-check rejected', r.status); break; }
         if (r.status !== 429) break;
-      } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini call failed", e); }
+      } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini call failed", e); lastError = e; }
     }
     if (!roundText) break;
     fullTotal += roundText;
@@ -1161,7 +1174,9 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
     ]);
   }
   if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-  return (round0TriedAny && round0AllWere429) ? { quotaExhausted: true } : null;
+  if (round0TriedAny && round0AllWere429) return { quotaExhausted: true };
+  if (!round0TriedAny && lastError) throw lastError;
+  return null;
 }
 
 /* ============ خط الدفاع 3: OpenRouter (موديلات مجانية) ============ */
@@ -1171,7 +1186,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta)
   //    لأن اكتشاف الموديلات المجانية كان محتاج مفتاح OpenRouter في المتصفح
   //    عشان ينادي /models — ودلوقتي المفتاح سيرفر-سايد بس ──
   const models = ['meta-llama/llama-3.3-70b-instruct:free','mistralai/mistral-7b-instruct:free','google/gemma-2-9b-it:free'];
-  let triedAny = false, allWere429 = true;
+  let triedAny = false, allWere429 = true, lastError = null;
   for (const model of models){
     try{
       let messages = baseMessages.slice();
@@ -1235,9 +1250,10 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta)
         } finally{ idle.clear(); }
       }
       if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-    } catch(e){ if (isAbortError(e)) throw e; console.warn("OpenRouter call failed", e); }
+    } catch(e){ if (isAbortError(e)) throw e; console.warn("OpenRouter call failed", e); lastError = e; }
   }
   if (triedAny && allWere429) return { quotaExhausted: true };
+  if (!triedAny && lastError) throw lastError;
   return null;
 }
 
@@ -1245,7 +1261,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta)
 async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
   const models = ['openai/gpt-4o-mini','google/gemini-2.0-flash','anthropic/claude-haiku-4-5'];
-  let triedAny = false, allWere429 = true;
+  let triedAny = false, allWere429 = true, lastError = null;
   for (const model of models){
     try{
       let messages = baseMessages.slice();
@@ -1308,9 +1324,10 @@ async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
         } finally{ idle.clear(); }
       }
       if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-    } catch(e){ if (isAbortError(e)) throw e; console.warn("Vercel Gateway call failed", e); }
+    } catch(e){ if (isAbortError(e)) throw e; console.warn("Vercel Gateway call failed", e); lastError = e; }
   }
   if (triedAny && allWere429) return { quotaExhausted: true };
+  if (!triedAny && lastError) throw lastError;
   return null;
 }
 
