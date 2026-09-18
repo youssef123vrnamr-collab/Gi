@@ -1159,7 +1159,9 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
     let roundText = null, roundReasoning = '', roundFinish = null, roundUsedTokens = 0;
-    for (let i=0;i<2;i++){
+    // ── بنعيد المحاولة على 429 (حد الاستخدام) وعلى 503 كمان (الموديل مزحوم
+    //    مؤقتًا عند جوجل — خطأ شائع ومؤقت)، مع تأخير بسيط متزايد بينهم ──
+    for (let i=0;i<3;i++){
       try{
         const onDelta = (acc)=>{ if (onContentDelta) onContentDelta(fullTotal + acc); };
         let r = await attempt(true, onDelta);
@@ -1171,7 +1173,9 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
           break;
         }
         if (r.status === 401 || r.status === 403){ console.error('geminiProxy auth/app-check rejected', r.status); break; }
-        if (r.status !== 429) break;
+        const isRetryable = r.status === 429 || r.status === 503;
+        if (!isRetryable) break;
+        if (i < 2) await new Promise(res => setTimeout(res, 1200 * (i+1)));
       } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini call failed", e); lastError = e; }
     }
     if (!roundText) break;
@@ -1591,14 +1595,19 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
     '\n\nجاوب بأسلوب احترافي منظم بنقاط عند الحاجة، من غير ماركداون خام زي ### أو --- أو جداول |.';
   const parts = [{ text: fullPrompt }].concat(imageParts);
   let triedAny = false, allWere429 = true, lastStatus = null;
-  for (let i=0;i<2;i++){
+  // ── 3 محاولات دلوقتي (كانت 2)، وبنعيد المحاولة على 429 (حد الاستخدام) وعلى
+  //    503 كمان (يعني "الموديل مزحوم عند جوجل مؤقتًا" — خطأ شائع ومؤقت، مش
+  //    مشكلة دائمة)، مع تأخير بسيط متزايد بين كل محاولة والتانية (backoff) ──
+  for (let i=0;i<3;i++){
     try{
       const r = await geminiProxySingleShot([{ parts }], 30000);
       triedAny = true;
       if (r.status !== 429) allWere429 = false;
       lastStatus = r.status;
       if (r.text){ if (r.usedTokens) addTokensUsed(r.usedTokens); return r.text; }
-      if (r.status !== 429 || r.gotEvent) break;
+      const isRetryable = r.status === 429 || r.status === 503;
+      if (!isRetryable || r.gotEvent) break;
+      if (i < 2) await new Promise(res => setTimeout(res, 1200 * (i+1)));
     } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini vision failed", e); }
   }
   // خدمة تحليل الصور معندهاش بديل تاني (Gemini بس) — فلو خلص توكنها فعلاً،
