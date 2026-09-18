@@ -1102,7 +1102,7 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
 async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
   let contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
-  let round0AllWere429 = true, round0TriedAny = false, lastError = null;
+  let round0AllWere429 = true, round0TriedAny = false, lastError = null, lastStatus = null;
 
   // ── بيحاول يجيب "التفكير" (thoughts) مع الرد لو الموديل بيدعمها، ولو الموديل
   //    رفض الإعداد ده (خطأ 400) بيعيد المحاولة فورًا من غير thinkingConfig،
@@ -1165,6 +1165,7 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
         let r = await attempt(true, onDelta);
         if (!r.ok) r = await attempt(false, onDelta);
         if (round === 0){ round0TriedAny = true; if (r.status !== 429) round0AllWere429 = false; }
+        lastStatus = r.status;
         if (r.answerText){
           roundText = r.answerText; roundReasoning = r.thoughtText; roundFinish = r.finishReason; roundUsedTokens = r.usedTokens || 0;
           break;
@@ -1186,7 +1187,7 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
   if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
   if (round0TriedAny && round0AllWere429) return { quotaExhausted: true };
   if (!round0TriedAny && lastError) throw lastError;
-  return null;
+  return { status: lastStatus };
 }
 
 /* ============ خط الدفاع 3: OpenRouter (موديلات مجانية) ============ */
@@ -1196,7 +1197,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta)
   //    لأن اكتشاف الموديلات المجانية كان محتاج مفتاح OpenRouter في المتصفح
   //    عشان ينادي /models — ودلوقتي المفتاح سيرفر-سايد بس ──
   const models = ['meta-llama/llama-3.3-70b-instruct:free','mistralai/mistral-7b-instruct:free','google/gemma-2-9b-it:free'];
-  let triedAny = false, allWere429 = true, lastError = null;
+  let triedAny = false, allWere429 = true, lastError = null, lastStatus = null;
   for (const model of models){
     try{
       let messages = baseMessages.slice();
@@ -1210,6 +1211,7 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta)
         if (!r.ok || !r.body){
           triedAny = true;
           if (r.status !== 429) allWere429 = false;
+          lastStatus = r.status;
           try{ const errBody = await r.text(); console.error('openRouterProxy failed', model, r.status, errBody); } catch(_e){}
           break;
         }
@@ -1265,14 +1267,17 @@ async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta)
   }
   if (triedAny && allWere429) return { quotaExhausted: true };
   if (!triedAny && lastError) throw lastError;
-  return null;
+  return { status: lastStatus };
 }
 
 /* ============ خط الدفاع 4: Vercel AI Gateway ============ */
 async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
-  const models = ['openai/gpt-4o-mini','google/gemini-2.0-flash','anthropic/claude-haiku-4-5'];
-  let triedAny = false, allWere429 = true, lastError = null;
+  // ⚠️ ملاحظة: 'google/gemini-2.0-flash' كان هنا قبل كده — الموديل ده اتوقف
+  // نهائيًا من جوجل في 1 يونيو 2026 (Gemini 2.0 بالكامل)، فأي طلب بيه كان
+  // لازم يفشل من الأساس. استبدلته بـ gemini-3.5-flash (البديل الرسمي).
+  const models = ['openai/gpt-4o-mini','google/gemini-3.5-flash','anthropic/claude-haiku-4-5'];
+  let triedAny = false, allWere429 = true, lastError = null, lastStatus = null;
   for (const model of models){
     try{
       let messages = baseMessages.slice();
@@ -1286,6 +1291,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
         if (!r.ok || !r.body){
           triedAny = true;
           if (r.status !== 429) allWere429 = false;
+          lastStatus = r.status;
           try{ const errBody = await r.text(); console.error('vercelGatewayProxy failed', model, r.status, errBody); } catch(_e){}
           break;
         }
@@ -1340,7 +1346,7 @@ async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
   }
   if (triedAny && allWere429) return { quotaExhausted: true };
   if (!triedAny && lastError) throw lastError;
-  return null;
+  return { status: lastStatus };
 }
 
 /* ============ الموزّع الرئيسي: بحث عبر الإنترنت لو محتاج، بعدين يجرب كل خط دفاع بالترتيب ============
@@ -1417,6 +1423,11 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
         failLog.push(p.label + ': Rate Limit (429)');
       } else if (thrown){
         failLog.push(p.label + ': ' + (thrown.message || thrown.name || 'خطأ غير معروف'));
+      } else if (result && result.status){
+        // ── دلوقتي بيبان كود الخطأ الحقيقي في المحادثة على طول (401 = مفتاح
+        //    غلط/غير موجود، 403 = مفتاح مرفوض، 400 = طلب غلط...) بدل ما
+        //    نضطر ندوّر في Console كل مرة ──
+        failLog.push(p.label + ': فشل - كود ' + result.status + (result.status===401 ? ' (مفتاح API غلط أو منتهي)' : result.status===403 ? ' (مفتاح مرفوض/مش مفعّل)' : ''));
       } else {
         failLog.push(p.label + ': رجع رد فاضي (مفيش نص)');
       }
@@ -1535,7 +1546,10 @@ async function geminiProxySingleShot(contents, timeoutMs){
   const idle = createIdleAbortSignal(timeoutMs || 30000);
   try{
     const res = await callJsonProxy(GEMINI_PROXY_URL, { model: 'gemini-3.5-flash', contents }, idle.signal);
-    if (!res.ok || !res.body) return { ok:false, status: res.status, text:'', usedTokens:0, gotEvent:false };
+    if (!res.ok || !res.body){
+      try{ const errBody = await res.text(); console.error('geminiProxySingleShot failed', res.status, errBody); } catch(_e){}
+      return { ok:false, status: res.status, text:'', usedTokens:0, gotEvent:false };
+    }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', txt = '', usedTokens = 0, gotEvent = false;
@@ -1576,12 +1590,13 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
   const fullPrompt = (promptText || (list.length > 1 ? 'صف الصور دي بالتفصيل باللغة العربية.' : 'صف هذه الصورة بالتفصيل باللغة العربية.')) +
     '\n\nجاوب بأسلوب احترافي منظم بنقاط عند الحاجة، من غير ماركداون خام زي ### أو --- أو جداول |.';
   const parts = [{ text: fullPrompt }].concat(imageParts);
-  let triedAny = false, allWere429 = true;
+  let triedAny = false, allWere429 = true, lastStatus = null;
   for (let i=0;i<2;i++){
     try{
       const r = await geminiProxySingleShot([{ parts }], 30000);
       triedAny = true;
       if (r.status !== 429) allWere429 = false;
+      lastStatus = r.status;
       if (r.text){ if (r.usedTokens) addTokensUsed(r.usedTokens); return r.text; }
       if (r.status !== 429 || r.gotEvent) break;
     } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini vision failed", e); }
@@ -1592,6 +1607,10 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
     const err = new Error('توكن خدمة تحليل الصور خلص');
     err.serviceDown = 'خدمة تحليل الصور';
     throw err;
+  }
+  if (lastStatus){
+    const hint = lastStatus===401 ? ' (مفتاح API غلط أو منتهي)' : lastStatus===403 ? ' (مفتاح مرفوض/مش مفعّل)' : '';
+    return 'عذراً، مقدرتش أحلل الصورة دلوقتي — فشل بكود ' + lastStatus + hint + '.';
   }
   return "عذراً، مقدرتش أحلل الصورة دلوقتي.";
 }
