@@ -17,33 +17,6 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
 
-/* ============ APP CHECK ============
-   ⚠️ بنستخدم reCAPTCHA Enterprise (مش النوع القديم) — لأن النوع القديم بقى
-   deprecated في Firebase Console وممكن تلاقي خانة الـ Secret Key بتاعته
-   معطّلة (رمادي) ومش قابلة للتعديل لتسجيلات جديدة. Enterprise أسهل: مفتاح
-   واحد بس (Key ID من Google Cloud Console → reCAPTCHA Enterprise)، من غير
-   أي Secret Key يتحط في Firebase خالص.
-   حط الـ Key ID بتاعك هنا (من console.cloud.google.com/security/recaptcha). */
-const APP_CHECK_SITE_KEY = "6Le83MEtAAAAAJTwdym0Ja945-5a1GCXNb_RxBbL";
-let appCheckInstance = null;
-try{
-  if (APP_CHECK_SITE_KEY && APP_CHECK_SITE_KEY.indexOf('ضع_') !== 0 && firebase.appCheck){
-    appCheckInstance = firebase.appCheck();
-    const provider = new firebase.appCheck.ReCaptchaEnterpriseProvider(APP_CHECK_SITE_KEY);
-    appCheckInstance.activate(provider, true); // true = تجديد تلقائي للتوكن
-  } else {
-    console.warn('App Check معطّل: محتاج تحط APP_CHECK_SITE_KEY الحقيقي في script.js');
-  }
-}catch(e){ console.warn('App Check activation failed', e); }
-
-async function getAppCheckToken(){
-  if (!appCheckInstance) return null;
-  try{
-    const res = await appCheckInstance.getToken(/*forceRefresh*/ false);
-    return res && res.token ? res.token : null;
-  }catch(e){ console.warn('getAppCheckToken failed', e); return null; }
-}
-
 /* ============ SECURITY (الدرع + الكيل-سويتش) — مراجع Realtime Database ============ */
 const securityAiPauseRef = db.ref('security/aiPause');
 const securityBroadcastRef = db.ref('security/broadcast');
@@ -186,29 +159,58 @@ const falakConfig = {
 const falakApp = firebase.initializeApp(falakConfig, "falak");
 const falakDb = falakApp.firestore();
 
-/* ============ حالة توفّر كل مزوّد (Boolean بس، مش المفتاح نفسه) ============
-   بعد ما كل النداءات بقت عن طريق الـ Cloud Function Proxies (كل مفتاح
-   Secret سيرفر-سايد بمفرده)، التطبيق ده مالوش داعي يعرف قيمة المفتاح
-   الحقيقي خالص — بس محتاج يعرف "هل المزوّد ده متاح للاستخدام ولا لأ" عشان
-   يقرر يجرب يكلمه ولا يتخطاه فورًا. فبدل ما نخزّن المفاتيح الحقيقية في
-   الذاكرة زي الأول، بنقرا نفس حقول فلك (لسه نفس الدكيومنت المشترك، فلك
-   لسه محتاجاه بالشكل ده لنظامها هي)، لكن بنحوّلها فورًا لـ true/false بس
-   ومنخزّنش قيمة المفتاح نفسها في أي متغيّر بيعيش بعد اللحظة دي. */
-const providerConfigured = { groq:false, gemini:false, openrouter:false, vercel:false };
+/* ============ ApiKeyPool (نفس نسخة فلك حرفيًا) ============
+   لو فيه أكتر من مفتاح لنفس المزوّد، بيوزّع الطلبات بينهم (Round-Robin)،
+   ولو مفتاح فشل مرتين على التوالي بيتجنّبه لمدة 5 دقايق ويستخدم غيره. */
+const ApiKeyPool = {
+  create(){
+    const state = { keys: [], idx: 0, status: {} };
+    return {
+      setKeys(arr){
+        state.keys = (arr||[]).map(k=>(k||'').toString().trim()).filter(Boolean);
+        if (state.idx >= state.keys.length) state.idx = 0;
+      },
+      count(){ return state.keys.length; },
+      next(){
+        if (!state.keys.length) return null;
+        const n = state.keys.length;
+        for (let i=0;i<n;i++){
+          const k = state.keys[state.idx % n];
+          state.idx = (state.idx+1) % n;
+          const s = state.status[k];
+          const degraded = s && s.consecFail>=2 && (Date.now()-s.lastFailAt) < 300000;
+          if (!degraded) return k;
+        }
+        return state.keys[0];
+      },
+      report(key, ok){
+        if (!key) return;
+        const s = state.status[key] || (state.status[key] = { consecFail:0, lastFailAt:0 });
+        if (ok) s.consecFail = 0; else { s.consecFail++; s.lastFailAt = Date.now(); }
+      }
+    };
+  }
+};
+const GroqKeyPool = ApiKeyPool.create();
+const GeminiKeyPool = ApiKeyPool.create();
+const OpenRouterKeyPool = ApiKeyPool.create();
+const VercelGatewayKeyPool = ApiKeyPool.create();
 let globalAiInstructions = "";
-let tavilyConfigured = false;
+let tavilyApiKey = "";
 
 falakDb.collection("system").doc("ai_settings").onSnapshot(
   snap => {
     const d = snap.exists ? (snap.data() || {}) : {};
+    const soloGroq = (d.groqApiKey && String(d.groqApiKey).trim()) || "";
+    const soloGemini = (d.geminiApiKey && String(d.geminiApiKey).trim()) || "";
     globalAiInstructions = (d.globalAiInstructions && String(d.globalAiInstructions).trim()) || "";
-    tavilyConfigured = !!(d.tavilyApiKey && String(d.tavilyApiKey).trim());
+    tavilyApiKey = (d.tavilyApiKey && String(d.tavilyApiKey).trim()) || "";
     globalDailyTokenBudget = (d.dailyTokenBudget && Number(d.dailyTokenBudget) > 0) ? Number(d.dailyTokenBudget) : DEFAULT_DAILY_TOKEN_BUDGET;
     updateUsageWindowUI();
-    providerConfigured.groq = !!((d.groqApiKey && String(d.groqApiKey).trim()) || (Array.isArray(d.groqApiKeys) && d.groqApiKeys.length));
-    providerConfigured.gemini = !!((d.geminiApiKey && String(d.geminiApiKey).trim()) || (Array.isArray(d.geminiApiKeys) && d.geminiApiKeys.length));
-    providerConfigured.openrouter = !!(Array.isArray(d.openrouterApiKeys) && d.openrouterApiKeys.length);
-    providerConfigured.vercel = !!(Array.isArray(d.vercelApiKeys) && d.vercelApiKeys.length);
+    GroqKeyPool.setKeys(Array.isArray(d.groqApiKeys) && d.groqApiKeys.length ? d.groqApiKeys : (soloGroq ? [soloGroq] : []));
+    GeminiKeyPool.setKeys(Array.isArray(d.geminiApiKeys) && d.geminiApiKeys.length ? d.geminiApiKeys : (soloGemini ? [soloGemini] : []));
+    OpenRouterKeyPool.setKeys(Array.isArray(d.openrouterApiKeys) ? d.openrouterApiKeys : []);
+    VercelGatewayKeyPool.setKeys(Array.isArray(d.vercelApiKeys) ? d.vercelApiKeys : []);
   },
   err => {
     // الأغلب لو ده ظهر: صلاحيات Firestore بتاعة فلك مش سامحة بالقراءة من
@@ -750,13 +752,7 @@ function buildUserIdentityBlock(){
 }
 
 function buildSystemPrompt(searchResultsBlock){
-  // ── لغة الرد بتتبع لغة الواجهة اللي المستخدم مختارها (عربي/تركي)، مش
-  //    عربي دايمًا زي ما كانت — عشان لو حد شغّل التطبيق بالتركي، يتكلم معاه
-  //    الذكاء الاصطناعي نفسه بالتركي مش بس شاشات القوائم والأزرار ──
-  const langInstruction = currentAppLang === 'tr'
-    ? 'اسمك "' + AI_DISPLAY_NAME + '". Kullanıcının arayüz dili Türkçe olarak ayarlı, bu yüzden ona açık ve profesyonel bir şekilde SADECE TÜRKÇE cevap ver (kullanıcı başka bir dilde yazsa bile, sen Türkçe cevap ver — o dilde bir cümleyle karşılık verip Türkçeye dönmen yeterli). Sana kim olduğun sorulursa, sadece bir yapay zeka asistanı olduğunu söyle, belirli bir şirket veya model adı verme (yanıtlar arka planda birden fazla modele otomatik dağıtılıyor). Claude ya da ChatGPT olduğunu söylemen kesinlikle yasak.'
-    : 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.';
-  return langInstruction
+  return 'اسمك "' + AI_DISPLAY_NAME + '". جاوب بالعربية بوضوح واحترافية. لو حد سألك مين انت، قول إنك مساعد ذكاء اصطناعي بس، من غير ما تحدد اسم شركة أو موديل معيّن (لأن الردود بتتوزّع تلقائيًا على أكتر من نموذج في الخلفية). ممنوع تقول إنك Claude أو ChatGPT أو أي هوية مختلفة عن دي.'
     + buildUserIdentityBlock()
     + buildLiveContextBlock()
     + buildReasoningRoomBlock()
@@ -867,13 +863,28 @@ function buildLiveContextBlock(){
 }
 
 /* ============ البحث الحقيقي في الإنترنت عبر Tavily (نفس فلك بالظبط) ============ */
-function getTavilyApiKey(){ return tavilyConfigured; } // اسم قديم متسيب لتوافق أي كود تاني بيرجع له، دلوقتي بيرجع Boolean بس مش المفتاح
+function getTavilyApiKey(){ return (tavilyApiKey && String(tavilyApiKey).trim()) || ""; }
 
 async function performWebSearch(query, includeDomains){
+  const key = getTavilyApiKey();
+  if (!key) return null;
   try{
-    const body = { action: 'search', query: query, max_results: 5, search_depth: 'advanced', include_answer: false, include_images: true, include_image_descriptions: true };
+    const body = {
+      api_key: key,
+      query: query,
+      search_depth: 'advanced',
+      max_results: 5,
+      include_answer: false,
+      include_images: true,
+      include_image_descriptions: true
+    };
     if (includeDomains && includeDomains.length) body.include_domains = includeDomains;
-    const r = await callJsonProxy(TAVILY_PROXY_URL, body, requestSignal(30000));
+    const r = await fetchWithRetry('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: requestSignal(30000)
+    });
     if (!r.ok) return null;
     return await r.json();
   } catch(e){ if (isAbortError(e)) throw e; console.warn('performWebSearch failed', e); return null; }
@@ -904,17 +915,22 @@ function shouldWebSearch(t){
 // ── مرحلة تانية ذكية: لو مفيش كلمة صريحة، الذكاء الاصطناعي نفسه بيقرر ──
 async function classifyNeedsSearch(userMsg){
   try{
-    if (!userMsg || userMsg.trim().length < 4) return false;
-    const r = await callJsonProxy(GROQ_PROXY_URL, {
-      model: 'openai/gpt-oss-120b',
-      max_tokens: 3,
-      temperature: 0,
-      stream: false,
-      messages: [
-        { role: 'system', content: 'رد بكلمة واحدة بس: "نعم" لو الرسالة محتاجة معلومة حديثة/حقيقية أو حدث حالي أو حاجة لازم تتأكد منها من الإنترنت (زي أخبار، أسعار، تواريخ قريبة، أسماء أشخاص أو شركات أو منتجات حالية، نتائج، إحصائيات، حاجة بتتغيّر بمرور الوقت). أو رد "لا" لو مجرد كلام عادي، تحية، سؤال عن مفهوم علمي/تاريخي ثابت، طلب مساعدة عامة، أو طلب برمجة/كود. رد بكلمة واحدة بس من غير أي شرح.' },
-        { role: 'user', content: userMsg }
-      ]
-    }, requestSignal(30000));
+    const apiKey = GroqKeyPool.next();
+    if (!apiKey || !userMsg || userMsg.trim().length < 4) return false;
+    const r = await fetchWithRetry('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        max_tokens: 3,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: 'رد بكلمة واحدة بس: "نعم" لو الرسالة محتاجة معلومة حديثة/حقيقية أو حدث حالي أو حاجة لازم تتأكد منها من الإنترنت (زي أخبار، أسعار، تواريخ قريبة، أسماء أشخاص أو شركات أو منتجات حالية، نتائج، إحصائيات، حاجة بتتغيّر بمرور الوقت). أو رد "لا" لو مجرد كلام عادي، تحية، سؤال عن مفهوم علمي/تاريخي ثابت، طلب مساعدة عامة، أو طلب برمجة/كود. رد بكلمة واحدة بس من غير أي شرح.' },
+          { role: 'user', content: userMsg }
+        ]
+      }),
+      signal: requestSignal(30000)
+    });
     if (!r.ok) return false;
     const d = await r.json();
     const ans = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
@@ -930,8 +946,17 @@ function extractFirstUrl(text){
   return m && m[0] ? m[0] : null;
 }
 async function performUrlExtract(url){
+  const key = getTavilyApiKey();
+  if (!key) return null;
   try{
-    const r = await callJsonProxy(TAVILY_PROXY_URL, { action: 'extract', urls: [url] }, requestSignal(30000));
+    const r = await fetchWithRetry('https://api.tavily.com/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // extract_depth: 'advanced' بيدّي فرصة أكبر لقراءة صفحات فيها جافاسكريبت
+      // أو تنسيق معقّد (زي صفحات مشاركة Gemini/ChatGPT)، بدل الوضع الافتراضي البسيط
+      body: JSON.stringify({ api_key: key, urls: [url], extract_depth: 'advanced' }),
+      signal: requestSignal(30000)
+    });
     if (!r.ok) return null;
     const d = await r.json();
     const item = d && d.results && d.results[0];
@@ -959,80 +984,39 @@ function buildSearchResultsBlock(results){
 /* ============ خط الدفاع 1: Groq — Streaming + غرفة التفكير العميق الحية ============
    لو الرد اتقطع قبل ما يخلص (finish_reason === 'length' — بيحصل غالبًا مع أكواد
    طويلة)، بنكمّل تلقائيًا بطلب تاني من نفس النقطة، لحد ما يخلص فعلاً أو نوصل
-   للحد الأقصى من المحاولات، بدل ما نسيب الكود مبتور.
-
-   ⚠️ ده دلوقتي بينادي الـ Cloud Functions (في index.js) بدل ما يكلم مزوّدي
-   الذكاء الاصطناعي مباشرة بمفاتيح خام. كل المفاتيح بقت محفوظة سيرفر-سايد بس
-   (Secret Manager)، والمتصفح بيبعت بس: توكن دخول Firebase + توكن App Check.
-   حط روابط الفانكشنز الحقيقية بتاعتك تحت (بتظهرلك في الترمينال بعد
-   firebase deploy). */
-// ⚠️⚠️ ده كان لسه الـ placeholder الأصلي في الكود ("ضع-الدومين-..") وده هو
-//    سبب فشل كل المزوّدين مع بعض (كل الطلبات كانت بتتبعت لدومين مش موجود
-//    فعليًا فتفشل بخطأ شبكة، والخطأ ده كان بيتبلع بصمت ويظهر كـ "رد فاضي").
-//    حطيت هنا رابط متوقّع بناءً على مشروع Firebase "ai-prime-f9017" اللي
-//    التطبيق بيستخدمه (من index.html/الإعدادات) + المنطقة الافتراضية
-//    (us-central1) لدوال الجيل التاني (2nd gen) اللي مفيهاش region محدد في
-//    index.js. تأكد إن ده مطابق للرابط اللي فعليًا ظهرلك في الترمينال بعد
-//    تنفيذ: firebase deploy --only functions
-const CLOUD_FUNCTIONS_BASE = "https://us-central1-ai-prime-f9017.cloudfunctions.net";
-const GROQ_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/groqProxy";
-const GROQ_WHISPER_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/groqWhisperProxy";
-const OPENROUTER_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/openRouterProxy";
-const VERCEL_GATEWAY_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/vercelGatewayProxy";
-const GEMINI_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/geminiProxy";
-const TAVILY_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/tavilyProxy";
+   للحد الأقصى من المحاولات، بدل ما نسيب الكود مبتور. */
 const CONTINUE_PROMPT = 'كمل بالظبط من نفس الحرف اللي وقفت عنده، من غير ما تعيد ولا حرف كتبته قبل كده، ومن غير أي مقدمة أو تعليق زيادة. لو كنت في نص كود، كمل الكود نفسه لحد ما يخلص ويتقفل بـ ``` — ممنوع تلخيص أو اختصار أي جزء.';
 const MAX_CONTINUATIONS = 5;
-const GROQ_PROXY_ATTEMPTS = 2; // محاولتين بس (مفيش تدوير مفاتيح دلوقتي، المفتاح واحد وسيرفر-سايد)
-
-// ── هيدرز الهوية المطلوبة في أي نداء لأي Cloud Function بروكسي (دخول + App Check) ──
-async function getProxyAuthHeaders(){
-  if (!currentUser) throw new Error('NOT_SIGNED_IN');
-  const [idToken, appCheckToken] = await Promise.all([
-    currentUser.getIdToken(),
-    getAppCheckToken()
-  ]);
-  if (!appCheckToken) throw new Error('APP_CHECK_TOKEN_MISSING'); // fail-closed لو App Check مش متفعّل صح
-  return { "Authorization": "Bearer " + idToken, "X-Firebase-AppCheck": appCheckToken };
-}
-// نداء عام لأي بروكسي JSON (مش ملفات) — بيرجّع Response زي fetch العادي
-async function callJsonProxy(url, bodyObj, idleSignal){
-  const authHeaders = await getProxyAuthHeaders();
-  return fetchWithRetry(url, {
-    method: "POST",
-    headers: Object.assign({ "Content-Type": "application/json" }, authHeaders),
-    body: JSON.stringify(bodyObj),
-    signal: idleSignal
-  });
-}
-
-async function callGroqProxyOnce(runningMessages, idleSignal){
-  return callJsonProxy(GROQ_PROXY_URL, {
-    model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
-    stream: true, reasoning_effort: 'high', reasoning_format: 'parsed', stream_options: { include_usage: true }
-  }, idleSignal);
-}
 
 async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, onContentDelta){
   if (window.__aiPaused) throw new Error('AI_PAUSED_SECURITY_LOCK');
+  if (!GroqKeyPool.count()) return null;
+  const maxAttempts = Math.min(GroqKeyPool.count(), 3);
   const sys = buildSystemPrompt(searchResultsBlock || '');
   let runningMessages = [{ role:'system', content: sys }].concat(historyMsgs);
   let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
-  let round0AllWere429 = true, round0TriedAny = false, lastError = null;
+  let round0AllWere429 = true, round0TriedAny = false;
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
     let roundResult = null;
-    for (let i=0;i<GROQ_PROXY_ATTEMPTS;i++){
+    for (let i=0;i<maxAttempts;i++){
+      const key = GroqKeyPool.next();
+      if (!key) break;
       const idle = createIdleAbortSignal(45000);
       try{
-        const res = await callGroqProxyOnce(runningMessages, idle.signal);
+        const res = await fetchWithRetry("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "openai/gpt-oss-120b", messages: runningMessages, max_tokens: 8192, temperature: 0.4,
+            stream: true, reasoning_effort: 'high', reasoning_format: 'parsed', stream_options: { include_usage: true }
+          }),
+          signal: idle.signal
+        });
         if (!res.ok || !res.body){
+          GroqKeyPool.report(key, res.status !== 429);
           if (round === 0){ round0TriedAny = true; if (res.status !== 429) round0AllWere429 = false; }
-          if (res.status === 401 || res.status === 403){
-            console.error('groqProxy auth/app-check rejected the request', res.status);
-            i = GROQ_PROXY_ATTEMPTS; break; // متبقاش تحاول تاني، المشكلة مش مؤقتة
-          }
-          if (res.status !== 429) { i = GROQ_PROXY_ATTEMPTS; break; }
+          if (res.status !== 429) { i = maxAttempts; break; }
           continue;
         }
         const reader = res.body.getReader();
@@ -1073,10 +1057,11 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
           if (full){ finishReason = 'length'; }
           else throw streamErr;
         }
+        GroqKeyPool.report(key, true);
         if (round === 0){ round0TriedAny = true; round0AllWere429 = false; }
         roundResult = { text: full, reasoning: reasoningPart, finishReason, usedTokens };
         break;
-      } catch(e){ console.warn("Groq proxy call failed", e); if (isAbortError(e)) throw e; lastError = e; }
+      } catch(e){ console.warn("Groq call failed", e); GroqKeyPool.report(key, false); if (isAbortError(e)) throw e; }
       finally{ idle.clear(); }
     }
     if (!roundResult || !roundResult.text) break;
@@ -1090,40 +1075,34 @@ async function callGroqChat(historyMsgs, onReasoningDelta, searchResultsBlock, o
     ]);
   }
   if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-  if (round0TriedAny && round0AllWere429) return { quotaExhausted: true };
-  // ── لو مفيش نص خالص ولا حتى محاولة اتسجلت (round0TriedAny === false)،
-  //    غالبًا ده خطأ شبكة/دومين حقيقي حصل قبل ما نوصل للسيرفر أصلاً — نرميه
-  //    عشان يظهر في failLog بدل "رد فاضي" اللي بيخفي المشكلة الحقيقية ──
-  if (!round0TriedAny && lastError) throw lastError;
-  return null;
+  return (round0TriedAny && round0AllWere429) ? { quotaExhausted: true } : null;
 }
 
 /* ============ خط الدفاع 2: Gemini ============ */
 async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
+  if (!GeminiKeyPool.count()) return null;
+  const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
   let contents = historyMsgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
-  let round0AllWere429 = true, round0TriedAny = false, lastError = null, lastStatus = null;
+  let round0AllWere429 = true, round0TriedAny = false;
 
   // ── بيحاول يجيب "التفكير" (thoughts) مع الرد لو الموديل بيدعمها، ولو الموديل
-  //    رفض الإعداد ده (خطأ 400) بيعيد المحاولة فورًا من غير thinkingConfig،
-  //    عشان الرد الأساسي مايتأثرش حتى لو التفكير مش مدعوم. Streaming حقيقي
-  //    (SSE) عبر geminiProxy — المفتاح بقى سيرفر-سايد بس (Secret Manager). ──
-  async function attempt(withThinking, onDelta){
+  //    رفض الإعداد ده (خطأ 400) بيعيد المحاولة فورًا بنفس المفتاح من غير
+  //    thinkingConfig، عشان الرد الأساسي مايتأثرش حتى لو التفكير مش مدعوم.
+  //    بقت الآن Streaming حقيقي (SSE) بدل رد دفعة واحدة، عشان النص يظهر
+  //    لحظة بلحظة زي باقي المزوّدين، وعشان مهلة الخمول تقدر تتابع الاتصال ──
+  async function attempt(key, withThinking, onDelta){
     const genCfg = { temperature: 0.4, maxOutputTokens: 8192 };
     if (withThinking) genCfg.thinkingConfig = { includeThoughts: true };
     const idle = createIdleAbortSignal(45000);
     try{
-      const res = await callJsonProxy(GEMINI_PROXY_URL, {
-        model: 'gemini-3.5-flash', contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg
-      }, idle.signal);
-      if (!res.ok || !res.body){
-        // ── قبل كده كنا بنرمي سبب الفشل الحقيقي ونرجع بس status، فكان بيبان
-        //    في اللوج "رد فاضي" من غير ما نعرف ليه (مفتاح غلط؟ موديل غلط؟
-        //    quota خلصت؟). دلوقتي بنقرا جسم الرد ونطبعه في الكونسول عشان
-        //    نقدر نشخّص المشكلة الحقيقية من DevTools ──
-        try{ const errBody = await res.text(); console.error('geminiProxy failed', res.status, errBody); } catch(_e){}
-        return { ok:false, status: res.status, answerText:'', thoughtText:'', finishReason:null, usedTokens:0 };
-      }
+      const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: buildSystemPrompt() }] }, generationConfig: genCfg }),
+        signal: idle.signal
+      });
+      if (!res.ok || !res.body) return { ok:false, status: res.status, answerText:'', thoughtText:'', finishReason:null, usedTokens:0 };
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '', answerText = '', thoughtText = '', finishReason = null, usedTokens = 0;
@@ -1159,24 +1138,21 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++){
     let roundText = null, roundReasoning = '', roundFinish = null, roundUsedTokens = 0;
-    // ── بنعيد المحاولة على 429 (حد الاستخدام) وعلى 503 كمان (الموديل مزحوم
-    //    مؤقتًا عند جوجل — خطأ شائع ومؤقت)، مع تأخير بسيط متزايد بينهم ──
-    for (let i=0;i<3;i++){
+    for (let i=0;i<maxAttempts;i++){
+      const key = GeminiKeyPool.next();
+      if (!key) break;
       try{
         const onDelta = (acc)=>{ if (onContentDelta) onContentDelta(fullTotal + acc); };
-        let r = await attempt(true, onDelta);
-        if (!r.ok) r = await attempt(false, onDelta);
+        let r = await attempt(key, true, onDelta);
+        if (!r.ok) r = await attempt(key, false, onDelta);
+        GeminiKeyPool.report(key, r.status !== 429);
         if (round === 0){ round0TriedAny = true; if (r.status !== 429) round0AllWere429 = false; }
-        lastStatus = r.status;
         if (r.answerText){
           roundText = r.answerText; roundReasoning = r.thoughtText; roundFinish = r.finishReason; roundUsedTokens = r.usedTokens || 0;
           break;
         }
-        if (r.status === 401 || r.status === 403){ console.error('geminiProxy auth/app-check rejected', r.status); break; }
-        const isRetryable = r.status === 429 || r.status === 503;
-        if (!isRetryable) break;
-        if (i < 2) await new Promise(res => setTimeout(res, 1200 * (i+1)));
-      } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini call failed", e); lastError = e; }
+        if (r.status !== 429) { i = maxAttempts; break; }
+      } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini call failed", e); }
     }
     if (!roundText) break;
     fullTotal += roundText;
@@ -1189,168 +1165,192 @@ async function callGeminiChat(historyMsgs, onReasoningDelta, onContentDelta){
     ]);
   }
   if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-  if (round0TriedAny && round0AllWere429) return { quotaExhausted: true };
-  if (!round0TriedAny && lastError) throw lastError;
-  return { status: lastStatus };
+  return (round0TriedAny && round0AllWere429) ? { quotaExhausted: true } : null;
 }
 
 /* ============ خط الدفاع 3: OpenRouter (موديلات مجانية) ============ */
+let orFreeModelsCache = { list: [], key: null, at: 0 };
+async function getFreeOpenRouterModels(key){
+  if (orFreeModelsCache.key === key && orFreeModelsCache.list.length && (Date.now()-orFreeModelsCache.at) < 1800000) return orFreeModelsCache.list;
+  try{
+    const r = await fetchWithRetry("https://openrouter.ai/api/v1/models", { headers: { "Authorization": "Bearer " + key }, signal: requestSignal(30000) });
+    const d = await r.json();
+    const list = (d && d.data ? d.data : []).filter(m => m && m.pricing && Number(m.pricing.prompt)===0 && Number(m.pricing.completion)===0).map(m=>m.id).slice(0,3);
+    if (list.length){ orFreeModelsCache = { list, key, at: Date.now() }; return list; }
+    return [];
+  } catch(e){ if (isAbortError(e)) throw e; return []; }
+}
 async function callOpenRouterChat(historyMsgs, onReasoningDelta, onContentDelta){
+  if (!OpenRouterKeyPool.count()) return null;
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
-  // ── قايمة الموديلات المجانية بقت ثابتة (fallback) بدل الاكتشاف الديناميكي،
-  //    لأن اكتشاف الموديلات المجانية كان محتاج مفتاح OpenRouter في المتصفح
-  //    عشان ينادي /models — ودلوقتي المفتاح سيرفر-سايد بس ──
-  const models = ['meta-llama/llama-3.3-70b-instruct:free','mistralai/mistral-7b-instruct:free','google/gemma-2-9b-it:free'];
-  let triedAny = false, allWere429 = true, lastError = null, lastStatus = null;
-  for (const model of models){
-    try{
-      let messages = baseMessages.slice();
-      let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
-      for (let round = 0; round <= MAX_CONTINUATIONS; round++){
-        const idle = createIdleAbortSignal(45000);
-        try{
-        const r = await callJsonProxy(OPENROUTER_PROXY_URL, {
-          model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' }, usage: { include: true }
-        }, idle.signal);
-        if (!r.ok || !r.body){
-          triedAny = true;
-          if (r.status !== 429) allWere429 = false;
-          lastStatus = r.status;
-          try{ const errBody = await r.text(); console.error('openRouterProxy failed', model, r.status, errBody); } catch(_e){}
-          break;
-        }
-        const reader = r.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
-        try{
-          while (true){
-            const { done, value } = await reader.read();
-            if (done) break;
-            idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            for (const line of lines){
-              if (!line.startsWith('data: ')) continue;
-              const payload = line.slice(6).trim();
-              if (payload === '[DONE]') continue;
-              try{
-                const evt = JSON.parse(payload);
-                if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
-                const choice = evt.choices && evt.choices[0];
-                if (!choice) continue;
-                if (choice.finish_reason) finishReason = choice.finish_reason;
-                const delta = choice.delta;
-                if (!delta) continue;
-                if (delta.content){ txt += delta.content; if (onContentDelta) onContentDelta(fullTotal + txt); }
-                const rPiece = delta.reasoning || delta.reasoning_content;
-                if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
-              } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
-            }
+  const maxAttempts = Math.min(OpenRouterKeyPool.count(), 3);
+  let triedAny = false, allWere429 = true;
+  for (let i=0;i<maxAttempts;i++){
+    const key = OpenRouterKeyPool.next();
+    if (!key) break;
+    let models = await getFreeOpenRouterModels(key);
+    if (!models.length) models = ['meta-llama/llama-3.3-70b-instruct:free','mistralai/mistral-7b-instruct:free','google/gemma-2-9b-it:free'];
+    let keyFailed429 = false;
+    for (const model of models){
+      try{
+        let messages = baseMessages.slice();
+        let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
+        for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+          const idle = createIdleAbortSignal(45000);
+          try{
+          const r = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json", "X-Title": "Mahfoozat" },
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, reasoning: { effort: 'high' }, usage: { include: true } }),
+            signal: idle.signal
+          });
+          if (!r.ok || !r.body){
+            OpenRouterKeyPool.report(key, r.status !== 429);
+            triedAny = true;
+            if (r.status === 429) keyFailed429 = true; else allWere429 = false;
+            break;
           }
-        } catch(streamErr){
-          // ── نفس مبدأ الاستئناف التلقائي: لو النص اتقطع فعلاً هنكمله من نفس النقطة ──
-          if (isAbortError(streamErr)) throw streamErr;
-          console.warn("OpenRouter stream interrupted mid-way, resuming from partial text", streamErr);
-          if (txt) finishReason = 'length'; else throw streamErr;
+          const reader = r.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
+          try{
+            while (true){
+              const { done, value } = await reader.read();
+              if (done) break;
+              idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop();
+              for (const line of lines){
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') continue;
+                try{
+                  const evt = JSON.parse(payload);
+                  if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
+                  const choice = evt.choices && evt.choices[0];
+                  if (!choice) continue;
+                  if (choice.finish_reason) finishReason = choice.finish_reason;
+                  const delta = choice.delta;
+                  if (!delta) continue;
+                  if (delta.content){ txt += delta.content; if (onContentDelta) onContentDelta(fullTotal + txt); }
+                  const rPiece = delta.reasoning || delta.reasoning_content;
+                  if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+                } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+              }
+            }
+          } catch(streamErr){
+            // ── نفس مبدأ الاستئناف التلقائي: لو النص اتقطع فعلاً هنكمله من نفس النقطة ──
+            if (isAbortError(streamErr)) throw streamErr;
+            console.warn("OpenRouter stream interrupted mid-way, resuming from partial text", streamErr);
+            if (txt) finishReason = 'length'; else throw streamErr;
+          }
+          OpenRouterKeyPool.report(key, true);
+          triedAny = true; allWere429 = false;
+          if (!txt) break;
+          fullTotal += txt;
+          fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
+          usedTokensTotal += usedTokens;
+          if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
+          messages = messages.concat([
+            { role:'assistant', content: txt },
+            { role:'user', content: CONTINUE_PROMPT }
+          ]);
+          } finally{ idle.clear(); }
         }
-        triedAny = true; allWere429 = false;
-        if (!txt) break;
-        fullTotal += txt;
-        fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
-        usedTokensTotal += usedTokens;
-        if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
-        messages = messages.concat([
-          { role:'assistant', content: txt },
-          { role:'user', content: CONTINUE_PROMPT }
-        ]);
-        } finally{ idle.clear(); }
-      }
-      if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-    } catch(e){ if (isAbortError(e)) throw e; console.warn("OpenRouter call failed", e); lastError = e; }
+        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
+      } catch(e){ if (isAbortError(e)) throw e; console.warn("OpenRouter call failed", e); }
+    }
+    if (!keyFailed429) break;
   }
   if (triedAny && allWere429) return { quotaExhausted: true };
-  if (!triedAny && lastError) throw lastError;
-  return { status: lastStatus };
+  return null;
 }
 
 /* ============ خط الدفاع 4: Vercel AI Gateway ============ */
 async function callVercelChat(historyMsgs, onReasoningDelta, onContentDelta){
+  if (!VercelGatewayKeyPool.count()) return null;
   const baseMessages = [{ role:'system', content: buildSystemPrompt() }].concat(historyMsgs);
-  // ⚠️ ملاحظة: 'google/gemini-2.0-flash' كان هنا قبل كده — الموديل ده اتوقف
-  // نهائيًا من جوجل في 1 يونيو 2026 (Gemini 2.0 بالكامل)، فأي طلب بيه كان
-  // لازم يفشل من الأساس. استبدلته بـ gemini-3.5-flash (البديل الرسمي).
-  const models = ['openai/gpt-4o-mini','google/gemini-3.5-flash','anthropic/claude-haiku-4-5'];
-  let triedAny = false, allWere429 = true, lastError = null, lastStatus = null;
-  for (const model of models){
-    try{
-      let messages = baseMessages.slice();
-      let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
-      for (let round = 0; round <= MAX_CONTINUATIONS; round++){
-        const idle = createIdleAbortSignal(45000);
-        try{
-        const r = await callJsonProxy(VERCEL_GATEWAY_PROXY_URL, {
-          model, messages, max_tokens: 8192, temperature: 0.4, stream: true, stream_options: { include_usage: true }
-        }, idle.signal);
-        if (!r.ok || !r.body){
-          triedAny = true;
-          if (r.status !== 429) allWere429 = false;
-          lastStatus = r.status;
-          try{ const errBody = await r.text(); console.error('vercelGatewayProxy failed', model, r.status, errBody); } catch(_e){}
-          break;
-        }
-        const reader = r.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
-        try{
-          while (true){
-            const { done, value } = await reader.read();
-            if (done) break;
-            idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            for (const line of lines){
-              if (!line.startsWith('data: ')) continue;
-              const payload = line.slice(6).trim();
-              if (payload === '[DONE]') continue;
-              try{
-                const evt = JSON.parse(payload);
-                if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
-                const choice = evt.choices && evt.choices[0];
-                if (!choice) continue;
-                if (choice.finish_reason) finishReason = choice.finish_reason;
-                const delta = choice.delta;
-                if (!delta) continue;
-                if (delta.content){ txt += delta.content; if (onContentDelta) onContentDelta(fullTotal + txt); }
-                const rPiece = delta.reasoning || delta.reasoning_content;
-                if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
-              } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
-            }
+  const models = ['openai/gpt-4o-mini','google/gemini-2.0-flash','anthropic/claude-haiku-4-5'];
+  const maxAttempts = Math.min(VercelGatewayKeyPool.count(), 3);
+  let triedAny = false, allWere429 = true;
+  for (let i=0;i<maxAttempts;i++){
+    const key = VercelGatewayKeyPool.next();
+    if (!key) break;
+    let keyFailed429 = false;
+    for (const model of models){
+      try{
+        let messages = baseMessages.slice();
+        let fullTotal = '', fullReasoning = '', usedTokensTotal = 0;
+        for (let round = 0; round <= MAX_CONTINUATIONS; round++){
+          const idle = createIdleAbortSignal(45000);
+          try{
+          const r = await fetchWithRetry("https://ai-gateway.vercel.sh/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+            body: JSON.stringify({ model, messages, max_tokens: 8192, temperature: 0.4, stream: true, stream_options: { include_usage: true } }),
+            signal: idle.signal
+          });
+          if (!r.ok || !r.body){
+            VercelGatewayKeyPool.report(key, r.status !== 429);
+            triedAny = true;
+            if (r.status === 429) keyFailed429 = true; else allWere429 = false;
+            break;
           }
-        } catch(streamErr){
-          if (isAbortError(streamErr)) throw streamErr;
-          console.warn("Vercel stream interrupted mid-way, resuming from partial text", streamErr);
-          if (txt) finishReason = 'length'; else throw streamErr;
+          const reader = r.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '', txt = '', reasoningPart = '', finishReason = null, usedTokens = 0;
+          try{
+            while (true){
+              const { done, value } = await reader.read();
+              if (done) break;
+              idle.bump(); // ── وصل جزء جديد فعلاً: نصفّر مهلة الخمول من الأول ──
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop();
+              for (const line of lines){
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') continue;
+                try{
+                  const evt = JSON.parse(payload);
+                  if (evt.usage && evt.usage.total_tokens) usedTokens = evt.usage.total_tokens;
+                  const choice = evt.choices && evt.choices[0];
+                  if (!choice) continue;
+                  if (choice.finish_reason) finishReason = choice.finish_reason;
+                  const delta = choice.delta;
+                  if (!delta) continue;
+                  if (delta.content){ txt += delta.content; if (onContentDelta) onContentDelta(fullTotal + txt); }
+                  const rPiece = delta.reasoning || delta.reasoning_content;
+                  if (rPiece){ reasoningPart += rPiece; if (onReasoningDelta) onReasoningDelta(fullReasoning + reasoningPart); }
+                } catch(e){ /* سطر ناقص، هيكمل في القراءة الجاية */ }
+              }
+            }
+          } catch(streamErr){
+            if (isAbortError(streamErr)) throw streamErr;
+            console.warn("Vercel stream interrupted mid-way, resuming from partial text", streamErr);
+            if (txt) finishReason = 'length'; else throw streamErr;
+          }
+          VercelGatewayKeyPool.report(key, true);
+          triedAny = true; allWere429 = false;
+          if (!txt) break;
+          fullTotal += txt;
+          fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
+          usedTokensTotal += usedTokens;
+          if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
+          messages = messages.concat([
+            { role:'assistant', content: txt },
+            { role:'user', content: CONTINUE_PROMPT }
+          ]);
+          } finally{ idle.clear(); }
         }
-        triedAny = true; allWere429 = false;
-        if (!txt) break;
-        fullTotal += txt;
-        fullReasoning = round === 0 ? reasoningPart : (fullReasoning + '\n' + reasoningPart);
-        usedTokensTotal += usedTokens;
-        if (finishReason !== 'length' || round === MAX_CONTINUATIONS) break;
-        messages = messages.concat([
-          { role:'assistant', content: txt },
-          { role:'user', content: CONTINUE_PROMPT }
-        ]);
-        } finally{ idle.clear(); }
-      }
-      if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
-    } catch(e){ if (isAbortError(e)) throw e; console.warn("Vercel Gateway call failed", e); lastError = e; }
+        if (fullTotal) return { text: fullTotal, reasoning: fullReasoning, usedTokens: usedTokensTotal };
+      } catch(e){ if (isAbortError(e)) throw e; console.warn("Vercel Gateway call failed", e); }
+    }
+    if (!keyFailed429) break;
   }
   if (triedAny && allWere429) return { quotaExhausted: true };
-  if (!triedAny && lastError) throw lastError;
-  return { status: lastStatus };
+  return null;
 }
 
 /* ============ الموزّع الرئيسي: بحث عبر الإنترنت لو محتاج، بعدين يجرب كل خط دفاع بالترتيب ============
@@ -1363,12 +1363,12 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   const step = (text)=>{ if (onStep) onStep(text); };
 
   let searchResultsBlock = '';
-  const tavilyReady = tavilyConfigured;
+  const tavilyReady = !!getTavilyApiKey();
 
   // ── لو المستخدم بعت رابط صريح، ندخله ونقرا محتواه فعليًا بدل ما نعمل بحث عام ──
   const explicitUrl = extractFirstUrl(lastUserText);
   if (tavilyReady && explicitUrl){
-    step(t('stepOpeningLink'));
+    step('بيفتح الرابط اللي بعته ويقرا محتواه...');
     const extracted = await performUrlExtract(explicitUrl);
     searchResultsBlock = buildUrlContentBlock(extracted, explicitUrl);
   }
@@ -1378,21 +1378,21 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
     const explicitNeed = shouldWebSearch(lastUserText);
     let needsSearch = explicitNeed;
     if (!needsSearch){
-      step(t('stepDecidingSearch'));
+      step('بيقرر لو الرسالة محتاجة بحث في الإنترنت ولا لأ...');
       needsSearch = await classifyNeedsSearch(lastUserText);
     }
     if (needsSearch){
-      step(t('stepSearching'));
+      step('بيبحث في الإنترنت...');
       const results = await performWebSearch(lastUserText);
       searchResultsBlock = buildSearchResultsBlock(results);
     }
   }
 
   const providers = [
-    { id:'groq', label:'Groq', configured: ()=>providerConfigured.groq, fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock, onContentDelta) },
-    { id:'gemini', label:'Gemini', configured: ()=>providerConfigured.gemini, fn: (msgs)=>callGeminiChat(msgs, onReasoningDelta, onContentDelta) },
-    { id:'openrouter', label:'OpenRouter', configured: ()=>providerConfigured.openrouter, fn: (msgs)=>callOpenRouterChat(msgs, onReasoningDelta, onContentDelta) },
-    { id:'vercel', label:'Vercel Gateway', configured: ()=>providerConfigured.vercel, fn: (msgs)=>callVercelChat(msgs, onReasoningDelta, onContentDelta) }
+    { id:'groq', label:'Groq', pool: GroqKeyPool, fn: (msgs)=>callGroqChat(msgs, onReasoningDelta, searchResultsBlock, onContentDelta) },
+    { id:'gemini', label:'Gemini', pool: GeminiKeyPool, fn: (msgs)=>callGeminiChat(msgs, onReasoningDelta, onContentDelta) },
+    { id:'openrouter', label:'OpenRouter', pool: OpenRouterKeyPool, fn: (msgs)=>callOpenRouterChat(msgs, onReasoningDelta, onContentDelta) },
+    { id:'vercel', label:'Vercel Gateway', pool: VercelGatewayKeyPool, fn: (msgs)=>callVercelChat(msgs, onReasoningDelta, onContentDelta) }
   ];
   // النظام تلقائي دايمًا (مفيش اختيار يدوي لموديل)، فبنجرب المزوّدين بالترتيب
   // الافتراضي زي ما هو، وكل محاولة بتتعرض كخطوة حقيقية للمستخدم أول ما تبدأ.
@@ -1406,15 +1406,10 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   async function tryAllProviders(){
     let configuredCount = 0, quotaExhaustedCount = 0;
     const failLog = [];
-    // ── خطوة حقيقية: قبل أي طلب لأي مزوّد، بنجيب توكن الهوية (Firebase Auth)
-    //    وتوكن App Check ونرفقهم بالطلب — ده اللي بيخلي السيرفر يتأكد إن
-    //    الطلب جاي فعليًا من حساب مسجّل ومن نسخة التطبيق الرسمية قبل ما ينفّذ
-    //    أي حاجة (شوف verifyCaller/verifyAppCheck في index.js) ──
-    step(t('stepVerifyingIdentity'));
     for (const p of providers){
-      if (!p.configured()){ failLog.push(p.label + ': مفيش مفتاح'); continue; }
+      if (!p.pool.count()){ failLog.push(p.label + ': مفيش مفتاح'); continue; }
       configuredCount++;
-      step(t('stepPreparingReply'));
+      step('بيجهّز الرد...');
       let result = null, thrown = null;
       try{ result = await p.fn(messages); }
       catch(e){ if (isAbortError(e)) throw e; thrown = e; }
@@ -1427,15 +1422,10 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
         failLog.push(p.label + ': Rate Limit (429)');
       } else if (thrown){
         failLog.push(p.label + ': ' + (thrown.message || thrown.name || 'خطأ غير معروف'));
-      } else if (result && result.status){
-        // ── دلوقتي بيبان كود الخطأ الحقيقي في المحادثة على طول (401 = مفتاح
-        //    غلط/غير موجود، 403 = مفتاح مرفوض، 400 = طلب غلط...) بدل ما
-        //    نضطر ندوّر في Console كل مرة ──
-        failLog.push(p.label + ': فشل - كود ' + result.status + (result.status===401 ? ' (مفتاح API غلط أو منتهي)' : result.status===403 ? ' (مفتاح مرفوض/مش مفعّل)' : ''));
       } else {
         failLog.push(p.label + ': رجع رد فاضي (مفيش نص)');
       }
-      step(t('stepRetryingDifferentWay'));
+      step('بيجرب طريقة تانية...');
     }
     return { ok:false, configuredCount, quotaExhaustedCount, failLog };
   }
@@ -1451,7 +1441,7 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   if (allWereQuota){
     // محاولة تانية بعد تأخير بسيط — لو الزحمة مؤقتة هترد عادي من غير ما
     // المستخدم يحس بأي مشكلة أصلاً.
-    step(t('stepServiceBusyRetrying'));
+    step('الخدمة مزدحمة شوية، بيعيد المحاولة...');
     await new Promise(r=>setTimeout(r, 4000));
     attempt = await tryAllProviders();
     if (attempt.ok) return { text: attempt.text, reasoning: attempt.reasoning, provider: attempt.provider };
@@ -1544,45 +1534,10 @@ function compressImage(file){
     reader.readAsDataURL(file);
   });
 }
-// ── نداء واحد لـ geminiProxy بيجمّع رد كامل (مش Streaming تدريجي على الشاشة) —
-//    مستخدمة في تحليل الصور والصوت اللي بترجع نتيجة واحدة مرة واحدة، مش شات ──
-async function geminiProxySingleShot(contents, timeoutMs){
-  const idle = createIdleAbortSignal(timeoutMs || 30000);
-  try{
-    const res = await callJsonProxy(GEMINI_PROXY_URL, { model: 'gemini-3.5-flash', contents }, idle.signal);
-    if (!res.ok || !res.body){
-      try{ const errBody = await res.text(); console.error('geminiProxySingleShot failed', res.status, errBody); } catch(_e){}
-      return { ok:false, status: res.status, text:'', usedTokens:0, gotEvent:false };
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '', txt = '', usedTokens = 0, gotEvent = false;
-    while (true){
-      const { done, value } = await reader.read();
-      if (done) break;
-      idle.bump();
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (const line of lines){
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6).trim();
-        if (!payload) continue;
-        try{
-          const evt = JSON.parse(payload);
-          gotEvent = true;
-          if (evt.usageMetadata && evt.usageMetadata.totalTokenCount) usedTokens = evt.usageMetadata.totalTokenCount;
-          const cand = evt.candidates && evt.candidates[0];
-          const p = cand && cand.content && cand.content.parts && cand.content.parts[0];
-          if (p && p.text && !p.thought) txt += p.text;
-        } catch(e){ /* سطر ناقص */ }
-      }
-    }
-    return { ok:true, status: res.status, text: txt, usedTokens, gotEvent };
-  } finally { idle.clear(); }
-}
-
 async function analyzeImagesWithGemini(dataUrls, promptText){
+  if (!GeminiKeyPool.count()){
+    return "لسه مفيش مفتاح Gemini متسجل على فلك، فمقدرش أحلل الصور دلوقتي.";
+  }
   const list = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
   const imageParts = list.map(dataUrl=>{
     const commaIdx = dataUrl.indexOf(',');
@@ -1594,20 +1549,30 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
   const fullPrompt = (promptText || (list.length > 1 ? 'صف الصور دي بالتفصيل باللغة العربية.' : 'صف هذه الصورة بالتفصيل باللغة العربية.')) +
     '\n\nجاوب بأسلوب احترافي منظم بنقاط عند الحاجة، من غير ماركداون خام زي ### أو --- أو جداول |.';
   const parts = [{ text: fullPrompt }].concat(imageParts);
-  let triedAny = false, allWere429 = true, lastStatus = null;
-  // ── 3 محاولات دلوقتي (كانت 2)، وبنعيد المحاولة على 429 (حد الاستخدام) وعلى
-  //    503 كمان (يعني "الموديل مزحوم عند جوجل مؤقتًا" — خطأ شائع ومؤقت، مش
-  //    مشكلة دائمة)، مع تأخير بسيط متزايد بين كل محاولة والتانية (backoff) ──
-  for (let i=0;i<3;i++){
+  const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
+  let triedAny = false, allWere429 = true;
+  for (let i=0;i<maxAttempts;i++){
+    const key = GeminiKeyPool.next();
+    if (!key) break;
     try{
-      const r = await geminiProxySingleShot([{ parts }], 30000);
+      const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ contents: [{ parts }] }),
+        signal: requestSignal(30000)
+      });
+      const data = await res.json();
+      const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
+        data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+      GeminiKeyPool.report(key, res.status !== 429);
       triedAny = true;
-      if (r.status !== 429) allWere429 = false;
-      lastStatus = r.status;
-      if (r.text){ if (r.usedTokens) addTokensUsed(r.usedTokens); return r.text; }
-      const isRetryable = r.status === 429 || r.status === 503;
-      if (!isRetryable || r.gotEvent) break;
-      if (i < 2) await new Promise(res => setTimeout(res, 1200 * (i+1)));
+      if (res.status !== 429) allWere429 = false;
+      if (txt){
+        const used = data && data.usageMetadata && data.usageMetadata.totalTokenCount;
+        if (used) addTokensUsed(used);
+        return txt;
+      }
+      if (res.status !== 429) break;
     } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini vision failed", e); }
   }
   // خدمة تحليل الصور معندهاش بديل تاني (Gemini بس) — فلو خلص توكنها فعلاً،
@@ -1616,10 +1581,6 @@ async function analyzeImagesWithGemini(dataUrls, promptText){
     const err = new Error('توكن خدمة تحليل الصور خلص');
     err.serviceDown = 'خدمة تحليل الصور';
     throw err;
-  }
-  if (lastStatus){
-    const hint = lastStatus===401 ? ' (مفتاح API غلط أو منتهي)' : lastStatus===403 ? ' (مفتاح مرفوض/مش مفعّل)' : '';
-    return 'عذراً، مقدرتش أحلل الصورة دلوقتي — فشل بكود ' + lastStatus + hint + '.';
   }
   return "عذراً، مقدرتش أحلل الصورة دلوقتي.";
 }
@@ -1753,17 +1714,19 @@ async function extractExcelText(file){
 }
 
 async function transcribeAudio(file){
+  const key = GroqKeyPool.next();
+  if (!key) throw new Error('مفيش مفتاح Groq متاح للتفريغ الصوتي دلوقتي');
   const form = new FormData();
   form.append('file', file);
   form.append('model', 'whisper-large-v3');
   // ── متفروضش اللغة عربي — سايبين Whisper يكتشف لغة الكلام لوحده، عشان
   //    التفريغ يبقى دقيق مهما كانت لغة المتكلم/الأغنية ──
-  const authHeaders = await getProxyAuthHeaders(); // من غير Content-Type — المتصفح بيحطه لوحده مع الـ boundary الصح لـ FormData
-  const res = await fetchWithRetry(GROQ_WHISPER_PROXY_URL, {
+  const res = await fetchWithRetry('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
-    headers: authHeaders,
+    headers: { 'Authorization': 'Bearer ' + key },
     body: form
   });
+  GroqKeyPool.report(key, res.ok);
   if (!res.ok) throw new Error('فشل تفريغ الصوت');
   const data = await res.json();
   return (data.text || '').trim();
@@ -1783,6 +1746,7 @@ function fileToBase64DataUrl(file){
   });
 }
 async function analyzeAudioWithGemini(file, promptText){
+  if (!GeminiKeyPool.count()) return '';
   let dataUrl;
   try{ dataUrl = await fileToBase64DataUrl(file); } catch(e){ return ''; }
   const commaIdx = dataUrl.indexOf(',');
@@ -1792,11 +1756,27 @@ async function analyzeAudioWithGemini(file, promptText){
     'استمع للملف الصوتي ده كامل وحلله تحليل حقيقي مش مجرد تفريغ كلام. لو أغنية: قول نوعها/جنسها الموسيقي، الجو العام/المزاج، الآلات اللي واضحة، سرعة الإيقاع (سريع/متوسط/بطيء)، وملخص بسيط لموضوع الكلمات لو الغنا مفهوم. لو مجرد كلام/تسجيل عادي مش أغنية، قول كده صراحة من غير تخمين تفاصيل موسيقية مش موجودة.')
     + '\n\nجاوب باللغة العربية، بأسلوب منظم بنقاط عند الحاجة، من غير ماركداون خام زي ### أو --- أو جداول |.';
   const parts = [{ text: fullPrompt }, { inline_data: { mime_type: mimeType, data: base64Data } }];
-  for (let i=0;i<2;i++){
+  const maxAttempts = Math.min(GeminiKeyPool.count(), 3);
+  for (let i=0;i<maxAttempts;i++){
+    const key = GeminiKeyPool.next();
+    if (!key) break;
     try{
-      const r = await geminiProxySingleShot([{ parts }], 45000);
-      if (r.text){ if (r.usedTokens) addTokensUsed(r.usedTokens); return r.text; }
-      if (r.status !== 429 || r.gotEvent) break;
+      const res = await fetchWithRetry("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ contents: [{ parts }] }),
+        signal: requestSignal(45000)
+      });
+      const data = await res.json();
+      const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
+        data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+      GeminiKeyPool.report(key, res.status !== 429);
+      if (txt){
+        const used = data && data.usageMetadata && data.usageMetadata.totalTokenCount;
+        if (used) addTokensUsed(used);
+        return txt;
+      }
+      if (res.status !== 429) break;
     } catch(e){ if (isAbortError(e)) throw e; console.warn("Gemini audio analysis failed", e); }
   }
   return '';
@@ -2112,51 +2092,6 @@ const APP_I18N = {
     secLoginRequired: 'سجّل دخولك الأول عشان تقدر تشوف سجلاتك.',
     secBroadcastMsg: 'تنبيه أمني: تم تفعيل إجراء إيقاف طارئ — التطبيق تحت المراجعة الأمنية مؤقتًا.',
     secAiPausedMsg: 'خدمات الذكاء الاصطناعي متوقفة مؤقتًا (تحت المراجعة الأمنية) — هترجع تلقائيًا خلال 24 ساعة.',
-    toastNoOlderMessages: '⚠️ مقدرتش أحمّل رسائل أقدم',
-    toastNoSavedQuestion: '⚠️ مفيش سؤال محفوظ لإعادة إرساله',
-    toastWaitCurrentReply: '⏳ استنى الرد الحالي يخلص الأول',
-    toastCopiedConversation: '✅ اتنسخت المحادثة، تقدر تلزقها في أي تطبيق تاني زي ChatGPT أو Gemini',
-    toastCopyFailed: '⚠️ مقدرتش أنسخ أو أشارك النص',
-    toastZipFailed: '❌ مقدرتش أضغط الملفات',
-    toastImageReadFailed: '⚠️ مقدرتش أقرا الصورة دي',
-    toastMusicAnalysisFailed: '⚠️ الكلام اتفهم، لكن التحليل الموسيقي الحقيقي فشل دلوقتي',
-    toastFileReadFailedPrefix: '⚠️ مقدرتش أقرا الملف ده: ',
-    toastAttachmentProcessing: '⏳ لسه بيحلل الملف المرفق، استنى لحظة كمان وابعت تاني',
-    stepAnalyzingImages: 'بيفتح الصور ويحللها...',
-    stepReadingFiles: 'بيقرا محتوى الملفات المرفقة...',
-    stepReadingMessage: 'بيقرا رسالتك...',
-    stepPreparingReply: 'بيجهّز الرد...',
-    stepDecidingSearch: 'بيقرر لو الرسالة محتاجة بحث في الإنترنت ولا لأ...',
-    stepSearching: 'بيبحث في الإنترنت...',
-    stepOpeningLink: 'بيفتح الرابط اللي بعته ويقرا محتواه...',
-    stepWritingReply: 'بيجهّز الرد ويكتبه دلوقتي...',
-    stepPreparingCode: 'بيجهّز الكود...',
-    stepRetryingDifferentWay: 'بيجرب طريقة تانية...',
-    stepServiceBusyRetrying: 'الخدمة مزدحمة شوية، بيعيد المحاولة...',
-    stepVerifyingIdentity: 'بيتأكد من الهوية وصلاحية الطلب...',
-    errStopped: 'تم إيقاف الرد.',
-    errTimeout: 'الرد أخد وقت أطول من المعتاد فاتلغى تلقائيًا. جرب تاني، أو ابعت رسالة أقصر لو ممكن.',
-    errPausedRetry: '⏸️ الرد ده اتوقف لأن ميزة الطوارئ الأمنية كانت شغالة وقتها. ابعت رسالتك تاني دلوقتي وهترد عادي.',
-    errServiceDownSuffix: ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.',
-    errGeneric: 'حصل خطأ في الرد، جرب تاني.',
-    alertRenameFailed: 'معلش، مقدرتش أعدّل اسم المحادثة.',
-    alertDeleteFailed: 'معلش، مقدرتش أحذف المحادثة.',
-    confirmExtractZipPrefix: 'عايز أفك الضغط وأقرا اللي جوه ملف "',
-    confirmExtractZipSuffix: '"؟\n"موافق" = هفكه وأحلل محتواه\n"إلغاء" = هسيبه مضغوط زي ما هو',
-    confirmHugeRequestPrefix: 'الطلب ده كبير (',
-    confirmHugeRequestMiddle: ' ملف تقريبًا ',
-    confirmHugeRequestSuffix: ' ألف حرف)، وطلبات بالحجم ده ممكن تفصل قبل ما تخلص.\n\nتحب تكمل وتبعته زي ما هو؟ (لو عايز تتجنب الانقطاع، اضغط "إلغاء" وقسّم الملفات على أكتر من رسالة، أو نزّلها ZIP بدل ما تبعتها كلها مرة واحدة).',
-    deviceExhaustedLockText: 'التوكنات بتاعت الجهاز ده خلصت النهارده — عمل حساب جديد مش بيرجّع الرصيد.',
-    dailyExhaustedLockText: 'التوكن بتاعك خلص النهارده — هيرجع تاني بكرة.',
-    deleteModalTextPrefix: 'هتتحذف محادثة "',
-    deleteModalTextSuffix: '" والرسائل اللي فيها نهائيًا، ومش هينفع ترجّعها تاني.',
-    tokensExhaustedDeviceTitle: 'التوكنات خلصت على الجهاز ده',
-    tokensExhaustedDailyTitle: 'التوكن بتاعك خلص النهارده',
-    tokensRemainingTitlePrefix: 'متبقي ',
-    tokensRemainingTitleMiddle: ' توكن من نصيبك النهارده (',
-    tokensRemainingTitleSuffix: ')',
-    ctxRenameItem: 'تعديل اسم المحادثة',
-    ctxDeleteItem: 'حذف المحادثة',
     activityLabels: {
       login: 'تسجيل دخول', signup: 'إنشاء حساب', logout: 'تسجيل خروج',
       emergency_report: 'بلاغ أمني طارئ', biometric_registered: 'تسجيل بصمة'
@@ -2218,51 +2153,6 @@ const APP_I18N = {
     secLoginRequired: 'Kayıtlarını görebilmek için önce giriş yapmalısın.',
     secBroadcastMsg: 'Güvenlik uyarısı: acil durdurma prosedürü etkinleştirildi — uygulama geçici olarak güvenlik incelemesi altında.',
     secAiPausedMsg: 'Yapay zeka hizmetleri geçici olarak durduruldu (güvenlik incelemesi) — 24 saat içinde otomatik olarak geri gelecek.',
-    toastNoOlderMessages: '⚠️ Daha eski mesajlar yüklenemedi',
-    toastNoSavedQuestion: '⚠️ Yeniden gönderilecek kayıtlı bir soru yok',
-    toastWaitCurrentReply: '⏳ Önce mevcut yanıtın bitmesini bekle',
-    toastCopiedConversation: '✅ Sohbet kopyalandı, ChatGPT veya Gemini gibi başka bir uygulamaya yapıştırabilirsin',
-    toastCopyFailed: '⚠️ Metin kopyalanamadı veya paylaşılamadı',
-    toastZipFailed: '❌ Dosyalar sıkıştırılamadı',
-    toastImageReadFailed: '⚠️ Bu görsel okunamadı',
-    toastMusicAnalysisFailed: '⚠️ Konuşma anlaşıldı ama gerçek müzik analizi şu an başarısız oldu',
-    toastFileReadFailedPrefix: '⚠️ Bu dosya okunamadı: ',
-    toastAttachmentProcessing: '⏳ Eklenen dosya hâlâ işleniyor, biraz bekleyip tekrar gönder',
-    stepAnalyzingImages: 'Görseller açılıyor ve analiz ediliyor...',
-    stepReadingFiles: 'Ekli dosyaların içeriği okunuyor...',
-    stepReadingMessage: 'Mesajın okunuyor...',
-    stepPreparingReply: 'Yanıt hazırlanıyor...',
-    stepDecidingSearch: 'Mesajın internet araması gerektirip gerektirmediğine karar veriliyor...',
-    stepSearching: 'İnternette aranıyor...',
-    stepOpeningLink: 'Gönderdiğin bağlantı açılıyor ve içeriği okunuyor...',
-    stepWritingReply: 'Yanıt hazırlanıp yazılıyor...',
-    stepPreparingCode: 'Kod hazırlanıyor...',
-    stepRetryingDifferentWay: 'Başka bir yöntem deneniyor...',
-    stepServiceBusyRetrying: 'Hizmet biraz yoğun, tekrar deneniyor...',
-    stepVerifyingIdentity: 'Kimlik ve isteğin geçerliliği doğrulanıyor...',
-    errStopped: 'Yanıt durduruldu.',
-    errTimeout: 'Yanıt her zamankinden uzun sürdü ve otomatik olarak iptal edildi. Tekrar dene veya mümkünse daha kısa bir mesaj gönder.',
-    errPausedRetry: '⏸️ Bu yanıt, o sırada acil güvenlik özelliği etkin olduğu için durduruldu. Mesajını şimdi tekrar gönder, normal şekilde yanıt verecek.',
-    errServiceDownSuffix: ' şu anda yoğun (token bitmedi), biraz sonra tekrar dene.',
-    errGeneric: 'Yanıt oluşturulurken bir hata oluştu, tekrar dene.',
-    alertRenameFailed: 'Üzgünüm, sohbet adı değiştirilemedi.',
-    alertDeleteFailed: 'Üzgünüm, sohbet silinemedi.',
-    confirmExtractZipPrefix: '"',
-    confirmExtractZipSuffix: '" dosyasının içindekini açıp okumamı ister misin?\n"Tamam" = açar ve içeriğini analiz ederim\n"İptal" = olduğu gibi sıkıştırılmış bırakırım',
-    confirmHugeRequestPrefix: 'Bu istek büyük (yaklaşık ',
-    confirmHugeRequestMiddle: ' dosya, ',
-    confirmHugeRequestSuffix: ' bin karakter), bu boyuttaki istekler bitmeden kesilebilir.\n\nOlduğu gibi devam etmek ister misin? (Kesintiyi önlemek için "İptal"e bas ve dosyaları birden fazla mesaja böl, ya da hepsini tek seferde göndermek yerine ZIP olarak indir).',
-    deviceExhaustedLockText: 'Bu cihazın tokenleri bugün için bitti — yeni hesap açmak bakiyeyi geri getirmez.',
-    dailyExhaustedLockText: 'Bugünkü token bakiyen bitti — yarın tekrar gelecek.',
-    deleteModalTextPrefix: '"',
-    deleteModalTextSuffix: '" sohbeti ve içindeki tüm mesajlar kalıcı olarak silinecek, geri alınamaz.',
-    tokensExhaustedDeviceTitle: 'Bu cihazda tokenler bitti',
-    tokensExhaustedDailyTitle: 'Bugünkü token bakiyen bitti',
-    tokensRemainingTitlePrefix: 'Bugünkü payından kalan: ',
-    tokensRemainingTitleMiddle: ' token (',
-    tokensRemainingTitleSuffix: ')',
-    ctxRenameItem: 'Sohbet adını düzenle',
-    ctxDeleteItem: 'Sohbeti sil',
     activityLabels: {
       login: 'Giriş yapıldı', signup: 'Hesap oluşturuldu', logout: 'Çıkış yapıldı',
       emergency_report: 'Acil güvenlik bildirimi', biometric_registered: 'Parmak izi kaydedildi'
@@ -2444,10 +2334,7 @@ function syncUsageToFirebase(){
   db.ref('users/'+currentUser.uid+'/usage/'+usageDayKey+'/tokensUsed').set(usageUsedTokens).catch(()=>{});
 }
 function formatTokenCount(n){ return Math.max(0, Math.round(n||0)).toLocaleString('en-US'); }
-// الحد الأدنى المضمون لنصيب كل مستخدم يوميًا، حتى لو عدد المستخدمين كبر جدًا
-// وقسمة الرصيد العام عليهم طلعت أقل من كده — بيتفعّل من غير ما يحتاج تعديل يدوي
-const MIN_USER_DAILY_SHARE = 500;
-function usageShareTokens(){ return Math.max(MIN_USER_DAILY_SHARE, Math.floor(globalDailyTokenBudget / totalUsersCount)); }
+function usageShareTokens(){ return Math.max(1, Math.floor(globalDailyTokenBudget / totalUsersCount)); }
 function usageRemainingTokens(){ return Math.max(0, usageShareTokens() - usageUsedTokens); }
 function usageIsLocked(){ return !!currentUser && usageLoaded && usageRemainingTokens() <= 0; }
 // بتتنادى بعد كل رد حقيقي من الذكاء الاصطناعي بعدد التوكينز اللي الرد ده استهلكها فعليًا
@@ -2481,8 +2368,8 @@ function updateUsageWindowUI(){
     bar.classList.add('locked');
     fill.style.width = '0%';
     label.textContent = '0';
-    bar.title = t('tokensExhaustedDeviceTitle');
-    lockText.textContent = t('deviceExhaustedLockText');
+    bar.title = 'التوكنات خلصت على الجهاز ده';
+    lockText.textContent = 'التوكنات بتاعت الجهاز ده خلصت النهارده — عمل حساب جديد مش بيرجّع الرصيد.';
     lockBanner.style.display = 'flex';
     composerInput.disabled = true; sendBtn.disabled = true; attachBtn.disabled = true;
     return;
@@ -2494,14 +2381,14 @@ function updateUsageWindowUI(){
   label.textContent = formatTokenCount(remaining);
   if (remaining <= 0){
     bar.classList.add('locked');
-    bar.title = t('tokensExhaustedDailyTitle');
-    lockText.textContent = t('dailyExhaustedLockText');
+    bar.title = 'التوكن بتاعك خلص النهارده';
+    lockText.textContent = 'التوكن بتاعك خلص النهارده — هيرجع تاني بكرة.';
     lockBanner.style.display = 'flex';
     composerInput.disabled = true; sendBtn.disabled = true; attachBtn.disabled = true;
     markDeviceTokensExhausted(); // نسجّل على مستوى الجهاز إن الرصيد خلص، مش بس على الحساب
   } else {
     bar.classList.remove('locked');
-    bar.title = t('tokensRemainingTitlePrefix') + formatTokenCount(remaining) + t('tokensRemainingTitleMiddle') + formatTokenCount(share) + t('tokensRemainingTitleSuffix');
+    bar.title = 'متبقي ' + formatTokenCount(remaining) + ' توكن من نصيبك النهارده (' + formatTokenCount(share) + ')';
     lockBanner.style.display = 'none';
     composerInput.disabled = false; sendBtn.disabled = false; attachBtn.disabled = false;
   }
@@ -2729,7 +2616,7 @@ function renderConversationList(data){
   conversationList.innerHTML='';
   const entries = Object.entries(data).sort((a,b)=> (b[1].updatedAt||0)-(a[1].updatedAt||0));
   for(const [id, conv] of entries){
-    const title = conv.title || t('newChat');
+    const title = conv.title || 'محادثة جديدة';
     const item = document.createElement('div');
     item.className = 'conv-item' + (id===currentConvId ? ' active' : '');
     item.dataset.convId = id;
@@ -2746,7 +2633,7 @@ function renderConversationList(data){
     kebabBtn.innerHTML = '<i class="fas fa-ellipsis-vertical"></i>';
     kebabBtn.addEventListener('click', (e)=>{
       e.stopPropagation();
-      openContextMenu(id, (conversationsCache[id]||{}).title || t('newChat'), kebabBtn.getBoundingClientRect());
+      openContextMenu(id, (conversationsCache[id]||{}).title || 'محادثة جديدة', kebabBtn.getBoundingClientRect());
     });
     item.appendChild(kebabBtn);
 
@@ -2764,7 +2651,7 @@ function attachConvItemGestures(item, id){
   let timer = null, startX = 0, startY = 0, longPressed = false;
 
   function clearTimer(){ if(timer){ clearTimeout(timer); timer = null; } }
-  function getTitle(){ return (conversationsCache[id]||{}).title || t('newChat'); }
+  function getTitle(){ return (conversationsCache[id]||{}).title || 'محادثة جديدة'; }
 
   item.addEventListener('touchstart', (e)=>{
     const t = e.touches && e.touches[0];
@@ -2807,9 +2694,9 @@ function attachConvItemGestures(item, id){
 /* ============ CONTEXT MENU (تعديل الاسم / حذف) ============ */
 function openContextMenu(id, title, anchorRect){
   contextMenu.innerHTML =
-    '<button type="button" class="context-menu-item" data-action="rename"><i class="fas fa-pen"></i><span>'+escapeHtml(t('ctxRenameItem'))+'</span></button>'+
+    '<button type="button" class="context-menu-item" data-action="rename"><i class="fas fa-pen"></i><span>تعديل اسم المحادثة</span></button>'+
     '<div class="context-menu-divider"></div>'+
-    '<button type="button" class="context-menu-item danger" data-action="delete"><i class="fas fa-trash-can"></i><span>'+escapeHtml(t('ctxDeleteItem'))+'</span></button>';
+    '<button type="button" class="context-menu-item danger" data-action="delete"><i class="fas fa-trash-can"></i><span>حذف المحادثة</span></button>';
 
   contextMenu.querySelector('[data-action="rename"]').addEventListener('click', ()=>{
     closeContextMenu();
@@ -2867,7 +2754,7 @@ renameForm.addEventListener('submit', async (e)=>{
     if(id === currentConvId) conversationTitle.textContent = newTitle;
   } catch(err){
     console.error('rename err', err);
-    alert(t('alertRenameFailed'));
+    alert('معلش، مقدرتش أعدّل اسم المحادثة.');
   }
 });
 
@@ -2875,7 +2762,7 @@ renameForm.addEventListener('submit', async (e)=>{
 let deleteConvId = null;
 function openDeleteModal(id, title){
   deleteConvId = id;
-  deleteModalText.textContent = t('deleteModalTextPrefix')+title+t('deleteModalTextSuffix');
+  deleteModalText.textContent = 'هتتحذف محادثة "'+title+'" والرسائل اللي فيها نهائيًا، ومش هينفع ترجّعها تاني.';
   deleteModal.classList.add('open');
 }
 function closeDeleteModal(){
@@ -2898,7 +2785,7 @@ deleteConfirmBtn.addEventListener('click', async ()=>{
     }
   } catch(err){
     console.error('delete err', err);
-    alert(t('alertDeleteFailed'));
+    alert('معلش، مقدرتش أحذف المحادثة.');
   } finally {
     deleteConfirmBtn.disabled = false;
     closeDeleteModal();
@@ -2925,7 +2812,7 @@ document.addEventListener('keydown', (e)=>{
 
 function startNewConversation(){
   const ref = db.ref('users/'+currentUser.uid+'/conversations').push();
-  ref.set({ title:t('newChat'), createdAt: Date.now(), updatedAt: Date.now() });
+  ref.set({ title:'محادثة جديدة', createdAt: Date.now(), updatedAt: Date.now() });
   openConversation(ref.key);
 }
 newChatBtn.addEventListener('click', startNewConversation);
@@ -2979,7 +2866,7 @@ async function loadOlderMessages(){
   } catch(e){
     console.warn('loadOlderMessages failed', e);
     btn.disabled = false; btn.innerHTML = originalHtml;
-    showToast(t('toastNoOlderMessages'), 'network');
+    showToast('⚠️ مقدرتش أحمّل رسائل أقدم', 'network');
   }
 }
 
@@ -2987,7 +2874,7 @@ let messagesRef = null;
 function openConversation(convId){
   if(messagesRef) messagesRef.off();
   currentConvId = convId;
-  conversationTitle.textContent = (conversationsCache[convId] && conversationsCache[convId].title) || t('newChat');
+  conversationTitle.textContent = (conversationsCache[convId] && conversationsCache[convId].title) || 'محادثة جديدة';
   messagesEl.innerHTML='';
   oldestLoadedMsgKey = null; newestLoadedMsgKey = null; allOlderMessagesLoaded = false; loadOlderBtn = null;
 
@@ -3030,7 +2917,7 @@ function openConversation(convId){
 /* ============ MESSAGES UI ============ */
 function formatTime(ts){
   const d = ts ? new Date(ts) : new Date();
-  return d.toLocaleTimeString(currentAppLang==='tr' ? 'tr-TR' : 'ar-EG', { hour:'2-digit', minute:'2-digit' });
+  return d.toLocaleTimeString('ar-EG', { hour:'2-digit', minute:'2-digit' });
 }
 
 function escapeHtml(s){
@@ -3215,11 +3102,11 @@ function buildActionBar(questionText, answerText){
   //    المستخدم يقدر ياخد رد جديد على نفس السؤال من غير ما يكتبه تاني ──
   bar.appendChild(mkBtn('fas fa-rotate-right', 'إعادة الإرسال', (btn)=>{
     if (!questionText){
-      showToast(t('toastNoSavedQuestion'), 'unsupported');
+      showToast('⚠️ مفيش سؤال محفوظ لإعادة إرساله', 'unsupported');
       return;
     }
     if (sendBtn.classList.contains('sending')){
-      showToast(t('toastWaitCurrentReply'), 'info');
+      showToast('⏳ استنى الرد الحالي يخلص الأول', 'info');
       return;
     }
     composerInput.value = questionText;
@@ -3242,10 +3129,10 @@ function buildActionBar(questionText, answerText){
     if (navigator.clipboard){
       navigator.clipboard.writeText(shareText).then(()=>{
         btn.innerHTML = '<i class="fas fa-check"></i>';
-        showToast(t('toastCopiedConversation'), 'success');
+        showToast('✅ اتنسخت المحادثة، تقدر تلزقها في أي تطبيق تاني زي ChatGPT أو Gemini', 'success');
         setTimeout(()=>{ btn.innerHTML = '<i class="fas fa-share-nodes"></i>'; }, 1500);
       }).catch(()=>{
-        showToast(t('toastCopyFailed'), 'error');
+        showToast('⚠️ مقدرتش أنسخ أو أشارك النص', 'error');
       });
     }
   }));
@@ -3280,7 +3167,7 @@ function maybeAddZipAllButton(wrap){
       a.href = url; a.download = 'digital-mind-files.zip';
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
-    } catch(e){ console.error(e); showToast(t('toastZipFailed'), 'error'); }
+    } catch(e){ console.error(e); showToast('❌ مقدرتش أضغط الملفات', 'error'); }
     finally { btn.disabled = false; btn.innerHTML = originalHtml; }
   });
   wrap.appendChild(btn);
@@ -3537,7 +3424,6 @@ function stepKind(text){
   if (/بيصلّح الكود|يصلّح الكود/.test(text)) return 'fix';
   if (/كود/.test(text)) return 'code';
   if (/طريقة تانية/.test(text)) return 'retry';
-  if (/الهوية/.test(text)) return 'security';
   if (/بيجهّز الرد/.test(text)) return 'prepare';
   if (/صور/.test(text)) return 'image';
   if (/ملفات|ملف/.test(text)) return 'file';
@@ -3732,14 +3618,14 @@ attachInput.addEventListener('change', async ()=>{
         const dataUrl = await compressImage(file);
         pendingAttachments.push({ id, type:'image', dataUrl });
         renderAttachPreview();
-      } catch(e){ console.error(e); showToast(t('toastImageReadFailed'), 'unsupported'); }
+      } catch(e){ console.error(e); showToast('⚠️ مقدرتش أقرا الصورة دي', 'unsupported'); }
       continue;
     }
 
     // ── ZIP: نسأل المستخدم الأول يفك ولا يسيبه مضغوط، قبل ما نعالج الملف ──
     let extractZip = true;
     if (kind === 'zip'){
-      extractZip = confirm(t('confirmExtractZipPrefix')+file.name+t('confirmExtractZipSuffix'));
+      extractZip = confirm('عايز أفك الضغط وأقرا اللي جوه ملف "'+file.name+'"؟\n"موافق" = هفكه وأحلل محتواه\n"إلغاء" = هسيبه مضغوط زي ما هو');
     }
 
     pendingAttachments.push({ id, type:'file', name:file.name, kind, processing:true });
@@ -3761,11 +3647,11 @@ attachInput.addEventListener('change', async ()=>{
       //    تمام، والمستخدم مايعرفش إن جزء من الملف اتفوّت. بنوريه تنبيه
       //    واضح هنا بدل ما يفضل مخبّي جوه tooltip الماوس بس ──
       if (result.musicAnalysisFailed){
-        showToast(t('toastMusicAnalysisFailed'), 'unsupported');
+        showToast('⚠️ الكلام اتفهم، لكن التحليل الموسيقي الحقيقي فشل دلوقتي', 'unsupported');
       }
     } catch(e){
       console.error(e);
-      showToast(t('toastFileReadFailedPrefix') + (e.message || ''), 'unsupported');
+      showToast('⚠️ مقدرتش أقرا الملف ده: ' + (e.message || ''), 'unsupported');
       removeAttachmentById(id);
     }
   }
@@ -3808,7 +3694,7 @@ composer.addEventListener('submit', async (e)=>{
   //    لأن ده كان بيخلي الرسالة تتبعت من غير fileContext خالص، فالذكاء
   //    الاصطناعي يوصل له مرفق فاضي ويردّ بردود عامة زي "مقدرش أسمع الصوت" ──
   if (files.some(f => f.processing)){
-    showToast(t('toastAttachmentProcessing'), 'info');
+    showToast('⏳ لسه بيحلل الملف المرفق، استنى لحظة كمان وابعت تاني', 'info');
     return;
   }
 
@@ -3819,7 +3705,8 @@ composer.addEventListener('submit', async (e)=>{
   const HUGE_FILE_COUNT = 12, HUGE_CHAR_COUNT = 60000;
   if (files.length > HUGE_FILE_COUNT || totalAttachChars > HUGE_CHAR_COUNT){
     const ok = confirm(
-      t('confirmHugeRequestPrefix') + files.length + t('confirmHugeRequestMiddle') + Math.round(totalAttachChars/1000) + t('confirmHugeRequestSuffix')
+      'الطلب ده كبير (' + files.length + ' ملف تقريبًا ' + Math.round(totalAttachChars/1000) + ' ألف حرف)، وطلبات بالحجم ده ممكن تفصل قبل ما تخلص.\n\n' +
+      'تحب تكمل وتبعته زي ما هو؟ (لو عايز تتجنب الانقطاع، اضغط "إلغاء" وقسّم الملفات على أكتر من رسالة، أو نزّلها ZIP بدل ما تبعتها كلها مرة واحدة).'
     );
     if (!ok) return;
   }
@@ -3848,21 +3735,6 @@ composer.addEventListener('submit', async (e)=>{
   }, 120000);
   refreshGeoContext(); // مجرد محاولة تحديث في الخلفية لو لسه معندناش بيانات موقع/صلاة اليوم
 
-  // ── إعادة فحص القفل هنا كمان (مش بس فوق) — لأن بين لحظة الضغط على إرسال
-  //    ولحظة كتابة الرسالة في القاعدة ممكن يمر وقت (تجهيز مرفقات، إلخ)، ولو
-  //    المستخدم فعّل زرار الطوارئ في نفس اللحظة دي بالظبط، كانت الرسالة بتتسجل
-  //    في القاعدة للأبد من غير أي رد (لأن رسالة الخطأ التالية كانت بتتعرض محليًا
-  //    بس ومتتسجلش)، فبتفضل عالقة في المحادثة حتى بعد ما نرجع نفكّ القفل ──
-  if (window.__aiPaused){
-    showToast(t('secAiPausedMsg'), 'error');
-    composerInput.value = text;
-    pendingAttachments = attachmentsSnapshot;
-    sendBtn.classList.remove('sending');
-    document.getElementById('send-btn-icon').className = 'fas fa-arrow-up';
-    clearTimeout(window.__sendWatchdog);
-    return;
-  }
-
   const convRef = db.ref('users/'+currentUser.uid+'/conversations/'+currentConvId);
   const userMsg = { role:'user', ts: Date.now() };
   if(text) userMsg.text = text;
@@ -3881,13 +3753,13 @@ composer.addEventListener('submit', async (e)=>{
   // First message of a conversation becomes its title.
   const snap = await convRef.once('value');
   const conv = snap.val();
-  if(conv && (!conv.title || conv.title==='محادثة جديدة' || conv.title==='Yeni sohbet')){
+  if(conv && (!conv.title || conv.title==='محادثة جديدة')){
     await convRef.update({ title: (text || (files[0] && files[0].name) || (images.length ? 'صورة' : '')).slice(0,40) });
   }
 
   const thinkingEl = appendThinkingIndicator(images.length
-    ? t('stepAnalyzingImages')
-    : (files.length ? t('stepReadingFiles') : t('stepReadingMessage')));
+    ? 'بيفتح الصور ويحللها...'
+    : (files.length ? 'بيقرا محتوى الملفات المرفقة...' : 'بيقرا رسالتك...'));
 
   try{
     if(images.length){
@@ -3934,13 +3806,13 @@ composer.addEventListener('submit', async (e)=>{
         //    الرد دلوقتي" فورًا في نفس اللحظة، بدون أي تأخير أو انتظار ──
         if (!answerStageShown){
           answerStageShown = true;
-          thinkingEl._addStep(t('stepWritingReply'));
+          thinkingEl._addStep('بيجهّز الرد ويكتبه دلوقتي...');
         }
         // ── أول ما علامة كتلة كود (```) تظهر في النص، بنبدّل فورًا لخطوة
         //    "بيجهّز الكود" (بلونها وحركتها المختلفة) في نفس اللحظة بالظبط ──
         if (!codeStageShown && fullText.indexOf('```') > -1){
           codeStageShown = true;
-          thinkingEl._addStep(t('stepPreparingCode'));
+          thinkingEl._addStep('بيجهّز الكود...');
         }
       };
 
@@ -3963,38 +3835,29 @@ composer.addEventListener('submit', async (e)=>{
     //    وترجع الغرفة سكرول طبيعي زي أي رسالة تانية بدل ما تفضل ملزّقة ──
     thinkingEl.classList.remove('thinking-full');
     closeScrollSpacer();
-    let errMsgText;
     if (isAbortError(err)){
-      errMsgText = __manualStopRequested ? t('errStopped') : t('errTimeout');
-    } else if (err && err.message === 'AI_PAUSED_SECURITY_LOCK'){
-      // ── ده اللي كان بيسبب "الرسالة العالقة": القفل اتفعّل بعد ما رسالة
-      //    المستخدم اتسجلت في القاعدة بالفعل (سباق توقيت)، فكانت الرسالة
-      //    تفضل من غير رد محفوظ للأبد. دلوقتي بنسجّل رد واضح ليها بدل ما
-      //    نسيبها معلّقة، حتى لو القفل اتفكّ بعد كده ──
-      errMsgText = t('errPausedRetry');
+      const stopMsg = __manualStopRequested
+        ? 'تم إيقاف الرد.'
+        : 'الرد أخد وقت أطول من المعتاد فاتلغى تلقائيًا. جرب تاني، أو ابعت رسالة أقصر لو ممكن.';
+      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent: stopMsg })
+      );
     } else if (err && err.serviceDown){
       // مفيش أي بديل شغال دلوقتي — بعد ما جربنا كل المزوّدين مرتين (مع تأخير
       // بينهم). ده غالبًا رايت-ليميت مؤقت على المفاتيح المشتركة مع فلك،
       // مش إن رصيد التوكن بتاعك خلص فعليًا — فبنوصف الحالة صح للمستخدم.
-      errMsgText = '❌ ' + err.serviceDown + t('errServiceDownSuffix');
+      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'❌ ' + err.serviceDown + ' مزدحمة دلوقتي (مش إن التوكن خلص)، جرب تاني بعد شوية.' })
+      );
     } else {
       const details = (err && err.providerDetails && err.providerDetails.length)
         ? '\n\n' + err.providerDetails.join('\n')
         : '';
-      errMsgText = t('errGeneric') + details;
+      thinkingEl.querySelector('.thinking-steps')?.replaceWith(
+        Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent:'حصل خطأ في الرد، جرب تاني.' + details })
+      );
       console.error(err, err && err.providerDetails);
     }
-    thinkingEl.querySelector('.thinking-steps')?.replaceWith(
-      Object.assign(document.createElement('div'), { className:'msg assistant error-msg', textContent: errMsgText })
-    );
-    // ── نحفظ رسالة الخطأ في القاعدة زي أي رد تاني (مش بس محليًا في الـ DOM)،
-    //    عشان لما المحادثة تتفتح تاني أو تترندر من الـ listener، الرسالة اللي
-    //    بعتها المستخدم متفضلش من غير أي رد ظاهر معاها ──
-    try{
-      const errTs = Date.now();
-      await convRef.child('messages').push({ role:'assistant', text: errMsgText, error: true, ts: errTs });
-      await convRef.update({ updatedAt: errTs });
-    }catch(saveErr){ console.warn('failed to persist error message', saveErr); }
   } finally {
     clearTimeout(window.__sendWatchdog);
     currentAbortController = null;
