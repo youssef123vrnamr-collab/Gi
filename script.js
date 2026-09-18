@@ -18,16 +18,19 @@ const auth = firebase.auth();
 const db = firebase.database();
 
 /* ============ APP CHECK ============
-   ⚠️ لازم تحط الـ Site Key بتاعك هنا (من Firebase Console → App Check →
-   سجّل الـ Web App → reCAPTCHA v3) قبل ما ده يشتغل فعليًا. لحد ما تحطه،
-   getAppCheckToken() تحت هترجع null وأي نداء لـ groqProxy هيترفض بـ 401 —
-   ده متعمّد (fail-closed) عشان محدش يفتكر إن الحماية شغالة وهي مش شغالة. */
-const APP_CHECK_SITE_KEY = "ضع_مفتاح_reCAPTCHA_v3_هنا";
+   ⚠️ بنستخدم reCAPTCHA Enterprise (مش النوع القديم) — لأن النوع القديم بقى
+   deprecated في Firebase Console وممكن تلاقي خانة الـ Secret Key بتاعته
+   معطّلة (رمادي) ومش قابلة للتعديل لتسجيلات جديدة. Enterprise أسهل: مفتاح
+   واحد بس (Key ID من Google Cloud Console → reCAPTCHA Enterprise)، من غير
+   أي Secret Key يتحط في Firebase خالص.
+   حط الـ Key ID بتاعك هنا (من console.cloud.google.com/security/recaptcha). */
+const APP_CHECK_SITE_KEY = "6Le83MEtAAAAAJTwdym0Ja945-5a1GCXNb_RxBbL";
 let appCheckInstance = null;
 try{
   if (APP_CHECK_SITE_KEY && APP_CHECK_SITE_KEY.indexOf('ضع_') !== 0 && firebase.appCheck){
     appCheckInstance = firebase.appCheck();
-    appCheckInstance.activate(APP_CHECK_SITE_KEY, true); // true = تجديد تلقائي للتوكن
+    const provider = new firebase.appCheck.ReCaptchaEnterpriseProvider(APP_CHECK_SITE_KEY);
+    appCheckInstance.activate(provider, true); // true = تجديد تلقائي للتوكن
   } else {
     console.warn('App Check معطّل: محتاج تحط APP_CHECK_SITE_KEY الحقيقي في script.js');
   }
