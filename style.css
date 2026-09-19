@@ -1205,12 +1205,6 @@ button:focus,button:focus-visible{outline:none;}
 }
 .thinking-step-icon[class*="k-browse"] .fk-brain{width:34px;height:34px;}
 
-/* ── عنوان غرفة التفكير العميق (اللايف + النهائية) ──
-   (لازم flex:none + overflow:visible لأن القواعد القديمة على "span" كانت بتمدّد الأيقونة وتقصّ التوهّج) */
-.cosmos-deep-think-live-label .fk-brain,
-.cosmos-deep-think-toggle .fk-brain{width:26px;height:26px;margin:-4px 0;flex:none;overflow:visible;}
-.fk-brain span{overflow:visible;text-overflow:clip;}
-
 /* ── إشعار "تم تفعيل الوضع" بشكل احترافي ── */
 .app-toast.toast-brain{
   padding:8px 16px 8px 14px;border-radius:16px;text-align:right;
