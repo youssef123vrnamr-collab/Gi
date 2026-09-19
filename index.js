@@ -413,6 +413,71 @@ exports.groqWhisperProxy = onRequest(
     }
   }
 );
+// =====================================================================
+// ============ TTS PROXY — استنساخ الصوت عبر HF Space ============
+// بينادي الـ Gradio Space المستضاف على Hugging Face (endpoint /clone_voice)
+// اللي بيولّد الصوت بنبرة صاحب المشروع (العينة محفوظة على سيرفر الـ Space
+// نفسه، فمش محتاجين نبعتها من هنا). بيرجع ملف الصوت (WAV) مباشرة للفرونت إند.
+//
+// ⚠️ لازم تتأكد إن مكتبة @gradio/client متضافة في package.json:
+//   npm install @gradio/client
+//
+// ⚠️ غيّر VOICE_SPACE_ID لو غيّرت اسم الـ Space بتاعك.
+const VOICE_SPACE_ID = "YoussefFalak/voice-cloning-server";
+const MAX_TTS_CHARS = 600; // سقف طول النص المسموح بتحويله لصوت في المرة الواحدة
+
+let _voiceClientPromise = null;
+async function getVoiceClient() {
+  // @gradio/client حزمة ESM بحتة، والملف ده CommonJS، فلازم dynamic import
+  const { Client } = await import("@gradio/client");
+  if (!_voiceClientPromise) {
+    _voiceClientPromise = Client.connect(VOICE_SPACE_ID).catch((err) => {
+      _voiceClientPromise = null; // لو فشل الاتصال، نسمح بمحاولة تانية المرة الجاية
+      throw err;
+    });
+  }
+  return _voiceClientPromise;
+}
+
+exports.ttsProxy = onRequest(
+  { cors: ALLOWED_ORIGINS, timeoutSeconds: 120, memory: "512MiB" },
+  async (req, res) => {
+    if (req.method !== "POST") { res.status(405).json({ error: "method_not_allowed" }); return; }
+    const guard = await runGuardChecks(req, res);
+    if (!guard.ok) return;
+
+    const body = req.body || {};
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    const language = typeof body.language === "string" && body.language ? body.language : "ar";
+
+    if (!text) { res.status(400).json({ error: "text_required" }); return; }
+    if (text.length > MAX_TTS_CHARS) { res.status(400).json({ error: "text_too_long" }); return; }
+
+    try {
+      const client = await getVoiceClient();
+      const result = await client.predict("/clone_voice", {
+        text,
+        speaker_wav: null, // null = استخدم الصوت المحفوظ دائماً على الـ Space
+        language,
+      });
+
+      const audioInfo = Array.isArray(result.data) ? result.data[0] : null;
+      const audioUrl = audioInfo && audioInfo.url;
+      if (!audioUrl) throw new Error("no_audio_in_response");
+
+      const audioRes = await fetch(audioUrl);
+      if (!audioRes.ok) throw new Error("failed_to_fetch_audio_file");
+      const arrayBuf = await audioRes.arrayBuffer();
+
+      res.setHeader("Content-Type", "audio/wav");
+      res.status(200).send(Buffer.from(arrayBuf));
+    } catch (err) {
+      console.error("ttsProxy error", err);
+      res.status(502).json({ error: "upstream_failed", message: err.message });
+    }
+  }
+);
+
 const MAX_QUERY_CHARS = 400;
 exports.tavilyProxy = onRequest(
   { secrets: [TAVILY_API_KEY], cors: ALLOWED_ORIGINS, timeoutSeconds: 60 },

@@ -250,6 +250,7 @@ const AI_DISPLAY_NAME = "AlalaGyGyAgha V2.6";
 let voiceSettings = { voiceURI: null, rate: 1, pitch: 1 };
 let availableVoices = [];
 let currentUtterance = null;
+let currentClonedAudio = null; // عنصر <audio> بتاع الصوت المستنسخ الشغال حالياً (لو موجود)
 
 function loadArabicVoices(){
   if (!('speechSynthesis' in window)) return;
@@ -278,19 +279,56 @@ function stripForSpeech(raw){
 }
 
 function speakText(text, btnEl){
-  if (!('speechSynthesis' in window)){
-    showToastSafe('⚠️ المتصفح ده مش بيدعم القراءة الصوتية');
-    return;
-  }
-  const wasSpeaking = window.speechSynthesis.speaking;
-  window.speechSynthesis.cancel();
+  const wasSpeaking = (currentClonedAudio && !currentClonedAudio.paused) || (('speechSynthesis' in window) && window.speechSynthesis.speaking);
+
+  // وقف أي صوت شغال حالياً (سواء صوتك المستنسخ أو صوت المتصفح الاحتياطي)
+  if (currentClonedAudio){ currentClonedAudio.pause(); currentClonedAudio.currentTime = 0; currentClonedAudio = null; }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   document.querySelectorAll('.cosmos-action-btn.speaking').forEach(b=>{
-    b.classList.remove('speaking'); b.innerHTML = '<i class="fas fa-volume-high"></i>';
+    b.classList.remove('speaking'); b.innerHTML = '<i class="fas fa-volume-high"></i>'; b.dataset.wasActive = '0';
   });
   if (wasSpeaking && btnEl && btnEl.dataset.wasActive === '1'){ btnEl.dataset.wasActive = '0'; return; }
 
   const clean = stripForSpeech(text);
   if (!clean) return;
+
+  if (btnEl){
+    btnEl.classList.add('speaking'); btnEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; btnEl.dataset.wasActive = '1';
+  }
+
+  // نحاول الأول بصوتك المستنسخ (عبر ttsProxy → HF Space)، ولو فشل لأي سبب
+  // (الشبكة، الـ Space نايم، إلخ) نرجع لصوت المتصفح الآلي كخطة بديلة
+  callJsonProxy(TTS_PROXY_URL, { text: clean, language: 'ar' })
+    .then(res => {
+      if (!res.ok) throw new Error('tts_proxy_failed_' + res.status);
+      return res.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      currentClonedAudio = audio;
+      if (btnEl) btnEl.innerHTML = '<i class="fas fa-stop"></i>';
+      audio.onended = audio.onerror = () => {
+        if (btnEl){ btnEl.classList.remove('speaking'); btnEl.innerHTML = '<i class="fas fa-volume-high"></i>'; btnEl.dataset.wasActive = '0'; }
+        currentClonedAudio = null;
+        URL.revokeObjectURL(url);
+      };
+      audio.play();
+    })
+    .catch(err => {
+      console.warn('ttsProxy failed, falling back to browser voice', err);
+      currentClonedAudio = null;
+      speakTextBrowserFallback(clean, btnEl);
+    });
+}
+
+// ── الخطة البديلة: صوت المتصفح الآلي (كان ده السلوك الوحيد قبل ربط الصوت المستنسخ) ──
+function speakTextBrowserFallback(clean, btnEl){
+  if (!('speechSynthesis' in window)){
+    showToastSafe('⚠️ تعذّر الاتصال بخدمة الصوت، والمتصفح ده مش بيدعم القراءة الصوتية الاحتياطية');
+    if (btnEl){ btnEl.classList.remove('speaking'); btnEl.innerHTML = '<i class="fas fa-volume-high"></i>'; btnEl.dataset.wasActive = '0'; }
+    return;
+  }
   const utter = new SpeechSynthesisUtterance(clean);
   utter.rate = voiceSettings.rate; utter.pitch = voiceSettings.pitch;
   const voice = availableVoices.find(v => v.voiceURI === voiceSettings.voiceURI);
@@ -1153,6 +1191,7 @@ const VERCEL_GATEWAY_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/vercelGatewayProxy";
 const GEMINI_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/geminiProxy";
 const TAVILY_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/tavilyProxy";
 const BROWSE_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/browseAgent";
+const TTS_PROXY_URL = CLOUD_FUNCTIONS_BASE + "/ttsProxy";
 const CONTINUE_PROMPT = 'كمل بالظبط من نفس الحرف اللي وقفت عنده، من غير ما تعيد ولا حرف كتبته قبل كده، ومن غير أي مقدمة أو تعليق زيادة. لو كنت في نص كود، كمل الكود نفسه لحد ما يخلص ويتقفل بـ ``` — ممنوع تلخيص أو اختصار أي جزء.';
 const MAX_CONTINUATIONS = 5;
 const GROQ_PROXY_ATTEMPTS = 2; // محاولتين بس (مفيش تدوير مفاتيح دلوقتي، المفتاح واحد وسيرفر-سايد)
