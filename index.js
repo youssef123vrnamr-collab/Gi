@@ -494,7 +494,7 @@ const net = require("net");
 const BROWSE_MODEL = "gemini-3.5-flash";   // نفس الموديل المستخدم في geminiProxy
 const BROWSE_MAX_STEPS = 14;               // أقصى عدد خطوات في الطلب الواحد
 const BROWSE_TOTAL_MS = 240000;            // أقصى مدة كلية (الفنكشن نفسها 300 ثانية)
-const BROWSE_PER_DAY_LIMIT = 30;           // أقصى عدد جلسات تصفّح لكل مستخدم في اليوم
+const BROWSE_PER_DAY_LIMIT = 1;            // أقصى عدد جلسات تصفّح لكل مستخدم في اليوم (مرة واحدة بس)
 const BROWSE_ALLOWED_PORTS = new Set(["", "80", "443", "8080", "8443"]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

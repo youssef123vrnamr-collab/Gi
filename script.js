@@ -941,14 +941,45 @@ function setBrowseMode(on){
   try{ localStorage.setItem(BROWSE_STORAGE_KEY, on ? '1' : '0'); }catch(_e){}
   syncBrowseToggleUI();
 }
-// ── بنشغّل المتصفح بس لو الرسالة فيها "فعل تنفيذ" + (رابط/دومين أو كلمة موقع)،
-//    عشان الأسئلة العادية ماتفتحش متصفح (تكلفة + وقت) حتى والزرار شغّال ──
-const BROWSE_VERB_RE = /(افتح|إفتح|ادخل|أدخل|دخّل|روح|روّح|تصفح|تصفّح|اضغط|دوس|اكتب في|املا|املأ|سجّل|سجل لي|اعمل لي حساب|جرّب|جرب الموقع|شوف الموقع|زور|ابحث في|دوّر في|دور في|\bopen\b|go to|visit|browse|navigate|click|fill (in|out)|sign up|search (on|in)|\baç\b|\bgit\b|ziyaret|tıkla|doldur|\bgez)/i;
-const BROWSE_TARGET_RE = /(https?:\/\/\S+|\b[a-z0-9-]+\.(com|net|org|io|app|dev|co|gov|edu|me|ai|tv|info)\b|موقع|صفحة|صفحه|\bsite\b|website|web ?page|browser|متصفح|internet|sitesi|sayfa)/i;
-function wantsBrowse(text){
+// ── القرار مبقاش شكل ثابت (regex) — النموذج اللغوي نفسه هو اللي بيقرا كلام
+//    المستخدم ويحلل "هو عايز إيه بالظبط"، ولو لقى إنه فعليًا طالب تصفّح
+//    حقيقي (يفتح/يستخدم موقع أو منصة بعينها)، هو اللي بيبعتها لموديل
+//    التنفيذ (runBrowseAgent). البديل ده بيتحط احتياطي بس لو نداء الشبكة
+//    لموديل التصنيف فشل (مفيش إنترنت مؤقتًا مثلاً) — عشان الميزة متقفلش
+//    خالص وقتها بدل ما تشتغل بذكاء ──
+const BROWSE_FALLBACK_VERB_RE = /(افتح|إفتح|ادخل|أدخل|دخّل|روح|روّح|تصفح|تصفّح|اضغط|دوس|اكتب في|املا|املأ|سجّل|سجل لي|اعمل لي حساب|جرّب|جرب الموقع|شوف الموقع|زور|ابحث في|دوّر في|دور في|\bopen\b|go to|visit|browse|navigate|click|fill (in|out)|sign up|search (on|in)|\baç\b|\bgit\b|ziyaret|tıkla|doldur|\bgez)/i;
+const BROWSE_FALLBACK_TARGET_RE = /(https?:\/\/\S+|\b[a-z0-9-]+\.(com|net|org|io|app|dev|co|gov|edu|me|ai|tv|info)\b|موقع|صفحة|صفحه|منصة|منصه|\bsite\b|website|web ?page|browser|متصفح|internet|sitesi|sayfa)/i;
+function wantsBrowseFallback(text){
   if (!text) return false;
   const s = String(text);
-  return BROWSE_VERB_RE.test(s) && BROWSE_TARGET_RE.test(s);
+  return BROWSE_FALLBACK_VERB_RE.test(s) && BROWSE_FALLBACK_TARGET_RE.test(s);
+}
+// ── القرار الحقيقي: بنسأل موديل صغير وسريع (نفس فكرة classifyNeedsSearch)
+//    يحلل قصد المستخدم بالكامل من غير ما نحصره في كلمات محددة. بيرجع
+//    true/false، أو null لو النداء نفسه فشل (عشان الكود يفرّق بين "الموديل
+//    قال لأ" و"معرفناش نسأل الموديل أصلاً") ──
+async function classifyWantsBrowse(userMsg){
+  try{
+    if (!userMsg || userMsg.trim().length < 3) return false;
+    const r = await callJsonProxy(GROQ_PROXY_URL, {
+      model: 'openai/gpt-oss-120b',
+      max_tokens: 3,
+      temperature: 0,
+      stream: false,
+      messages: [
+        { role: 'system', content: 'انت جزء من نظام بيقرر هل رسالة المستخدم محتاجة "تصفّح حقيقي" (فتح متصفح فعلي على السيرفر يدخل موقع أو منصة أو تطبيق ويب بعينه ويستخدمه بنفسه: يدخل، يدوّر جوه الموقع، يضغط، يملا فورم، يسجّل، يشوف محتوى/كورسات/منتجات/نتائج موجودة فعليًا على موقع أو منصة معيّنة — سواء ذكر المستخدم اسمها أو رابطها أو وصفها بوضوح). حلل قصد المستخدم الحقيقي مش مجرد كلمات مفتاحية. رد بكلمة واحدة بس: "نعم" لو محتاج تصفّح حقيقي فعلاً، أو "لا" لو الطلب مجرد سؤال عام، كلام عادي، طلب شرح أو كود أو معلومة من غير الحاجة لفتح موقع بعينه فعليًا. من غير أي شرح.' },
+        { role: 'user', content: userMsg }
+      ]
+    }, requestSignal(15000));
+    if (!r.ok) return false;
+    const d = await r.json();
+    const ans = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    return /نعم|yes/i.test(ans.trim());
+  } catch(e){
+    if (isAbortError(e)) throw e;
+    console.warn('classifyWantsBrowse failed', e);
+    return null; // null = معرفناش نسأل الموديل — الكود اللي بينادينا هيرجع للـ fallback
+  }
 }
 function buildBrowseReportBlock(evt, errMsg){
   if (evt && evt.ok){
@@ -1461,9 +1492,16 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   // ── وضع التصفّح الذكي: لو الزرار شغّال والمستخدم طلب فعليًا يفتح/يستخدم موقع،
   //    بنشغّل متصفح حقيقي على السيرفر ونرجّع تقرير بالنتيجة الفعلية ──
   let browsedOk = false;
-  if (isBrowseModeOn() && wantsBrowse(lastUserText)){
-    searchResultsBlock = await runBrowseAgent(lastUserText, step);
-    browsedOk = true;
+  if (isBrowseModeOn()){
+    // ── الموديل نفسه هو اللي بيحلل الكلام ويقرر — مش شكل ثابت. لو النداء
+    //    لموديل التصنيف فشل (null)، نرجع للـ fallback البسيط بدل ما الميزة
+    //    توقف خالص ──
+    let needsBrowse = await classifyWantsBrowse(lastUserText);
+    if (needsBrowse === null) needsBrowse = wantsBrowseFallback(lastUserText);
+    if (needsBrowse){
+      searchResultsBlock = await runBrowseAgent(lastUserText, step);
+      browsedOk = true;
+    }
   }
 
   // ── لو المستخدم بعت رابط صريح، ندخله ونقرا محتواه فعليًا بدل ما نعمل بحث عام ──
