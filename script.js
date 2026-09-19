@@ -315,7 +315,8 @@ const TOAST_TYPES = {
   limit:      { icon:'fa-gauge-high', cls:'toast-limit' },
   unsupported:{ icon:'fa-file-circle-xmark', cls:'toast-unsupported' },
   success:    { icon:'fa-circle-check', cls:'toast-success' },
-  info:       { icon:'fa-circle-info', cls:'toast-info' }
+  info:       { icon:'fa-circle-info', cls:'toast-info' },
+  brain:      { brain:true, cls:'toast-brain' }
 };
 let __toastTimer = null;
 function showToast(msg, type){
@@ -330,8 +331,15 @@ function showToast(msg, type){
     document.body.appendChild(el);
   }
   el.className = 'app-toast ' + meta.cls;
-  el.innerHTML = '<i class="fas '+meta.icon+'" aria-hidden="true"></i><span></span>';
-  el.querySelector('span').textContent = msg;
+  el.innerHTML = (meta.brain ? brainMarkup('done') : '<i class="fas '+meta.icon+'" aria-hidden="true"></i>') + '<span class="toast-text"></span>';
+  // ── سطر أول = عنوان، وسطر تاني (لو موجود) = وصف فرعي ──
+  const __parts = String(msg).split('\n');
+  const __tx = el.querySelector('.toast-text');
+  if (__parts.length > 1){
+    const a = document.createElement('b'); a.className = 'toast-title'; a.textContent = __parts[0];
+    const b = document.createElement('small'); b.className = 'toast-sub'; b.textContent = __parts.slice(1).join(' ');
+    __tx.appendChild(a); __tx.appendChild(b);
+  } else { __tx.textContent = __parts[0]; }
   el.classList.add('show');
   clearTimeout(__toastTimer);
   __toastTimer = setTimeout(()=>{ el.classList.remove('show'); }, 3200);
@@ -949,10 +957,14 @@ function setBrowseMode(on){
 //    خالص وقتها بدل ما تشتغل بذكاء ──
 const BROWSE_FALLBACK_VERB_RE = /(افتح|إفتح|ادخل|أدخل|دخّل|روح|روّح|تصفح|تصفّح|اضغط|دوس|اكتب في|املا|املأ|سجّل|سجل لي|اعمل لي حساب|جرّب|جرب الموقع|شوف الموقع|زور|ابحث في|دوّر في|دور في|\bopen\b|go to|visit|browse|navigate|click|fill (in|out)|sign up|search (on|in)|\baç\b|\bgit\b|ziyaret|tıkla|doldur|\bgez)/i;
 const BROWSE_FALLBACK_TARGET_RE = /(https?:\/\/\S+|\b[a-z0-9-]+\.(com|net|org|io|app|dev|co|gov|edu|me|ai|tv|info)\b|موقع|صفحة|صفحه|منصة|منصه|\bsite\b|website|web ?page|browser|متصفح|internet|sitesi|sayfa)/i;
+const BROWSE_FALLBACK_FETCH_RE = /(هات|هاتلي|هات لي|جيب|جبلي|جيب لي|طلّع|طلع لي|اعرض|عايز أعرف|عايز اعرف|فيه ايه|فيه إيه|فيها ايه|فيها إيه|قائمة|لسته|ليست|list|show me|get me|what('| i)?s on)/i;
 function wantsBrowseFallback(text){
   if (!text) return false;
   const s = String(text);
-  return BROWSE_FALLBACK_VERB_RE.test(s) && BROWSE_FALLBACK_TARGET_RE.test(s);
+  // رابط صريح أو دومين → تصفّح مباشرة
+  if (/https?:\/\/\S+/i.test(s) || /\b[a-z0-9-]+\.(com|net|org|io|app|dev|co|gov|edu|me|ai|tv|info)\b/i.test(s)) return true;
+  const hasTarget = BROWSE_FALLBACK_TARGET_RE.test(s);
+  return hasTarget && (BROWSE_FALLBACK_VERB_RE.test(s) || BROWSE_FALLBACK_FETCH_RE.test(s));
 }
 // ── القرار الحقيقي: بنسأل موديل صغير وسريع (نفس فكرة classifyNeedsSearch)
 //    يحلل قصد المستخدم بالكامل من غير ما نحصره في كلمات محددة. بيرجع
@@ -961,20 +973,29 @@ function wantsBrowseFallback(text){
 async function classifyWantsBrowse(userMsg){
   try{
     if (!userMsg || userMsg.trim().length < 3) return false;
+    // ── سبب المشكلة القديمة: openai/gpt-oss-120b موديل "تفكير" — التوكنات بتاعته بتتصرف
+    //    على التفكير الداخلي الأول. مع max_tokens:3 كان التفكير بياكل الـ 3 توكنز كلهم
+    //    والرد (content) بيرجع فاضي دايمًا → الكود كان يفهمها "لا" ويقول "مش محتاج تصفّح".
+    //    الحل: نقلل مجهود التفكير (low) ونديله ميزانية توكنز كافية، ولو الرد فاضي أو
+    //    الطلب فشل نرجّع null (مش false) عشان الـ fallback يشتغل بدل ما الميزة تموت ──
     const r = await callJsonProxy(GROQ_PROXY_URL, {
       model: 'openai/gpt-oss-120b',
-      max_tokens: 3,
+      max_tokens: 400,
       temperature: 0,
       stream: false,
+      reasoning_effort: 'low',
       messages: [
         { role: 'system', content: 'انت جزء من نظام بيقرر هل رسالة المستخدم محتاجة "تصفّح حقيقي" (فتح متصفح فعلي على السيرفر يدخل موقع أو منصة أو تطبيق ويب بعينه ويستخدمه بنفسه: يدخل، يدوّر جوه الموقع، يضغط، يملا فورم، يسجّل، يشوف محتوى/كورسات/منتجات/نتائج موجودة فعليًا على موقع أو منصة معيّنة — سواء ذكر المستخدم اسمها أو رابطها أو وصفها بوضوح). حلل قصد المستخدم الحقيقي مش مجرد كلمات مفتاحية. رد بكلمة واحدة بس: "نعم" لو محتاج تصفّح حقيقي فعلاً، أو "لا" لو الطلب مجرد سؤال عام، كلام عادي، طلب شرح أو كود أو معلومة من غير الحاجة لفتح موقع بعينه فعليًا. من غير أي شرح.' },
         { role: 'user', content: userMsg }
       ]
-    }, requestSignal(15000));
-    if (!r.ok) return false;
+    }, requestSignal(20000));
+    if (!r.ok) return null;
     const d = await r.json();
-    const ans = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
-    return /نعم|yes/i.test(ans.trim());
+    const ans = ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').trim();
+    if (!ans) return null;                 // رد فاضي (التفكير خد الميزانية) → نستخدم الـ fallback
+    if (/نعم|yes/i.test(ans)) return true;
+    if (/^(لا|لأ|no)\b/i.test(ans)) return false;
+    return null;                           // رد غير مفهوم → fallback
   } catch(e){
     if (isAbortError(e)) throw e;
     console.warn('classifyWantsBrowse failed', e);
@@ -1031,7 +1052,7 @@ async function runBrowseAgent(goalText, step, startUrlOverride){
           const line = part.split('\n').find(l => l.startsWith('data: '));
           if (!line) continue;
           let evt; try{ evt = JSON.parse(line.slice(6)); }catch(_e){ continue; }
-          if (evt.type === 'step' && evt.text) step(evt.text, 'browse');
+          if (evt.type === 'step' && evt.text) step(evt.text, 'browse-run');
           else if (evt.type === 'done') finalEvt = evt;
           else if (evt.type === 'error') errMsg = evt.message || 'error';
         }
@@ -1050,6 +1071,11 @@ async function runBrowseAgent(goalText, step, startUrlOverride){
     pendingBrowseState = { url: finalEvt.url, title: finalEvt.title, originalGoal: String(goalText).slice(0, 1500) };
   } else {
     pendingBrowseState = null;
+  }
+  // ── خلّص فعلاً: الأيقونة تنوّر دهبي + أزرق مع بعض لحظة قبل ما النتايج تتعرض ──
+  if (finalEvt && finalEvt.ok){
+    step(t('stepBrowseDone'), 'browse-done');
+    await new Promise(r => setTimeout(r, 1100));
   }
   return buildBrowseReportBlock(finalEvt, errMsg);
 }
@@ -1507,12 +1533,12 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   //    بنشغّل متصفح حقيقي على السيرفر ونرجّع تقرير بالنتيجة الفعلية ──
   let browsedOk = false;
   if (isBrowseModeOn()){
-    // ── خطوة تشخيصية: تظهر بأيقونة التصفّح المخصصة (BROWSE_STEP_SVG) على
+    // ── خطوة تشخيصية: تظهر بأيقونة العقل اللانهائي (brainMarkup) على
     //    *كل* رسالة طول ما الزرار شغّال، بغض النظر إن كان هيتصفح فعلاً ولا
     //    لأ — عشان يوسف يقدر يتأكد بصريًا إن الميزة شغالة ومش بس الزرار
     //    مفعّل شكليًا. لو مبانتش الأيقونة دي خالص، يبقى isBrowseModeOn()
     //    بترجع false (الزرار مش شغّال فعليًا رغم شكله) ──
-    step('🌐 وضع التصفّح الذكي شغّال — بيحلل طلبك هل محتاج يفتح موقع فعلي...', 'browse');
+    step(t('stepBrowseModeOn'), 'browse');
     if (pendingBrowseState){
       // ── آخر تصفّح وقف قبل خطوة حساسة (زي تسجيل دخول) ومستني رد المستخدم.
       //    الرسالة الجاية دي هي الرد (موافقة/رفض/بيانات دخول) — نكمّل من
@@ -1532,11 +1558,11 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
       let needsBrowse = await classifyWantsBrowse(lastUserText);
       if (needsBrowse === null) needsBrowse = wantsBrowseFallback(lastUserText);
       if (needsBrowse){
-        step('🌐 قرر إنه محتاج يتصفّح فعلاً — بيفتح المتصفح الحقيقي...', 'browse');
+        step(t('stepBrowseDecidedYes'), 'browse');
         searchResultsBlock = await runBrowseAgent(lastUserText, step);
         browsedOk = true;
       } else {
-        step('🌐 قرر إن الطلب ده مش محتاج تصفّح حقيقي، هيرد عادي', 'browse');
+        step(t('stepBrowseDecidedNo'), 'browse');
       }
     }
   }
@@ -2312,9 +2338,13 @@ const APP_I18N = {
     stepServiceBusyRetrying: 'الخدمة مزدحمة شوية، بيعيد المحاولة...',
     stepVerifyingIdentity: 'بيتأكد من الهوية وصلاحية الطلب...',
     stepBrowseStart: 'بيفتح متصفح حقيقي ويجهّز الجلسة...',
+    stepBrowseModeOn: 'تم تفعيل التصفّح الذكي — بيحلّل طلبك',
+    stepBrowseDecidedYes: 'الطلب محتاج تصفّح فعلي — بيبدأ الجلسة',
+    stepBrowseDecidedNo: 'الطلب مش محتاج تصفّح — هيرد مباشرة',
+    stepBrowseDone: 'خلّص التصفّح — بيجهّز النتايج',
     stepSecurityTopic: 'بيحلّل سؤال الحماية والأمان بدقة...',
     badgeSecurityMode: 'وضع الحماية',
-    toastBrowseOn: '🌐 التصفّح الذكي شغّال — الذكاء هيفتح المواقع ويستخدمها بنفسه لما تطلب منه',
+    toastBrowseOn: 'تم تفعيل التصفّح الذكي\nالذكاء هيفتح المواقع ويستخدمها بنفسه لما تطلب منه',
     toastBrowseOff: 'التصفّح الذكي اتقفل',
     browseToggleAria: 'التصفّح الذكي — الذكاء يستخدم المواقع بنفسه',
     errStopped: 'تم إيقاف الرد.',
@@ -2424,9 +2454,13 @@ const APP_I18N = {
     stepServiceBusyRetrying: 'Hizmet biraz yoğun, tekrar deneniyor...',
     stepVerifyingIdentity: 'Kimlik ve isteğin geçerliliği doğrulanıyor...',
     stepBrowseStart: 'Gerçek bir tarayıcı açılıyor, oturum hazırlanıyor...',
+    stepBrowseModeOn: 'Akıllı gezinme etkinleştirildi — isteğin analiz ediliyor',
+    stepBrowseDecidedYes: 'İstek gerçek gezinme gerektiriyor — oturum başlıyor',
+    stepBrowseDecidedNo: 'İstek gezinme gerektirmiyor — doğrudan yanıtlanacak',
+    stepBrowseDone: 'Gezinme tamamlandı — sonuçlar hazırlanıyor',
     stepSecurityTopic: 'Güvenlik sorusu ayrıntılı analiz ediliyor...',
     badgeSecurityMode: 'Güvenlik modu',
-    toastBrowseOn: '🌐 Akıllı gezinme açık — yapay zekâ istediğinde siteleri kendisi kullanır',
+    toastBrowseOn: 'Akıllı gezinme etkinleştirildi\nYapay zekâ istediğinde siteleri kendisi kullanır',
     toastBrowseOff: 'Akıllı gezinme kapatıldı',
     browseToggleAria: 'Akıllı gezinme — yapay zekâ siteleri kendisi kullanır',
     errStopped: 'Yanıt durduruldu.',
@@ -2539,7 +2573,7 @@ document.getElementById('app-lang-toggle').addEventListener('click', ()=>{
   sw.addEventListener('click', ()=>{
     const next = !isBrowseModeOn();
     setBrowseMode(next);
-    showToast(next ? t('toastBrowseOn') : t('toastBrowseOff'), 'info');
+    showToast(next ? t('toastBrowseOn') : t('toastBrowseOff'), next ? 'brain' : 'info');
   });
 })();
 applyAuthLanguage(currentAppLang);
@@ -3487,12 +3521,12 @@ function maybeAddZipAllButton(wrap){
 }
 
 // ── صندوق "غرفة التفكير العميق" القابل للفتح — نفس تصميم فلك ──
-function buildDeepThinkBox(reasoningText){
+function buildDeepThinkBox(reasoningText, browsed){
   const box = document.createElement('div');
   box.className = 'cosmos-deep-think';
   box.innerHTML =
     '<button type="button" class="cosmos-deep-think-toggle">'+
-    '<i class="fas fa-brain"></i><span>غرفة التفكير العميق</span><i class="fas fa-chevron-down cosmos-deep-think-chevron"></i>'+
+    (browsed ? brainMarkup('rest') : '<i class="fas fa-brain"></i>')+'<span>غرفة التفكير العميق</span><i class="fas fa-chevron-down cosmos-deep-think-chevron"></i>'+
     '</button>'+
     '<div class="cosmos-deep-think-body"><div class="cosmos-deep-think-inner">'+escapeHtml(reasoningText)+'</div></div>';
   box.querySelector('.cosmos-deep-think-toggle').addEventListener('click', ()=> box.classList.toggle('open'));
@@ -3597,7 +3631,7 @@ function renderFinalAssistantMessage(wrap, msg){
   }
 
   try{
-    if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning));
+    if (msg.reasoning) wrap.appendChild(buildDeepThinkBox(msg.reasoning, msg.browsed));
     const bubble = document.createElement('div');
     bubble.className = 'msg assistant';
     wrap.appendChild(bubble);
@@ -3658,7 +3692,7 @@ function appendMessageBubble(msg, opts){
   }
 
   if(msg.role !== 'user' && msg.reasoning){
-    wrap.appendChild(buildDeepThinkBox(msg.reasoning));
+    wrap.appendChild(buildDeepThinkBox(msg.reasoning, msg.browsed));
   }
 
   if(msg.text){
@@ -3732,9 +3766,22 @@ function appendMessageBubble(msg, opts){
 const AI_AVATAR_SVG = '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2z"/></svg>';
 // ── أيقونة الدرع الاحترافية (من غير علامة ما لا نهاية): بتظهر لما السؤال عن الحماية/الأمان ──
 const SHIELD_STEP_SVG = '<svg class="step-svg step-svg-shield" viewBox="0 0 24 24" aria-hidden="true"><path class="sv-body" d="M12 2.6 4.6 5.4v5.6c0 4.5 3 8.4 7.4 10.1 4.4-1.7 7.4-5.6 7.4-10.1V5.4z"/><path class="sv-check" d="M8.5 12.1l2.5 2.5 4.6-5"/></svg>';
-// ── أيقونة التصفّح: نافذة متصفح + مؤشر ماوس بيتحرك ويضغط ──
-const BROWSE_STEP_SVG = '<svg class="step-svg step-svg-browse" viewBox="0 0 24 24" aria-hidden="true"><rect class="bw-frame" x="2.8" y="4.2" width="18.4" height="14.6" rx="2.6"/><path class="bw-bar" d="M2.8 8.4h18.4"/><circle class="bw-dot" cx="5.6" cy="6.3" r=".6"/><circle class="bw-dot" cx="7.9" cy="6.3" r=".6"/><circle class="bw-click" cx="12" cy="13" r="1.6"/><path class="bw-cursor" d="M11 10.6l6 2.5-2.6.9-1 2.6z"/></svg>';
-const STEP_SVG_BY_KIND = { shield: SHIELD_STEP_SVG, browse: BROWSE_STEP_SVG };
+// ── أيقونة "العقل اللانهائي" (بديل نافذة المتصفح): السائل بيلف جواها حسب الحالة ──
+//    slow = لسه بيشوف/بيجهّز الموقع (لفّ بطيء) | fast = بينفّذ فعلاً (لفّ سريع)
+//    done = خلّص وهيعرض النتايج (دهبي + أزرق منوّرين مع بعض) | rest = ثابتة (للرسائل القديمة) ──
+function brainMarkup(state){
+  return '<span class="fk-brain" data-state="'+(state||'slow')+'" aria-hidden="true"><span class="fk-base"></span><span class="fk-orbit"><span class="fk-gold"></span></span></span>';
+}
+function setBrainState(root, state){
+  if (!root) return;
+  root.querySelectorAll('.fk-brain').forEach(el => { el.dataset.state = state; });
+}
+const STEP_SVG_BY_KIND = {
+  shield: SHIELD_STEP_SVG,
+  browse: brainMarkup('slow'),
+  'browse-run': brainMarkup('fast'),
+  'browse-done': brainMarkup('done')
+};
 const SECURITY_TOPIC_RE = /(حماي[ةه]|الحماي|أمان|امان|الأمن|الامن|أمني|امني|اختراق|مخترق|ثغر[ةه]|ثغرات|تشفير|هاكر|هكر|تسريب|خصوصي|\b(security|secure|hack(ing|er|ed)?|vulnerabilit\w*|exploit\w*|encrypt\w*|firewall|penetration|malware|phishing|cybersecurity)\b|güvenlik|koruma|siber|saldırı|şifreleme|güvenli)/i;
 function isSecurityTopic(text){ return !!text && SECURITY_TOPIC_RE.test(String(text)); }
 
@@ -3785,6 +3832,11 @@ function appendThinkingIndicator(firstStepLabel){
     if (STEP_SVG_BY_KIND[kind]){
       // ── الأنواع الجديدة (درع / تصفّح) بأيقونات SVG احترافية بدل علامة ∞ ──
       step.innerHTML = '<span class="thinking-step-icon k-'+kind+'">'+STEP_SVG_BY_KIND[kind]+'</span><span class="thinking-step-text"></span>';
+      // ── حالة التصفّح تتنقل كمان لأيقونة غرفة التفكير العميق الحي ──
+      if (kind.indexOf('browse') === 0){
+        wrap._brainState = (kind === 'browse-run') ? 'fast' : (kind === 'browse-done') ? 'done' : 'slow';
+        setBrainState(wrap.querySelector('.cosmos-deep-think-live'), wrap._brainState);
+      }
     } else {
       step.innerHTML = '<span class="thinking-step-icon"><span class="infinity-glyph infinity-'+kind+'">∞</span></span><span class="thinking-step-text"></span>';
     }
@@ -3825,7 +3877,7 @@ function appendThinkingIndicator(firstStepLabel){
         liveBox.className = 'cosmos-deep-think-live'; // مقفولة افتراضيًا (من غير .open)
         liveBox.innerHTML =
           '<div class="cosmos-deep-think-live-label" role="button" tabindex="0" aria-expanded="false">'+
-            (wrap._shieldMode ? SHIELD_STEP_SVG.replace('step-svg ', 'step-svg step-svg-label ') : '<i class="fas fa-brain"></i>')+'<span>بيفكر دلوقتي...</span>'+
+            (wrap._shieldMode ? SHIELD_STEP_SVG.replace('step-svg ', 'step-svg step-svg-label ') : (wrap._brainState ? brainMarkup(wrap._brainState) : '<i class="fas fa-brain"></i>'))+'<span>بيفكر دلوقتي...</span>'+
             '<i class="fas fa-chevron-down cosmos-deep-think-live-chevron"></i>'+
           '</div>'+
           '<div class="cosmos-deep-think-live-body"><div class="cosmos-deep-think-live-text"></div></div>';
@@ -4205,6 +4257,7 @@ composer.addEventListener('submit', async (e)=>{
       const replyTs = Date.now();
       const assistantMsg = { role:'assistant', text: reply.text, provider: reply.provider, ts: replyTs, question: text };
       if (reply.reasoning) assistantMsg.reasoning = reply.reasoning;
+      if (thinkingEl._brainState) assistantMsg.browsed = true; // تصفّح حقيقي حصل في الرد ده → أيقونة العقل اللانهائي في غرفة التفكير
       window.__locallyRendered = window.__locallyRendered || new Set();
       window.__locallyRendered.add(replyTs);
       renderFinalAssistantMessage(thinkingEl, assistantMsg);
