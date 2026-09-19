@@ -548,7 +548,13 @@ async function isSafeUrl(urlStr) {
   return ok;
 }
 
-const SENSITIVE_FIELD_RE = /(pass(word)?|pwd|otp|cvv|cvc|card|iban|ssn|security.?code|كلمة.?(السر|المرور)|بطاقة)/i;
+// ── ملحوظة أمان مهمة: الباسورد بقى مسموح بيه على مستوى الكود — القرار
+//    نفسه (يكتب ولا لأ) بقى مسؤولية النموذج اللغوي وحده (شوف browseSystemPrompt:
+//    مسموح بس لو المستخدم بعت يوزر/باسورد صريحين في نفس الطلب). حاجات
+//    زي رقم الكارت/الـ OTP/الرقم القومي فضلت ممنوعة هنا في الكود نفسه
+//    ومفيش استثناء ليها أبدًا، حتى لو المستخدم اتفق أو بعتها ──
+const SENSITIVE_FIELD_RE = /(otp|cvv|cvc|card.?(number|no)?|iban|ssn|security.?code|verification.?code|رقم.?(البطاقة|القومي)|كود.?التحقق|بطاقة)/i;
+const PASSWORD_FIELD_RE = /(pass(word)?|pwd|كلمة.?(السر|المرور))/i;
 const SENSITIVE_CLICK_RE = /(pay now|place order|buy now|checkout|confirm (purchase|order|payment)|delete (my )?account|close account|ادفع|أدفع|اشتري الآن|اشتر الآن|إتمام الشراء|اتمام الشراء|تأكيد الطلب|تأكيد الدفع|احذف (حسابي|الحساب)|satın al|ödeme yap|siparişi onayla)/i;
 
 async function checkBrowseLimit(uid) {
@@ -630,9 +636,12 @@ async function doBrowseAction(page, act, snap) {
     case "type": {
       const m = meta(act.index);
       if (!m) throw new Error("element_not_found");
-      if (m.type === "password" || SENSITIVE_FIELD_RE.test([m.name, m.ac, m.label].join(" "))) {
-        throw new Error("blocked_sensitive_field — ممنوع الكتابة في حقول الباسورد/الكروت/الـ OTP، خلّص بـ done واشرح للمستخدم");
+      const isPasswordField = m.type === "password" || PASSWORD_FIELD_RE.test([m.name, m.ac, m.label].join(" "));
+      if (!isPasswordField && SENSITIVE_FIELD_RE.test([m.name, m.ac, m.label].join(" "))) {
+        throw new Error("blocked_sensitive_field — ممنوع نهائيًا الكتابة في حقول الكروت/الأرقام القومية/الـ OTP، خلّص بـ done واشرح للمستخدم");
       }
+      // حقل باسورد: مسموح بيه كودياً — القرار (يكتب ولا يرفض) بتاع الموديل
+      // نفسه حسب تعليماته في browseSystemPrompt (بس لو المستخدم بعت بيانات صريحة)
       const el = await page.$('[data-dm-idx="' + m.i + '"]');
       if (!el) throw new Error("element_gone");
       await el.evaluate((n) => n.scrollIntoView({ block: "center", inline: "center" }));

@@ -1507,6 +1507,12 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
   //    بنشغّل متصفح حقيقي على السيرفر ونرجّع تقرير بالنتيجة الفعلية ──
   let browsedOk = false;
   if (isBrowseModeOn()){
+    // ── خطوة تشخيصية: تظهر بأيقونة التصفّح المخصصة (BROWSE_STEP_SVG) على
+    //    *كل* رسالة طول ما الزرار شغّال، بغض النظر إن كان هيتصفح فعلاً ولا
+    //    لأ — عشان يوسف يقدر يتأكد بصريًا إن الميزة شغالة ومش بس الزرار
+    //    مفعّل شكليًا. لو مبانتش الأيقونة دي خالص، يبقى isBrowseModeOn()
+    //    بترجع false (الزرار مش شغّال فعليًا رغم شكله) ──
+    step('🌐 وضع التصفّح الذكي شغّال — بيحلل طلبك هل محتاج يفتح موقع فعلي...', 'browse');
     if (pendingBrowseState){
       // ── آخر تصفّح وقف قبل خطوة حساسة (زي تسجيل دخول) ومستني رد المستخدم.
       //    الرسالة الجاية دي هي الرد (موافقة/رفض/بيانات دخول) — نكمّل من
@@ -1526,8 +1532,11 @@ async function getAIResponse(messageHistory, onReasoningDelta, onStep, onContent
       let needsBrowse = await classifyWantsBrowse(lastUserText);
       if (needsBrowse === null) needsBrowse = wantsBrowseFallback(lastUserText);
       if (needsBrowse){
+        step('🌐 قرر إنه محتاج يتصفّح فعلاً — بيفتح المتصفح الحقيقي...', 'browse');
         searchResultsBlock = await runBrowseAgent(lastUserText, step);
         browsedOk = true;
+      } else {
+        step('🌐 قرر إن الطلب ده مش محتاج تصفّح حقيقي، هيرد عادي', 'browse');
       }
     }
   }
