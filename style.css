@@ -1074,3 +1074,98 @@ button:focus,button:focus-visible{outline:none;}
 }
 [dir="ltr"] .activity-time{direction:ltr;}
 [lang="tr"] .brand-sub,[lang="tr"] .security-hero p{direction:ltr;}
+
+/* =====================================================================
+   زرار "التصفّح الذكي" — مفتاح بشكل إعدادات Android (Material)
+   ===================================================================== */
+.sidebar-top-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
+.sidebar-top-row .brand-mini{margin-bottom:0;}
+.browse-switch{
+  position:relative;flex-shrink:0;width:52px;height:30px;padding:0;box-sizing:border-box;
+  border-radius:15px;border:2px solid #6f6a60;background:#262523;cursor:pointer;direction:ltr;
+  transition:background .25s ease,border-color .25s ease,box-shadow .25s ease;
+  -webkit-tap-highlight-color:transparent;outline:none;
+}
+.browse-switch .bs-knob{
+  position:absolute;top:50%;left:4px;width:14px;height:14px;margin-top:-7px;border-radius:50%;
+  background:#9b958a;color:transparent;display:flex;align-items:center;justify-content:center;
+  transition:left .28s cubic-bezier(.3,1.25,.5,1),width .2s ease,height .2s ease,margin-top .2s ease,background .25s ease,color .2s ease,box-shadow .25s ease;
+}
+.browse-switch .bs-knob svg{opacity:0;transform:scale(.4);transition:opacity .2s ease .05s,transform .25s cubic-bezier(.3,1.4,.5,1) .05s;}
+.browse-switch:active .bs-knob{width:20px;height:20px;margin-top:-10px;}
+.browse-switch.on{background:var(--accent);border-color:var(--accent);box-shadow:0 0 14px rgba(216,163,76,.35);}
+.browse-switch.on .bs-knob{left:22px;width:22px;height:22px;margin-top:-11px;background:#1b1a17;color:var(--accent);box-shadow:0 1px 4px rgba(0,0,0,.45);}
+.browse-switch.on:active .bs-knob{left:18px;width:26px;}
+.browse-switch.on .bs-knob svg{opacity:1;transform:scale(1);}
+.browse-switch:focus-visible{box-shadow:0 0 0 3px rgba(216,163,76,.45);}
+
+/* =====================================================================
+   أيقونات غرفة التفكير الجديدة (SVG): الدرع الأمني + التصفّح الذكي
+   ===================================================================== */
+.step-svg{width:14px;height:14px;display:block;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;overflow:visible;}
+
+/* ── درع: خلفية أزرق فولاذي + علامة صح بتترسم بشكل متكرر ── */
+.thinking-step.active .thinking-step-icon.k-shield{
+  background:linear-gradient(140deg,#0a2f4d 0%,#1670a0 55%,#39b3e6 100%);color:#fff;
+  animation:stepPulseRingBlue 1.5s infinite;
+}
+.step-svg-shield .sv-body{fill:rgba(255,255,255,.16);}
+.step-svg-shield .sv-check{stroke-dasharray:16;stroke-dashoffset:16;animation:svCheckDraw 1.8s ease-in-out infinite;}
+@keyframes svCheckDraw{
+  0%{stroke-dashoffset:16;opacity:1;}
+  40%{stroke-dashoffset:0;opacity:1;}
+  80%{stroke-dashoffset:0;opacity:1;}
+  100%{stroke-dashoffset:0;opacity:0;}
+}
+@keyframes stepPulseRingBlue{
+  0%{box-shadow:0 0 0 0 rgba(57,179,230,.55);}
+  70%{box-shadow:0 0 0 7px rgba(57,179,230,0);}
+  100%{box-shadow:0 0 0 0 rgba(57,179,230,0);}
+}
+.thinking-step.done .thinking-step-icon.k-shield,
+.thinking-step.done .thinking-step-icon.k-browse{color:var(--accent-dim);}
+
+/* ── تصفّح: نافذة متصفح + مؤشر بيتحرك ويضغط، بتدرّج بنفسجي → وردي ── */
+.thinking-step.active .thinking-step-icon.k-browse{
+  background:linear-gradient(140deg,#4b1fc4 0%,#8a2be2 50%,#e0389a 100%);color:#fff;
+  animation:stepPulseRingViolet 1.5s infinite;
+}
+.step-svg-browse .bw-frame{fill:rgba(255,255,255,.12);stroke-width:1.6;}
+.step-svg-browse .bw-bar{stroke-width:1.4;}
+.step-svg-browse .bw-dot{fill:currentColor;stroke:none;}
+.step-svg-browse .bw-cursor{fill:currentColor;stroke:#1b1a17;stroke-width:.7;animation:bwCursorMove 2s ease-in-out infinite;}
+.step-svg-browse .bw-click{fill:none;stroke-width:1.2;transform-box:fill-box;transform-origin:center;opacity:0;animation:bwClickRipple 2s ease-out infinite;}
+@keyframes bwCursorMove{
+  0%{transform:translate(-4px,-3px);}
+  45%{transform:translate(0,0);}
+  60%{transform:translate(.6px,.6px);}
+  75%{transform:translate(0,0);}
+  100%{transform:translate(-4px,-3px);}
+}
+@keyframes bwClickRipple{
+  0%,45%{opacity:0;transform:scale(.3);}
+  55%{opacity:.95;transform:scale(.7);}
+  90%,100%{opacity:0;transform:scale(1.7);}
+}
+@keyframes stepPulseRingViolet{
+  0%{box-shadow:0 0 0 0 rgba(200,60,190,.55);}
+  70%{box-shadow:0 0 0 7px rgba(200,60,190,0);}
+  100%{box-shadow:0 0 0 0 rgba(200,60,190,0);}
+}
+
+/* ── بادج الدرع الثابت جنب اسم المساعد، وأيقونة الدرع في عنوان صندوق التفكير الحي ── */
+.thinking-mode-badge{
+  display:inline-flex;align-items:center;gap:5px;margin-inline-start:8px;padding:2px 10px 2px 8px;
+  border-radius:20px;background:rgba(57,179,230,.12);border:1px solid rgba(57,179,230,.4);
+  color:#5cc3ea;font-size:11px;font-weight:700;line-height:1.5;
+}
+.thinking-mode-badge .step-svg{width:12px;height:12px;}
+.thinking-mode-badge .step-svg-shield .sv-check{stroke-dashoffset:0;animation:none;}
+.cosmos-deep-think-live-label .step-svg-label{width:15px;height:15px;color:#5cc3ea;flex-shrink:0;}
+.cosmos-deep-think-live-label .step-svg-label .sv-check{stroke-dashoffset:0;animation:none;}
+
+@media (prefers-reduced-motion: reduce){
+  .step-svg-shield .sv-check,.step-svg-browse .bw-cursor,.step-svg-browse .bw-click{animation:none;}
+  .step-svg-shield .sv-check{stroke-dashoffset:0;}
+  .browse-switch,.browse-switch .bs-knob{transition:none;}
+}

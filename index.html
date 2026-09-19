@@ -135,7 +135,12 @@
 <div id="app-shell" class="screen" style="display:none;">
   <aside id="sidebar">
     <div class="sidebar-top">
-      <span class="brand-mini">Digital Mind</span>
+      <div class="sidebar-top-row">
+        <span class="brand-mini">Digital Mind</span>
+        <button id="browse-toggle" class="browse-switch" type="button" role="switch" aria-checked="false" aria-label="التصفّح الذكي" data-i18n-aria="browseToggleAria">
+          <span class="bs-knob"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M5.5 3.2l13 6.6-5.4 1.9-1.9 5.6z" fill="currentColor"/></svg></span>
+        </button>
+      </div>
       <button id="new-chat-btn" class="ghost-btn" type="button"><i class="fas fa-plus"></i><span data-i18n="newChat">محادثة جديدة</span></button>
     </div>
     <nav id="conversation-list" class="conversation-list"></nav>
