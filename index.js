@@ -27,6 +27,7 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
+const crypto = require("crypto");
 
 // databaseURL صريح: قاعدة الـ Realtime Database بتاعتك في europe-west1، فبنحدد
 // الرابط بنفسنا بدل ما نعتمد على FIREBASE_CONFIG التلقائي (أأمن ومفيش تخمين).
@@ -439,6 +440,41 @@ async function getVoiceClient() {
   return _voiceClientPromise;
 }
 
+// ============ كاش الصوت المولَّد (Cloud Storage) ============
+// أول مرة نص معيّن يتحوّل لصوت، الملف بيتحفظ في Bucket على جوجل كلاود. أي طلب بعد كده
+// لنفس النص واللغة بيتجاب من التخزين مباشرة من غير ما نناديّ الـ Space ولا نصرف من حصة ZeroGPU.
+// الكاش "best-effort": لو الـ Bucket مش موجود أو حصل أي خطأ فيه، التحويل بيشتغل عادي من غير كاش.
+// ⚠️ لو غيّرت عيّنة الصوت المحفوظة على الـ Space، غيّر TTS_CACHE_VERSION (مثلًا "v2")
+//    عشان الأصوات القديمة ما تتقدّمش بالصوت القديم.
+const TTS_CACHE_VERSION = "v1";
+const TTS_CACHE_PREFIX = "tts-cache/";
+let _ttsBucketPromise = null;
+function getTtsBucket() {
+  if (!_ttsBucketPromise) {
+    _ttsBucketPromise = (async () => {
+      const projectId = process.env.GCLOUD_PROJECT || "ai-prime-f9017";
+      // نجرّب اسم الـ Bucket الجديد ثم القديم، ونستخدم أول واحد موجود فعلًا
+      for (const name of [projectId + ".firebasestorage.app", projectId + ".appspot.com"]) {
+        try {
+          const bucket = admin.storage().bucket(name);
+          const [exists] = await bucket.exists();
+          if (exists) return bucket;
+        } catch (err) {
+          console.warn("tts cache: bucket check failed for " + name, err.message);
+        }
+      }
+      console.warn("tts cache: no Cloud Storage bucket found — الكاش متعطّل، الصوت هيتولّد كل مرة");
+      return null;
+    })();
+  }
+  return _ttsBucketPromise;
+}
+function ttsCacheKey(text, language) {
+  const norm = text.replace(/\s+/g, " ").trim();
+  return TTS_CACHE_PREFIX + crypto.createHash("sha256")
+    .update(TTS_CACHE_VERSION + "|" + language + "|" + norm).digest("hex") + ".wav";
+}
+
 exports.ttsProxy = onRequest(
   { cors: ALLOWED_ORIGINS, timeoutSeconds: 120, memory: "512MiB" },
   async (req, res) => {
@@ -452,6 +488,25 @@ exports.ttsProxy = onRequest(
 
     if (!text) { res.status(400).json({ error: "text_required" }); return; }
     if (text.length > MAX_TTS_CHARS) { res.status(400).json({ error: "text_too_long" }); return; }
+
+    // ── 1) نبص في الكاش الأول: لو الصوت ده اتولّد قبل كده نرجّعه على طول ──
+    let cacheFile = null;
+    try {
+      const bucket = await getTtsBucket();
+      if (bucket) {
+        cacheFile = bucket.file(ttsCacheKey(text, language));
+        const [exists] = await cacheFile.exists();
+        if (exists) {
+          const [cached] = await cacheFile.download();
+          res.setHeader("Content-Type", "audio/wav");
+          res.setHeader("X-TTS-Cache", "HIT");
+          res.status(200).send(cached);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("tts cache lookup failed (بنكمّل من غير كاش)", err.message);
+    }
 
     try {
       const client = await getVoiceClient();
@@ -468,9 +523,20 @@ exports.ttsProxy = onRequest(
       const audioRes = await fetch(audioUrl);
       if (!audioRes.ok) throw new Error("failed_to_fetch_audio_file");
       const arrayBuf = await audioRes.arrayBuffer();
+      const audioBuf = Buffer.from(arrayBuf);
+
+      // ── 2) نحفظ الصوت الجديد في الكاش (قبل الرد، لأن الفنكشن ممكن تتجمّد بعد الرد) ──
+      if (cacheFile) {
+        try {
+          await cacheFile.save(audioBuf, { contentType: "audio/wav", resumable: false });
+        } catch (err) {
+          console.warn("tts cache save failed (الصوت لسه هيتبعت عادي)", err.message);
+        }
+      }
 
       res.setHeader("Content-Type", "audio/wav");
-      res.status(200).send(Buffer.from(arrayBuf));
+      res.setHeader("X-TTS-Cache", "MISS");
+      res.status(200).send(audioBuf);
     } catch (err) {
       console.error("ttsProxy error", err);
       res.status(502).json({ error: "upstream_failed", message: err.message });
