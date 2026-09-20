@@ -265,11 +265,19 @@ if ('speechSynthesis' in window){
   window.speechSynthesis.onvoiceschanged = loadArabicVoices;
 }
 
+// ── بيشيل تاجات التلوين/التنسيق [[fmt:...]]...[[/fmt]] (والقديمة [[color:...]]) ويسيب النص اللي جواها،
+//    وكمان بيمسح أي تاج فاتح أو قافل فاضل لوحده. بنستخدمه في النسخ والمشاركة والقراءة الصوتية
+//    عشان المستخدم ياخد نص نضيف من غير أي رموز غريبة ──
+function stripFmtTags(raw){
+  return String(raw||'')
+    .replace(/\[\[\s*(fmt|color)\s*:\s*[a-zA-Z, ]+?\s*\]\]([\s\S]*?)\[\[\s*\/\s*\1\s*\]\]/g, '$2')
+    .replace(/\[\[\s*\/?\s*(fmt|color)\b[^\]]*\]\]/g, '');
+}
+
 // ── بيشيل الماركداون/كتل الكود من النص قبل ما ينطقه، عشان الصوت يبقى مفهوم ──
 function stripForSpeech(raw){
-  return String(raw||'')
+  return stripFmtTags(raw)
     .replace(/```[\s\S]*?```/g, ' جزء كود، اضغط على البطاقة عشان تشوفه. ')
-    .replace(/\[\[color:[a-zA-Z]+\]\]([\s\S]*?)\[\[\/color\]\]/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/#{1,6}\s*/g, '')
@@ -3473,7 +3481,7 @@ function buildActionBar(questionText, answerText){
   }
 
   bar.appendChild(mkBtn('fas fa-copy', 'نسخ', (btn)=>{
-    navigator.clipboard && navigator.clipboard.writeText(answerText).then(()=>{
+    navigator.clipboard && navigator.clipboard.writeText(stripFmtTags(answerText)).then(()=>{
       btn.innerHTML = '<i class="fas fa-check"></i>';
       setTimeout(()=>{ btn.innerHTML = '<i class="fas fa-copy"></i>'; }, 1200);
     });
@@ -3521,7 +3529,7 @@ function buildActionBar(questionText, answerText){
   //    يلزقهم في محادثة تانية مع ChatGPT/Gemini. لو الجهاز/المتصفح مش
   //    داعم شاشة المشاركة، بننسخهم للحافظة بدالها ──
   bar.appendChild(mkBtn('fas fa-share-nodes', 'مشاركة', (btn)=>{
-    const shareText = (questionText ? ('السؤال:\n' + questionText + '\n\n') : '') + 'الإجابة:\n' + answerText;
+    const shareText = (questionText ? ('السؤال:\n' + questionText + '\n\n') : '') + 'الإجابة:\n' + stripFmtTags(answerText);
     if (navigator.share){
       navigator.share({ text: shareText }).catch(()=>{ /* المستخدم لغى المشاركة، مفيش داعي لأي رسالة خطأ */ });
       return;
