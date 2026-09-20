@@ -779,20 +779,29 @@ function parseJsonLoose(txt) {
   }
 }
 
+// أكواد الحالة المؤقتة اللي بنعيد معاها المحاولة تلقائيًا (Gemini مشغول/محدود لحظيًا)
+const MODEL_RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+const MODEL_MAX_ATTEMPTS = 3;
+
 async function askBrowseModel(systemText, userText, apiKey) {
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${BROWSE_MODEL}:generateContent`,
-    {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${BROWSE_MODEL}:generateContent`;
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: systemText }] },
+    contents: [{ role: "user", parts: [{ text: userText }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 2048, responseMimeType: "application/json" },
+  });
+  let r;
+  for (let attempt = 1; attempt <= MODEL_MAX_ATTEMPTS; attempt++) {
+    r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemText }] },
-        contents: [{ role: "user", parts: [{ text: userText }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 2048, responseMimeType: "application/json" },
-      }),
+      body,
       signal: AbortSignal.timeout(45000),
-    }
-  );
+    });
+    // ناجح، أو خطأ مش مؤقت، أو آخر محاولة → نطلع من اللفة
+    if (r.ok || !MODEL_RETRY_STATUS.has(r.status) || attempt === MODEL_MAX_ATTEMPTS) break;
+    await sleep(1500 * attempt); // انتظار بسيط متزايد: 1.5 ثانية ثم 3 ثواني
+  }
   if (!r.ok) throw new Error("model_http_" + r.status);
   const d = await r.json();
   const txt = ((d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [])
