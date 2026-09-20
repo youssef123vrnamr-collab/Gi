@@ -559,7 +559,7 @@ const net = require("net");
 const BROWSE_MODEL = "gemini-3.5-flash";   // نفس الموديل المستخدم في geminiProxy
 const BROWSE_MAX_STEPS = 14;               // أقصى عدد خطوات في الطلب الواحد
 const BROWSE_TOTAL_MS = 240000;            // أقصى مدة كلية (الفنكشن نفسها 300 ثانية)
-const BROWSE_PER_DAY_LIMIT = 1;            // أقصى عدد جلسات تصفّح لكل مستخدم في اليوم (مرة واحدة بس)
+const BROWSE_PER_DAY_LIMIT = 5;            // أقصى عدد جلسات تصفّح لكل مستخدم في اليوم
 const BROWSE_ALLOWED_PORTS = new Set(["", "80", "443", "8080", "8443"]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -808,7 +808,10 @@ function describeElements(elements) {
 }
 
 async function runBrowseAgent({ goal, startUrl, lang, send, isAborted, apiKey }) {
-  const chromium = require("@sparticuz/chromium");
+  // @sparticuz/chromium الحديثة (149+) ESM بس → لازم import() ديناميكي، ونختار الكائن اللي فيه executablePath
+  const chromiumMod = await import("@sparticuz/chromium");
+  const chromium = [chromiumMod.default, chromiumMod].find((c) => c && typeof c.executablePath === "function");
+  if (!chromium) throw new Error("chromium_api_unknown keys=" + Object.keys(chromiumMod).join(",") + " default=" + typeof chromiumMod.default);
   const puppeteer = require("puppeteer-core");
   const started = Date.now();
   const system = browseSystemPrompt(lang);
