@@ -428,38 +428,45 @@ exports.groqWhisperProxy = onRequest(
 const VOICE_SPACE_ID = "YoussefFalak/voice-cloning-server";
 const MAX_TTS_CHARS = 600; // سقف طول النص المسموح بتحويله لصوت في المرة الواحدة
 
-let _voiceClientPromise = null;
-async function getVoiceClient() {
-  // @gradio/client حزمة ESM بحتة، والملف ده CommonJS، فلازم dynamic import
-  const { Client } = await import("@gradio/client");
-  if (!_voiceClientPromise) {
-    _voiceClientPromise = Client.connect(VOICE_SPACE_ID, { hf_token: HF_TOKEN.value() }).catch((err) => {
-      _voiceClientPromise = null; // لو فشل الاتصال، نسمح بمحاولة تانية المرة الجاية
-      throw err;
-    });
-  }
-  return _voiceClientPromise;
+// ⚠️ مبنخزنش الـ Client في الذاكرة بين الطلبات: فنكشنز الجيل التاني بتجمّد الـ CPU بعد كل رد،
+// فالاتصال القديم بالـ Space بيموت من غير ما يطلع خطأ، والطلب الجاي بيفضل معلّق لحد ما الوقت يخلص.
+// عشان كده كل طلب بيفتح اتصال جديد (بياخد ثانية أو اتنين) وبيقفله بعد ما يخلص.
+const VOICE_ATTEMPT_TIMEOUT_MS = 50000; // مهلة كل محاولة، محاولتين = أقل من مهلة الفنكشن (120 ثانية)
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label + "_timeout_after_" + ms + "ms")), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-// بيولّد الصوت من الـ Space. لو النداء فشل (الاتصال القديم اتقطع بسبب إن الـ Space اتعمله Restart
-// أو نام، والفنكشن لسه شايلة الـ Client القديم في الذاكرة)، بنرمي الـ Client ده ونفتح اتصال جديد
-// ونحاول مرة تانية. أخطاء الحصة (quota) مش بنعيد فيها لأن الإعادة مش هتفيد.
+// بيولّد الصوت من الـ Space. لو المحاولة فشلت أو علّقت، بنعيد بمحاولة تانية باتصال جديد.
+// أخطاء الحصة (quota) مش بنعيد فيها لأن الإعادة مش هتفيد.
 async function runVoiceClone(text, language) {
+  const { Client } = await import("@gradio/client"); // ESM بحتة، فلازم dynamic import
   let lastErr;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    let client = null;
     try {
-      const client = await getVoiceClient();
-      return await client.predict("/clone_voice", {
-        text,
-        speaker_wav: null, // null = استخدم الصوت المحفوظ دائماً على الـ Space
-        language,
-      });
+      const t0 = Date.now();
+      client = await withTimeout(
+        Client.connect(VOICE_SPACE_ID, { hf_token: HF_TOKEN.value() }), 20000, "connect");
+      const result = await withTimeout(
+        client.predict("/clone_voice", {
+          text,
+          speaker_wav: null, // null = استخدم الصوت المحفوظ دائماً على الـ Space
+          language,
+        }), VOICE_ATTEMPT_TIMEOUT_MS, "predict");
+      console.log("voice clone ok on attempt " + attempt + " in " + (Date.now() - t0) + "ms");
+      return result;
     } catch (err) {
       lastErr = err;
       const msg = String((err && err.message) || JSON.stringify(err) || err);
       console.warn("voice clone attempt " + attempt + " failed: " + msg);
-      _voiceClientPromise = null; // نفتح اتصال جديد في المحاولة الجاية
       if (/quota/i.test(msg)) break;
+    } finally {
+      try { if (client && typeof client.close === "function") client.close(); } catch (e) { /* مش مهم */ }
     }
   }
   throw lastErr;
@@ -492,6 +499,8 @@ function getTtsBucket() {
       console.warn("tts cache: no Cloud Storage bucket found — الكاش متعطّل، الصوت هيتولّد كل مرة");
       return null;
     })();
+    // لو ملقيناش Bucket، منحفظش النتيجة دي: نعيد الفحص في الطلب الجاي (مثلًا بعد ما تعمل الـ Bucket)
+    _ttsBucketPromise.then((b) => { if (!b) _ttsBucketPromise = null; }).catch(() => { _ttsBucketPromise = null; });
   }
   return _ttsBucketPromise;
 }
@@ -525,6 +534,7 @@ exports.ttsProxy = onRequest(
         if (exists) {
           const [cached] = await cacheFile.download();
           res.setHeader("Content-Type", "audio/wav");
+          console.log("tts cache HIT (" + bucket.name + ")");
           res.setHeader("X-TTS-Cache", "HIT");
           res.status(200).send(cached);
           return;
@@ -550,6 +560,7 @@ exports.ttsProxy = onRequest(
       if (cacheFile) {
         try {
           await cacheFile.save(audioBuf, { contentType: "audio/wav", resumable: false });
+          console.log("tts cache saved: " + cacheFile.name);
         } catch (err) {
           console.warn("tts cache save failed (الصوت لسه هيتبعت عادي)", err.message);
         }
