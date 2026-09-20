@@ -42,6 +42,7 @@ const OPENROUTER_API_KEY = defineSecret("OPENROUTER_API_KEY");
 const VERCEL_GATEWAY_API_KEY = defineSecret("VERCEL_GATEWAY_API_KEY");
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 const TAVILY_API_KEY = defineSecret("TAVILY_API_KEY");
+const HF_TOKEN = defineSecret("HF_TOKEN");
 
 // ============ CORS — دومينات التطبيق المسموح لها تنادي البروكسي ============
 // ضيف هنا أي دومين شغال عليه التطبيق فعليًا (نطاق Vercel بتاعك + أي دومين
@@ -432,12 +433,36 @@ async function getVoiceClient() {
   // @gradio/client حزمة ESM بحتة، والملف ده CommonJS، فلازم dynamic import
   const { Client } = await import("@gradio/client");
   if (!_voiceClientPromise) {
-    _voiceClientPromise = Client.connect(VOICE_SPACE_ID).catch((err) => {
+    _voiceClientPromise = Client.connect(VOICE_SPACE_ID, { hf_token: HF_TOKEN.value() }).catch((err) => {
       _voiceClientPromise = null; // لو فشل الاتصال، نسمح بمحاولة تانية المرة الجاية
       throw err;
     });
   }
   return _voiceClientPromise;
+}
+
+// بيولّد الصوت من الـ Space. لو النداء فشل (الاتصال القديم اتقطع بسبب إن الـ Space اتعمله Restart
+// أو نام، والفنكشن لسه شايلة الـ Client القديم في الذاكرة)، بنرمي الـ Client ده ونفتح اتصال جديد
+// ونحاول مرة تانية. أخطاء الحصة (quota) مش بنعيد فيها لأن الإعادة مش هتفيد.
+async function runVoiceClone(text, language) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const client = await getVoiceClient();
+      return await client.predict("/clone_voice", {
+        text,
+        speaker_wav: null, // null = استخدم الصوت المحفوظ دائماً على الـ Space
+        language,
+      });
+    } catch (err) {
+      lastErr = err;
+      const msg = String((err && err.message) || JSON.stringify(err) || err);
+      console.warn("voice clone attempt " + attempt + " failed: " + msg);
+      _voiceClientPromise = null; // نفتح اتصال جديد في المحاولة الجاية
+      if (/quota/i.test(msg)) break;
+    }
+  }
+  throw lastErr;
 }
 
 // ============ كاش الصوت المولَّد (Cloud Storage) ============
@@ -477,7 +502,7 @@ function ttsCacheKey(text, language) {
 }
 
 exports.ttsProxy = onRequest(
-  { cors: ALLOWED_ORIGINS, timeoutSeconds: 120, memory: "512MiB" },
+  { secrets: [HF_TOKEN], cors: ALLOWED_ORIGINS, timeoutSeconds: 120, memory: "512MiB" },
   async (req, res) => {
     if (req.method !== "POST") { res.status(405).json({ error: "method_not_allowed" }); return; }
     const guard = await runGuardChecks(req, res);
@@ -510,12 +535,7 @@ exports.ttsProxy = onRequest(
     }
 
     try {
-      const client = await getVoiceClient();
-      const result = await client.predict("/clone_voice", {
-        text,
-        speaker_wav: null, // null = استخدم الصوت المحفوظ دائماً على الـ Space
-        language,
-      });
+      const result = await runVoiceClone(text, language);
 
       const audioInfo = Array.isArray(result.data) ? result.data[0] : null;
       const audioUrl = audioInfo && audioInfo.url;
@@ -539,8 +559,9 @@ exports.ttsProxy = onRequest(
       res.setHeader("X-TTS-Cache", "MISS");
       res.status(200).send(audioBuf);
     } catch (err) {
-      console.error("ttsProxy error", err);
-      res.status(502).json({ error: "upstream_failed", message: err.message });
+      const errMsg = String((err && err.message) || JSON.stringify(err) || err);
+      console.error("ttsProxy error", errMsg, err);
+      res.status(502).json({ error: "upstream_failed", message: errMsg });
     }
   }
 );
