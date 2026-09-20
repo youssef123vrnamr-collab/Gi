@@ -453,8 +453,9 @@ function getTtsBucket() {
   if (!_ttsBucketPromise) {
     _ttsBucketPromise = (async () => {
       const projectId = process.env.GCLOUD_PROJECT || "ai-prime-f9017";
-      // نجرّب اسم الـ Bucket الجديد ثم القديم، ونستخدم أول واحد موجود فعلًا
-      for (const name of [projectId + ".firebasestorage.app", projectId + ".appspot.com"]) {
+      // نجرّب الـ Bucket المخصّص للكاش الأول (ai-prime-f9017-tts-cache)، وبعده أسماء Firebase الافتراضية،
+      // ونستخدم أول واحد موجود فعلًا
+      for (const name of [projectId + "-tts-cache", projectId + ".firebasestorage.app", projectId + ".appspot.com"]) {
         try {
           const bucket = admin.storage().bucket(name);
           const [exists] = await bucket.exists();
